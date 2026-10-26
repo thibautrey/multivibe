@@ -85,3 +85,48 @@ final class RemoteInstanceTests: XCTestCase {
         XCTAssertNotNil(renderer.uiImage)
     }
 }
+
+extension RemoteInstanceTests {
+    @MainActor func testDiscoveryKeepsMachineAndEnvironmentIdentityAndCachedMessages() throws {
+        let source = RemoteConversationSource(targetId: "local", kind: "native", id: "same-native-id", harnessId: "pi")
+        let summary = RemoteConversationSummary(source: source, title: "External", updatedAt: 123000, model: nil, canContinue: true)
+        var chats: [RemoteChat] = []
+        RemoteInstances.merge([summary], into: &chats, machine: "mac-one", environment: "Mac")
+        let id = chats[0].id
+        chats[0].messages = [.init(role: "user", content: "Cached transcript")]
+        RemoteInstances.merge([summary], into: &chats, machine: "mac-one", environment: "Mac")
+        RemoteInstances.merge([summary], into: &chats, machine: "mac-two", environment: "Other Mac")
+        var other = summary; other.source.targetId = "ssh-host"
+        RemoteInstances.merge([other], into: &chats, machine: "mac-one", environment: "SSH")
+        XCTAssertEqual(chats.count, 3); XCTAssertEqual(chats[0].id, id)
+        XCTAssertEqual(chats[0].messages.first?.content, "Cached transcript")
+        RemoteInstances.merge([], into: &chats, machine: "mac-one", environment: "Mac")
+        XCTAssertEqual(chats.count, 3)
+        let restored = try JSONDecoder().decode([RemoteChat].self, from: JSONEncoder().encode(chats))
+        XCTAssertEqual(restored[0].source, source)
+    }
+    @MainActor func testDiscoveryDeduplicatesMobileRowsForksAndServerAliasesAndHonorsDismissal() {
+        var chat = RemoteChat(machine: "mac", harness: "pi", model: "old")
+        chat.messages = [.init(role: "user", content: "Preserved")]
+        var chats = [chat]
+        let native = RemoteConversationSource(targetId: "local", kind: "native", id: "native", harnessId: "pi")
+        var summary = RemoteConversationSummary(source: .init(targetId: "local", kind: "session", id: "mobile-session", harnessId: "pi"), title: "Discovered", updatedAt: 123000, model: "model", canContinue: true, conversationId: chat.id.uuidString.lowercased(), nativeSourceId: "native")
+        RemoteInstances.merge([summary], into: &chats, machine: "mac", environment: "Mac")
+        XCTAssertEqual(chats.count, 1); XCTAssertEqual(chats[0].id, chat.id)
+        XCTAssertEqual(chats[0].messages.first?.content, "Preserved")
+        let alias = RemoteConversationSummary(source: native, title: "Native", updatedAt: 123000, model: nil, canContinue: true)
+        RemoteInstances.merge([alias], into: &chats, machine: "mac", environment: "Mac")
+        XCTAssertEqual(chats.count, 1); XCTAssertEqual(chats[0].source?.kind, "session")
+        var hidden: [RemoteChat] = []
+        RemoteInstances.merge([summary, alias], into: &hidden, machine: "mac", environment: "Mac", hidden: ["mac:" + native.key])
+        XCTAssertTrue(hidden.isEmpty)
+        summary.source.harnessId = "librechat"; summary.source.id = "server-session"; summary.conversationId = nil
+        summary.nativeSessionId = "server-id"; summary.connectionId = "account-one"; summary.nativeSourceId = nil
+        let server = RemoteConversationSummary(source: .init(targetId: "local", kind: "server", id: "server-id", harnessId: "librechat", connectionId: "account-one"), title: "Server", updatedAt: 123000, model: nil, canContinue: true)
+        chats = []; RemoteInstances.merge([summary, server], into: &chats, machine: "mac", environment: "Mac")
+        XCTAssertEqual(chats.count, 1)
+        var otherAccount = server; otherAccount.source.connectionId = "account-two"
+        RemoteInstances.merge([otherAccount], into: &chats, machine: "mac", environment: "Mac")
+        XCTAssertEqual(chats.count, 2)
+    }
+}

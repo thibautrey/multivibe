@@ -152,7 +152,7 @@ actor RemoteInstanceAPI {
     }
     func control(_ machine: String, account: String, token: String, fields: [String: HistoryJSON]) async throws -> HistoryJSON {
         let (data, response) = try await session.data(for: bridgeRequest(machine, account: account, token: token, fields: fields)); try validate(response)
-        guard data.count <= 2_097_152 else { throw APIError.invalidResponse }
+        guard data.count <= 8_388_608 else { throw APIError.invalidResponse }
         let result = try JSONDecoder().decode(HistoryJSON.self, from: data)
         guard result.object?["version"]?.number == 1 else { throw APIError.invalidResponse }; return result
     }
@@ -183,6 +183,20 @@ private final class RemoteInstanceRedirectPolicy: NSObject, URLSessionTaskDelega
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) { completionHandler(nil) }
 }
 
+struct RemoteConversationSource: Codable, Equatable, Sendable {
+    var targetId: String; var kind: String; var id: String; var harnessId: String; var connectionId: String? = nil
+    var key: String { [targetId, kind, harnessId, connectionId ?? "", id].joined(separator: "\u{1f}") }
+    var fields: HistoryJSON { .object(["targetId": .string(targetId), "kind": .string(kind), "id": .string(id), "harnessId": .string(harnessId)].merging(connectionId.map { ["connectionId": .string($0)] } ?? [:]) { _, new in new }) }
+}
+struct RemoteConversationSummary: Decodable, Sendable {
+    var source: RemoteConversationSource; var title: String; var updatedAt: Double; var model: String?; var canContinue: Bool
+    var conversationId: String?; var nativeSourceId: String?; var nativeSessionId: String?; var connectionId: String?
+}
+struct RemoteConversationMessage: Decodable { var id: String; var role: String; var content: String; var done: Bool }
+struct RemoteConversationPage: Decodable { var conversations: [RemoteConversationSummary]; var nextPage: Int? }
+struct RemoteConversationHistory: Decodable { var messages: [RemoteConversationMessage]; var revision: String; var model: String?; var nextOffset: Int? }
+struct RemoteConversationTarget: Decodable { var id: String; var name: String }
+
 struct RemoteChat: Codable, Identifiable, Sendable {
     var id = UUID(); var machine: String; var harness: String; var model: String; var provider: String? = nil
     var effort: String? = nil; var projectId: String? = nil; var projectName: String? = nil
@@ -190,6 +204,11 @@ struct RemoteChat: Codable, Identifiable, Sendable {
     /// Optional so archives written before sidebar ordering was introduced remain readable.
     var updatedAt: Date? = Date()
     var command: String?; var cursor = 0; var state = "idle"; var items: [String: String] = [:]; var itemOrder: [String] = []
+    var source: RemoteConversationSource? = nil
+    var sourceAliases: [RemoteConversationSource]? = nil
+    var canContinue: Bool? = nil
+    var environmentName: String? = nil
+    var historyRevision: String? = nil
     var pendingConfiguration: RemoteConfiguration? = nil
 }
 struct RemoteConfiguration: Codable, Sendable {
@@ -214,6 +233,9 @@ struct RemoteModelPreference: Codable {
     private(set) var modelCatalog: [String: [RemoteHarnessModel]] = [:]
     private(set) var effortCatalog: [String: RemoteHarnessEffort] = [:]
     private(set) var projectCatalog: [String: [RemoteHarnessProject]] = [:]
+    private(set) var synchronizationErrors: [String: String] = [:]
+    private var synchronizing = false
+    private var hiddenSources: Set<String> = []
     private var projectCatalogFetchedAt: [String: Date] = [:]
     private(set) var chats: [RemoteChat] = []
     private(set) var preferences: [String: RemoteModelPreference] = [:]
@@ -229,7 +251,7 @@ struct RemoteModelPreference: Codable {
     private var network = "inconnu"
     private var storageLoaded = false
     private let monitor = NWPathMonitor()
-    private struct Archive: Codable { var chats: [RemoteChat]; var preferences: [String: RemoteModelPreference]; var selection: UUID? = nil }
+    private struct Archive: Codable { var chats: [RemoteChat]; var preferences: [String: RemoteModelPreference]; var selection: UUID? = nil; var hiddenSources: Set<String>? = nil }
     init() {
         monitor.pathUpdateHandler = { [weak self] path in
             let label = path.usesInterfaceType(.cellular) ? "Réseau cellulaire" : path.usesInterfaceType(.wifi) ? "Wi-Fi → Relay WAN" : "Relay WAN"
@@ -245,21 +267,150 @@ struct RemoteModelPreference: Codable {
     private func persist() throws {
         guard let account, storageLoaded else { throw APIError.invalidResponse }; let url = archiveURL(account)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.protectionKey: FileProtectionType.complete])
-        try JSONEncoder().encode(Archive(chats: chats, preferences: preferences, selection: selection)).write(to: url, options: [.atomic, .completeFileProtection])
+        try JSONEncoder().encode(Archive(chats: chats, preferences: preferences, selection: selection, hiddenSources: hiddenSources)).write(to: url, options: [.atomic, .completeFileProtection])
         var values = URLResourceValues(); values.isExcludedFromBackup = true; var folder = url.deletingLastPathComponent(); try folder.setResourceValues(values)
     }
     func activate(_ account: String?) {
         guard self.account != account else { return }; task?.cancel(); task = nil; generation = UUID(); activeChat = nil; busy = false
-        self.account = account; machines = []; harnesses = [:]; modelCatalog = [:]; effortCatalog = [:]; projectCatalog = [:]; projectCatalogFetchedAt = [:]; chats = []; preferences = [:]; paired = []; error = nil; selection = nil; storageLoaded = false
+        self.account = account; synchronizationErrors = [:]; hiddenSources = []; machines = []; harnesses = [:]; modelCatalog = [:]; effortCatalog = [:]; projectCatalog = [:]; projectCatalogFetchedAt = [:]; chats = []; preferences = [:]; paired = []; error = nil; selection = nil; storageLoaded = false
         guard let account else { pendingPairing = nil; return }
         let url = archiveURL(account)
         do { if FileManager.default.fileExists(atPath: url.path) {
             let data = try Data(contentsOf: url); guard data.count <= 16_777_216 else { throw APIError.invalidResponse }
-            let archive = try JSONDecoder().decode(Archive.self, from: data); chats = archive.chats; preferences = archive.preferences; selection = archive.chats.contains { $0.id == archive.selection } ? archive.selection : nil
+            let archive = try JSONDecoder().decode(Archive.self, from: data); chats = archive.chats; preferences = archive.preferences; hiddenSources = archive.hiddenSources ?? []; selection = archive.chats.contains { $0.id == archive.selection } ? archive.selection : nil
         }; storageLoaded = true } catch { self.error = "L’historique de vos instances est conservé mais ne peut pas être ouvert." }
     }
     private func check(_ owner: String, _ epoch: UUID) throws {
         try Task.checkCancellation(); guard account == owner, generation == epoch, ConversationManager.shared.session?.accountId == owner else { throw CancellationError() }
+    }
+    private func control(_ machine: String, operation: String, values: [String: HistoryJSON] = [:]) async throws -> HistoryJSON {
+        guard let owner = account else { throw APIError.authenticationRequired }; let epoch = generation
+        let (session, auth) = try await authorizedFields(machine, operation: operation)
+        let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: auth.merging(values) { _, new in new })
+        try check(owner, epoch); return result
+    }
+    private func decode<T: Decodable>(_ type: T.Type, _ value: HistoryJSON) throws -> T {
+        try JSONDecoder().decode(type, from: JSONEncoder().encode(value))
+    }
+    static func merge(_ summaries: [RemoteConversationSummary], into chats: inout [RemoteChat], machine: String, environment: String, hidden: Set<String> = []) {
+        for summary in summaries {
+            var aliases: [RemoteConversationSource] = []
+            if let native = summary.nativeSourceId { aliases.append(.init(targetId: summary.source.targetId, kind: "native", id: native, harnessId: summary.source.harnessId)) }
+            if let native = summary.nativeSessionId, let connection = summary.connectionId { aliases.append(.init(targetId: summary.source.targetId, kind: "server", id: native, harnessId: summary.source.harnessId, connectionId: connection)) }
+            if ([summary.source] + aliases).contains(where: { hidden.contains(machine + ":" + $0.key) }) { continue }
+            let match = chats.firstIndex { chat in
+                guard chat.machine == machine else { return false }
+                if let id = summary.conversationId, chat.id.uuidString.lowercased() == id.lowercased() { return true }
+                guard let source = chat.source, source.targetId == summary.source.targetId, source.harnessId == summary.source.harnessId else { return false }
+                return source == summary.source || chat.sourceAliases?.contains(summary.source) == true || (source.kind == "native" && source.id == summary.nativeSourceId)
+                    || (source.kind == "server" && source.id == summary.nativeSessionId && source.connectionId == summary.connectionId)
+            }
+            let index: Int
+            if let match { index = match } else {
+                chats.append(RemoteChat(machine: machine, harness: summary.source.harnessId, model: summary.model ?? "")); index = chats.count - 1
+            }
+            // A native/server row is an alias of a supervised conversation once attached.
+            if chats[index].source?.kind == "session", summary.source.kind != "session" { continue }
+            if let previous = chats[index].source, previous != summary.source {
+                var aliases = chats[index].sourceAliases ?? []; if !aliases.contains(previous) { aliases.append(previous) }; chats[index].sourceAliases = aliases
+            }
+            var knownAliases = chats[index].sourceAliases ?? []
+            for alias in aliases where !knownAliases.contains(alias) { knownAliases.append(alias) }
+            chats[index].sourceAliases = knownAliases
+            chats[index].source = summary.source; chats[index].canContinue = summary.canContinue
+            chats[index].environmentName = environment
+            if chats[index].command == nil {
+                chats[index].title = summary.title; chats[index].updatedAt = Date(timeIntervalSince1970: summary.updatedAt / 1000)
+                if let model = summary.model { chats[index].model = model }
+            }
+        }
+    }
+    func synchronizeConversations() async {
+        guard !synchronizing, !busy, activeChat == nil, account != nil else { return }; synchronizing = true
+        defer { synchronizing = false }
+        for machine in machines where paired.contains(machine.id) && machine.online && machine.supportsHarness {
+            do {
+                let result = try await control(machine.id, operation: "conversation-targets")
+                let targets = try decode([RemoteConversationTarget].self, result.object?["targets"] ?? .array([]))
+                for target in targets {
+                    let key = machine.id + ":" + target.id
+                    do {
+                        var page = 0
+                        while true {
+                            let value = try await control(machine.id, operation: "conversations", values: ["targetId": .string(target.id), "page": .number(Double(page))])
+                            let batch = try decode(RemoteConversationPage.self, value)
+                            Self.merge(batch.conversations, into: &chats, machine: machine.id, environment: target.name, hidden: hiddenSources)
+                            try persist()
+                            guard let next = batch.nextPage else { break }
+                            guard next == page + 1, next <= 1000 else { throw APIError.invalidResponse }; page = next
+                        }
+                        synchronizationErrors[key] = nil
+                    } catch is CancellationError { return }
+                    catch { synchronizationErrors[key] = "Historique indisponible sur \(machine.name) · \(target.name). Les messages déjà chargés sont conservés." }
+                    for harness in ["librechat", "openwebui"] {
+                        do {
+                            let value = try await control(machine.id, operation: "server-conversations", values: ["targetId": .string(target.id), "harnessId": .string(harness)])
+                            let batch = try decode(RemoteConversationPage.self, value)
+                            Self.merge(batch.conversations, into: &chats, machine: machine.id, environment: target.name, hidden: hiddenSources)
+                            synchronizationErrors[key + ":" + harness] = nil; try persist()
+                        } catch is CancellationError { return }
+                        catch { synchronizationErrors[key + ":" + harness] = "Synchronisation du serveur indisponible." }
+                    }
+                }
+                synchronizationErrors[machine.id] = nil
+            } catch is CancellationError { return }
+            catch { synchronizationErrors[machine.id] = "La découverte des conversations nécessite un Host à jour et une connexion active." }
+        }
+    }
+    func refreshConversation(_ id: UUID) async throws {
+        guard let initial = chats.first(where: { $0.id == id }), let source = initial.source, initial.command == nil else { return }
+        var offset = 0, revision: String?, messages: [RemoteConversationMessage] = [], model: String?
+        while true {
+            var values: [String: HistoryJSON] = ["source": source.fields, "offset": .number(Double(offset))]
+            if let revision { values["revision"] = .string(revision) }
+            let value = try await control(initial.machine, operation: "conversation-history", values: values)
+            let batch = try decode(RemoteConversationHistory.self, value)
+            if let revision, revision != batch.revision { throw APIError.invalidResponse }
+            revision = batch.revision; model = batch.model; messages.append(contentsOf: batch.messages)
+            guard messages.count <= 20000 else { throw APIError.invalidResponse }
+            guard let next = batch.nextOffset else { break }
+            guard next > offset, next == messages.count else { throw APIError.invalidResponse }; offset = next
+        }
+        guard let index = chats.firstIndex(where: { $0.id == id }), chats[index].source == source, chats[index].command == nil else { return }
+        if chats[index].historyRevision != revision {
+            let previous = chats[index]
+            chats[index].messages = messages.map { value in
+                let bytes = Array(SHA256.hash(data: Data((initial.machine + ":" + source.key + ":" + value.id).utf8)).prefix(16))
+                let id = UUID(uuid: (bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5],bytes[6],bytes[7],bytes[8],bytes[9],bytes[10],bytes[11],bytes[12],bytes[13],bytes[14],bytes[15]))
+                return ChatMessage(id: id, role: value.role, content: value.content, completion: value.role == "assistant" ? (value.done ? .completed : .streaming) : nil)
+            }
+            chats[index].historyRevision = revision
+            if let model { chats[index].model = model }
+            do { try persist() } catch { chats[index] = previous; throw error }
+        }
+    }
+    func runSynchronization() async {
+        while !Task.isCancelled {
+            await reload()
+            for machine in machines where paired.contains(machine.id) && machine.online && harnesses[machine.id] == nil { try? await catalog(machine.id) }
+            await synchronizeConversations()
+            do { try await Task.sleep(for: .seconds(5)) } catch { return }
+        }
+    }
+    func runSelectedSynchronization() async {
+        while !Task.isCancelled {
+            if let chat = current, chat.source != nil, chat.command == nil {
+                do { try await refreshConversation(chat.id); synchronizationErrors[chat.id.uuidString] = nil }
+                catch is CancellationError { return }
+                catch { synchronizationErrors[chat.id.uuidString] = "Messages indisponibles. L’historique déjà chargé est conservé." }
+            }
+            do { try await Task.sleep(for: .seconds(2)) } catch { return }
+        }
+    }
+    var synchronizationError: String? {
+        guard let chat = current else { return nil }
+        return synchronizationErrors[chat.id.uuidString] ?? synchronizationErrors[chat.machine]
+            ?? chat.source.flatMap { synchronizationErrors[chat.machine + ":" + $0.targetId] ?? synchronizationErrors[chat.machine + ":" + $0.targetId + ":" + $0.harnessId] }
     }
     func reload() async {
         guard let owner = account, !busy else { return }; let epoch = generation; busy = true
@@ -343,6 +494,7 @@ struct RemoteModelPreference: Codable {
     func models(_ machine: String, harness: String) async throws {
         guard !busy, let owner = account else { return }; let epoch = generation; busy = true; defer { if epoch == generation { busy = false } }
         let (session, auth) = try await authorizedFields(machine, operation: "models"); var fields = auth; fields["harnessId"] = .string(harness)
+        if let chat = current, chat.machine == machine, let source = chat.source { fields["source"] = source.fields }
         let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: fields); try check(owner, epoch)
         let values = try JSONDecoder().decode([RemoteHarnessModel].self, from: JSONEncoder().encode(result.object?["models"] ?? .array([])))
         modelCatalog[machine + ":" + harness] = values
@@ -356,7 +508,7 @@ struct RemoteModelPreference: Codable {
         guard !model.isEmpty, !busy, let owner = account else { return }; let epoch = generation; busy = true; defer { if epoch == generation { busy = false } }
         let (session, auth) = try await authorizedFields(machine, operation: "effort"); var fields = auth
         fields["harnessId"] = .string(harness); fields["model"] = .string(model); if let provider { fields["provider"] = .string(provider) }
-        if let chat = current, chat.machine == machine, chat.harness == harness, !chat.messages.isEmpty { fields["conversationId"] = .string(chat.id.uuidString.lowercased()) }
+        if let chat = current, chat.machine == machine, chat.harness == harness, (!chat.messages.isEmpty || chat.source != nil) { fields["conversationId"] = .string(chat.id.uuidString.lowercased()); if let source = chat.source { fields["source"] = source.fields } }
         let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: fields); try check(owner, epoch)
         let key = machine + ":" + harness + ":" + model
         if let value = result.object?["effort"], value != .null {
@@ -383,7 +535,7 @@ struct RemoteModelPreference: Codable {
         if harnesses[machine] == nil { try await catalog(machine) }
         try await models(machine, harness: harness)
         try await projects(machine, harness: harness)
-        if let chat = current, chat.machine == machine, chat.harness == harness, !chat.messages.isEmpty {
+        if let chat = current, chat.machine == machine, chat.harness == harness, (!chat.messages.isEmpty || chat.source != nil) {
             try await efforts(machine, harness: harness, model: chat.model, provider: chat.provider)
         } else if let preference = preference(machine, harness: harness), !preference.model.isEmpty {
             try await efforts(machine, harness: harness, model: preference.model, provider: preference.provider)
@@ -396,7 +548,7 @@ struct RemoteModelPreference: Codable {
         preferences[machine] = preference; preferences[machine + ":" + preference.harness] = preference
     }
     func choose(_ machine: String, harness: String, model: RemoteHarnessModel) async throws {
-        if let chat = current, chat.machine == machine, chat.harness == harness, !chat.messages.isEmpty {
+        if let chat = current, chat.machine == machine, chat.harness == harness, (!chat.messages.isEmpty || chat.source != nil) {
             try await configure(chat.id, change: .init(model: model.id, provider: model.provider))
         }
         var preference = preference(machine, harness: harness) ?? .init(harness: harness, model: model.id)
@@ -406,31 +558,32 @@ struct RemoteModelPreference: Codable {
     func chooseEffort(_ value: String?, machine: String) async throws {
         guard let chat = current, chat.machine == machine else { throw APIError.noModel }
         guard var preference = preference(machine, harness: chat.harness) else { throw APIError.noModel }
-        if !chat.messages.isEmpty { try await configure(chat.id, change: .init(effort: value)) }
+        if !chat.messages.isEmpty || chat.source != nil { try await configure(chat.id, change: .init(effort: value)) }
         preference.effort = value; remember(preference, machine: machine); updateSelectedEmptyChat(from: preference, machine: machine); try persist()
     }
     func chooseProject(_ project: RemoteHarnessProject?, machine: String) throws {
-        guard let chat = current, chat.machine == machine, chat.messages.isEmpty,
+        guard let chat = current, chat.machine == machine, chat.messages.isEmpty, chat.source == nil,
               var preference = preference(machine, harness: chat.harness) else { throw APIError.noModel }
         preference.projectId = project?.id; preference.projectName = project?.name; remember(preference, machine: machine)
         updateSelectedEmptyChat(from: preference, machine: machine); try persist()
     }
     func configure(_ id: UUID, change: RemoteConfiguration? = nil) async throws {
         guard !busy, let owner = account, let index = chats.firstIndex(where: { $0.id == id }),
-              chats[index].command == nil else { throw APIError.invalidResponse }
+              chats[index].canContinue != false, chats[index].command == nil else { throw APIError.invalidResponse }
         let epoch = generation; busy = true; defer { if epoch == generation { busy = false } }
         if chats[index].pendingConfiguration == nil { chats[index].pendingConfiguration = change }
         guard let pending = chats[index].pendingConfiguration else { return }
         try persist()
         let machine = chats[index].machine
         let (session, auth) = try await authorizedFields(machine, operation: "configure")
-        var fields = auth.merging(pending.fields) { _, new in new }; fields["conversationId"] = .string(id.uuidString.lowercased())
+        var fields = auth.merging(pending.fields) { _, new in new }; if let source = chats[index].source { fields["source"] = source.fields }; fields["conversationId"] = .string(id.uuidString.lowercased())
         let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: fields); try check(owner, epoch)
         guard let currentIndex = chats.firstIndex(where: { $0.id == id }) else { throw CancellationError() }
         if result.object?["state"]?.string == "failed" {
             chats[currentIndex].pendingConfiguration = nil; try persist(); throw APIError.server(409, "instance_configuration_refused")
         }
         guard result.object?["state"]?.string == "completed" else { throw APIError.invalidResponse }
+        if let source = result.object?["source"] { chats[currentIndex].sourceAliases = (chats[currentIndex].sourceAliases ?? []) + [chats[currentIndex].source].compactMap { $0 }; chats[currentIndex].source = try decode(RemoteConversationSource.self, source) }
         if let model = pending.model { chats[currentIndex].model = model; chats[currentIndex].provider = pending.provider; chats[currentIndex].effort = nil }
         else { chats[currentIndex].effort = pending.effort }
         chats[currentIndex].pendingConfiguration = nil
@@ -456,16 +609,16 @@ struct RemoteModelPreference: Codable {
         try? persist()
     }
     func delete(_ id: UUID) throws {
-        guard activeChat != id else { return }; chats.removeAll { $0.id == id }; if selection == id { selection = nil }; try persist()
+        guard activeChat != id else { return }; if let chat = chats.first(where: { $0.id == id }), let source = chat.source { for source in [source] + (chat.sourceAliases ?? []) { hiddenSources.insert(chat.machine + ":" + source.key) } }; chats.removeAll { $0.id == id }; if selection == id { selection = nil }; try persist()
     }
     private func updateSelectedEmptyChat(from preference: RemoteModelPreference, machine: String) {
-        guard let id = selection, let index = chats.firstIndex(where: { $0.id == id && $0.machine == machine && $0.harness == preference.harness && $0.messages.isEmpty }) else { return }
+        guard let id = selection, let index = chats.firstIndex(where: { $0.id == id && $0.machine == machine && $0.harness == preference.harness && $0.messages.isEmpty && $0.source == nil }) else { return }
         chats[index].harness = preference.harness; chats[index].model = preference.model; chats[index].provider = preference.provider
         chats[index].effort = preference.effort; chats[index].projectId = preference.projectId; chats[index].projectName = preference.projectName
     }
     func stopFollowing() { task?.cancel(); task = nil; activeChat = nil; streamGeneration = UUID() }
     @discardableResult func send(_ text: String, chat id: UUID, recover: Bool = false) -> Bool {
-        guard activeChat == nil, let owner = account, let index = chats.firstIndex(where: { $0.id == id }), !busy, chats[index].pendingConfiguration == nil else { return false }
+        guard activeChat == nil, let owner = account, let index = chats.firstIndex(where: { $0.id == id }), !busy, chats[index].pendingConfiguration == nil, chats[index].canContinue != false else { return false }
         if !recover {
             guard !chats[index].model.isEmpty, chats[index].command == nil, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
             chats[index].command = UUID().uuidString.lowercased(); chats[index].cursor = 0; chats[index].items = [:]; chats[index].itemOrder = []
@@ -489,6 +642,7 @@ struct RemoteModelPreference: Codable {
                     var fields = auth
                     fields["conversationId"] = .string(id.uuidString.lowercased())
                     fields["commandId"] = .string(command)
+                    if let source = current.source { fields["source"] = source.fields }
                     fields["after"] = .number(Double(current.cursor))
                     if operation == "prompt" {
                         fields["harnessId"] = .string(initialChat.harness); fields["model"] = .string(initialChat.model); fields["text"] = .string(text)
@@ -523,7 +677,7 @@ struct RemoteModelPreference: Codable {
         guard !busy, let owner = account, let chat = chats.first(where: { $0.id == id }), chat.command != nil else { return }
         let epoch = generation; busy = true; defer { if epoch == generation { busy = false } }
         let (session, auth) = try await authorizedFields(chat.machine, operation: "interrupt")
-        var fields = auth; fields["conversationId"] = .string(id.uuidString.lowercased()); fields["commandId"] = .string(UUID().uuidString.lowercased())
+        var fields = auth; if let source = chat.source { fields["source"] = source.fields }; fields["conversationId"] = .string(id.uuidString.lowercased()); fields["commandId"] = .string(UUID().uuidString.lowercased())
         let result = try await RemoteInstanceAPI.shared.control(chat.machine, account: owner, token: session.accessToken, fields: fields); try check(owner, epoch)
         guard result.object?["state"]?.string == "completed" else { throw APIError.invalidResponse }
         busy = false; stopFollowing(); send("", chat: id, recover: true)
@@ -531,7 +685,13 @@ struct RemoteModelPreference: Codable {
     private func receive(_ event: HistoryJSON, chat id: UUID, owner: String, epoch: UUID) throws {
         try check(owner, epoch); guard let index = chats.firstIndex(where: { $0.id == id }), let object = event.object else { throw APIError.invalidResponse }
         let type = object["type"]?.string
-        if type == "message.delta" || type == "message.part", let text = object["text"]?.string, let seq = object["seq"]?.number, seq > Double(chats[index].cursor) {
+        if type == "conversation.bound", let value = object["source"] {
+            let bound = try decode(RemoteConversationSource.self, value)
+            if let source = chats[index].source, source != bound {
+                var aliases = chats[index].sourceAliases ?? []; if !aliases.contains(source) { aliases.append(source) }; chats[index].sourceAliases = aliases
+            }
+            chats[index].source = bound
+        } else if type == "message.delta" || type == "message.part", let text = object["text"]?.string, let seq = object["seq"]?.number, seq > Double(chats[index].cursor) {
             if chats[index].state == "waiting_user" { chats[index].state = "running"; error = nil }
             let item = object["itemId"]?.string ?? "assistant"
             if chats[index].items[item] == nil { chats[index].itemOrder.append(item) }

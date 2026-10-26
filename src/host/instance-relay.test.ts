@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {randomUUID,randomBytes,createHash} from 'node:crypto';
 import {HostHarnessRuntime} from './harness-runtime/runtime.js';
+import {InstanceConversations} from './instance-conversations.js';
 import {InstanceRelay,INSTANCE_RELAY_MODEL} from './instance-relay.js';
 
 async function fixture(t:any,options:{prompt?:()=>Promise<void>}={}){
@@ -101,4 +102,75 @@ test('model and effort changes share durable desktop commands and cannot cross d
  assert.equal(JSON.parse(await f.send(effort)).state,'completed');assert.equal(f.runtime.store.sessions()[0].configuration?.effort,'high');
  assert.equal(JSON.parse(await f.send({...auth,operation:'interrupt',conversationId,commandId:randomUUID()})).state,'completed');
  assert.match(await f.send({...auth,operation:'prompt',harnessId:'pi',model:'fixture/second',conversationId,commandId:randomUUID(),text:'after stop'}),/Verified response 2/);
+});
+
+test('paired devices discover Desktop sessions and read paginated stable history without starting adapters',async t=>{
+ const f=await fixture(t),a=await f.pair(),auth={deviceId:a.deviceId,deviceToken:a.deviceToken};
+ const session=await f.runtime.create({harnessId:'pi',model:'fixture/model',title:'Created outside iOS'});
+ for(let i=0;i<105;i++)f.runtime.emit(session.id,{type:'message.part',itemId:'row-'+i,payload:{role:'assistant',text:'Historical '+i}});
+ const targets=JSON.parse(await f.send({...auth,operation:'conversation-targets'}));assert.ok(targets.targets.some((v:any)=>v.id==='local'));
+ const catalog=JSON.parse(await f.send({...auth,operation:'conversations',targetId:'local',page:0}));
+ const row=catalog.conversations.find((v:any)=>v.source.id===session.id);assert.equal(row.title,'Created outside iOS');assert.ok(!JSON.stringify(row).includes(session.workspace));
+ const first=JSON.parse(await f.send({...auth,operation:'conversation-history',source:row.source}));assert.equal(first.messages.length,100);assert.equal(first.nextOffset,100);
+ const second=JSON.parse(await f.send({...auth,operation:'conversation-history',source:row.source,offset:first.nextOffset,revision:first.revision}));assert.equal(second.messages.length,5);assert.equal(second.nextOffset,null);
+ assert.equal(f.calls(),0);assert.equal(f.runtime.store.sessions().length,1);
+ await assert.rejects(f.send({...auth,operation:'conversation-history',source:{...row.source,harnessId:'opencode'}}),/harness changed/);
+ await assert.rejects(f.send({...auth,operation:'conversations',targetId:'missing',page:0}),/not found/i);
+ await assert.rejects(f.send({...auth,operation:'conversations',page:-1}),/Invalid catalog/);
+ await assert.rejects(f.send({...auth,deviceToken:'wrong',operation:'conversations'}),/expired or revoked/);
+ f.runtime.emit(session.id,{type:'message.part',itemId:'new',payload:{role:'assistant',text:'New'}});
+ await assert.rejects(f.send({...auth,operation:'conversation-history',source:row.source,offset:100,revision:first.revision}),/changed during pagination/);
+});
+
+test('discovered Desktop sessions continue idempotently in their owning session and mobile-created rows retain their identity',async t=>{
+ const f=await fixture(t),a=await f.pair(),auth={deviceId:a.deviceId,deviceToken:a.deviceToken};
+ const session=await f.runtime.create({harnessId:'pi',model:'fixture/model',title:'Desktop'});
+ const source={targetId:'local',kind:'session',id:session.id,harnessId:'pi'};
+ const prompt={...auth,operation:'prompt',source,conversationId:randomUUID(),commandId:randomUUID(),model:'fixture/model',text:'From iPhone'};
+ assert.match(await f.send(prompt),/conversation.bound/);await f.send(prompt);assert.equal(f.calls(),1);assert.equal(f.runtime.store.sessions().length,1);
+ const history=JSON.parse(await f.send({...auth,operation:'conversation-history',source}));
+ assert.ok(history.messages.some((v:any)=>v.role==='user'&&v.content==='From iPhone'));
+ assert.ok(history.messages.some((v:any)=>v.content==='Verified response 1'));
+ const conversationId=randomUUID();await f.send({...auth,operation:'prompt',harnessId:'pi',model:'fixture/model',conversationId,commandId:randomUUID(),text:'New mobile conversation'});
+ const catalog=JSON.parse(await f.send({...auth,operation:'conversations'}));assert.equal(catalog.conversations.filter((v:any)=>v.conversationId===conversationId).length,1);
+});
+
+test('native CLI histories are read without mutation and replies create exactly one isolated fork',async t=>{
+ const priorHome=process.env.HOME,home=fs.mkdtempSync(path.join(os.tmpdir(),'instance-native-home-'));process.env.HOME=home;
+ t.after(()=>{if(priorHome===undefined)delete process.env.HOME;else process.env.HOME=priorHome;fs.rmSync(home,{recursive:true,force:true});});
+ const folder=path.join(home,'.pi/agent/sessions');fs.mkdirSync(folder,{recursive:true});
+ const file=path.join(folder,'external.jsonl'),nativeId=randomUUID();
+ const original=JSON.stringify({type:'session',id:nativeId,cwd:home})+'\n'+JSON.stringify({type:'message',id:'u1',message:{role:'user',content:'External user'}})+'\n';fs.writeFileSync(file,original);
+ const f=await fixture(t),a=await f.pair(),auth={deviceId:a.deviceId,deviceToken:a.deviceToken};
+ const catalog=JSON.parse(await f.send({...auth,operation:'conversations'}));const native=catalog.conversations.find((v:any)=>v.source.kind==='native');assert.ok(native);assert.equal(native.canContinue,true);
+ const history=JSON.parse(await f.send({...auth,operation:'conversation-history',source:native.source}));assert.equal(history.messages[0].content,'External user');assert.equal(f.runtime.store.sessions().length,0);assert.equal(f.calls(),0);
+ const prompt={...auth,operation:'prompt',source:native.source,conversationId:randomUUID(),commandId:randomUUID(),model:'fixture/model',text:'Continue externally created history'};
+ const stream=await f.send(prompt);await f.send(prompt);assert.equal(f.runtime.store.sessions().length,1);assert.equal(f.calls(),1);assert.equal(fs.readFileSync(file,'utf8'),original);
+ const bound=JSON.parse(stream.split('\n').find(v=>v.includes('conversation.bound'))!.slice(6)).source;
+ const forkHistory=JSON.parse(await f.send({...auth,operation:'conversation-history',source:bound}));assert.equal(forkHistory.messages[0].content,'External user');assert.ok(forkHistory.messages.some((v:any)=>v.content==='Verified response 1'));
+ assert.equal(JSON.parse(await f.send({...auth,operation:'conversations'})).conversations.filter((v:any)=>v.source.kind==='native').length,0);
+});
+
+
+test('registered environments use their own bridge, never the Mac history, and server identities remain bound',async t=>{
+ const f=await fixture(t),calls:string[]=[];
+ f.runtime.store.saveTarget({id:'ssh-fixture',name:'SSH',kind:'ssh',sshHost:'fixture',bridgePath:'/fixture/bridge.mjs'});
+ f.runtime.store.saveTarget({id:'bare-container',name:'Container',kind:'container',container:'fixture'});
+ const remote=new InstanceConversations(f.runtime,{close(){},async request(_target:any,method:string,route:string){
+  calls.push(method+' '+route);
+  if(route.startsWith('/conversation-sources'))return {sessions:[],nativeSessions:[{sourceId:'remote-native',harnessId:'pi',nativeSessionId:'native',title:'SSH conversation',updatedAt:1000,canContinue:true}],nextPage:null};
+  if(route.startsWith('/native-sessions/'))return {messages:[{id:'remote-message',role:'user',content:'SSH only',done:true}],revision:'remote-revision'};
+  throw Error('Unexpected bridge route '+route);
+ }} as any);t.after(()=>remote.close());
+ const rows=await remote.catalog('ssh-fixture',0,'device');assert.equal(rows.conversations[0].source.targetId,'ssh-fixture');
+ assert.equal((await remote.history(rows.conversations[0].source)).messages[0].content,'SSH only');
+ assert.equal((await remote.catalog('bare-container',0,'device')).conversations.length,0);
+ await assert.rejects(remote.history({...rows.conversations[0].source,targetId:'bare-container'}),/requires a Host bridge/);
+ assert.ok(calls.some(v=>v.startsWith('GET /native-sessions/')));assert.equal(f.calls(),0);
+ const identity={connectionId:'first-account',endpoint:'https://fixture.invalid'};
+ (f.runtime.librechat as any).publicConfiguration=()=>({...identity,configured:true});
+ (f.runtime as any).remoteChats=()=>({identity:()=>identity,list:async()=>({...identity,complete:true,conversations:[{id:'server-id',title:'Outside server',updatedAt:1000}]}),snapshot:async()=>({id:'server-id',title:'Outside server',revision:'v1',model:'fixture/model',messages:[{id:'s1',role:'user',content:'Server only',done:true,native:{secret:'never projected'}}]})});
+ const servers=await remote.servers('local','librechat');const source=servers.conversations[0].source;
+ assert.equal((await remote.history(source)).messages[0].content,'Server only');assert.ok(!JSON.stringify(await remote.history(source)).includes('secret'));
+ identity.connectionId='second-account';await assert.rejects(remote.history(source),/original remote account/);
 });

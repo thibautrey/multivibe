@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {setTimeout as delay} from 'node:timers/promises';
 import express from 'express';
+import {InstanceConversations,type InstanceConversationSource} from './instance-conversations.js';
 import type {HostHarnessRuntime} from './harness-runtime/runtime.js';
 import {fail,identifier,requiredText,type HarnessEvent} from './harness-runtime/types.js';
 
@@ -17,10 +18,11 @@ const equal=(a:string,b:string)=>a.length===b.length&&timingSafeEqual(Buffer.fro
 const uuid=(v:unknown):v is string=>typeof v==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
 type Device={id:string;name:string;digest:string;expiresAt:number;previous?:{digest:string;expiresAt:number}};
 type State={version:1;machineId:string;name:string;machineToken:string;devices:Device[]};
-type Envelope={version:1;accountId:string;machineId:string;operation:string;deviceId?:string;deviceToken?:string;handoff?:string;name?:string;harnessId?:string;model?:string;provider?:string;effort?:string|null;projectId?:string;conversationId?:string;commandId?:string;text?:string;after?:number};
+type Envelope={version:1;accountId:string;machineId:string;operation:string;deviceId?:string;deviceToken?:string;handoff?:string;name?:string;harnessId?:string;model?:string;provider?:string;effort?:string|null;projectId?:string;conversationId?:string;commandId?:string;text?:string;after?:number;targetId?:string;page?:number;source?:InstanceConversationSource;offset?:number;revision?:string};
 type Upload=(data:string,terminal?:boolean,status?:number,contentType?:string)=>Promise<void>;
 
 export class InstanceRelay {
+ readonly conversations:InstanceConversations;
  private state?:State;
  private controller?:AbortController;
  private handoff?:{digest:string;expiresAt:number;attempts:number};
@@ -29,6 +31,7 @@ export class InstanceRelay {
  private lastError?:string;
  private rotations=new Map<string,{token:string;expiresAt:number}>();
  constructor(private readonly runtime:HostHarnessRuntime,private readonly file:string,private readonly fetcher:typeof fetch=fetch,private readonly clock=Date.now) {
+  this.conversations=new InstanceConversations(runtime);
   try {const s=JSON.parse(fs.readFileSync(file,'utf8'));if(s.version!==1||!uuid(s.machineId)||!/^mvr_[A-Za-z0-9_-]{43}$/.test(s.machineToken)||!Array.isArray(s.devices))throw Error();this.state=s;}
   catch(e:any){if(e.code!=='ENOENT')throw new Error('Remote instance configuration is invalid');}
  }
@@ -69,7 +72,7 @@ export class InstanceRelay {
    await this.account('/relay/v1/machines/'+old.machineId,accessToken,undefined,'DELETE');
   } catch {fail('Local access disabled; Cloud revocation could not be confirmed',502);}
  }
- stop(){this.controller?.abort();this.controller=undefined;this.running=false;}
+ stop(){this.conversations.close();this.controller?.abort();this.controller=undefined;this.running=false;}
  start(){if(this.controller||!this.state)return;const controller=new AbortController();this.controller=controller;void this.run(controller.signal).finally(()=>{if(this.controller===controller){this.running=false;this.controller=undefined;}});}
  private async machine(route:string,body:unknown|undefined,signal:AbortSignal){const s=this.state;if(!s)fail('Instance disconnected',401);return this.account('/relay/v1/machine/'+route,s.machineToken,body,body===undefined?'GET':'POST',signal);}
  private async run(signal:AbortSignal){
@@ -116,10 +119,16 @@ export class InstanceRelay {
   if(e.operation==='pair'||e.operation==='renew'){const auth=this.authorize(e);await json({...auth,name:this.state!.name,harnesses:await this.runtime.catalog()});return;}
   const device=this.device(e);
   if(e.operation==='revoke'){this.revokeDevice(device.id);await json({revoked:true});return;}
+  if(e.operation==='conversation-targets'){await json({targets:this.conversations.targets()});return;}
+  if(e.operation==='conversations'){await json(await this.conversations.catalog(identifier(e.targetId??'local'),e.page??0,device.id));return;}
+  if(e.operation==='server-conversations'){await json(await this.conversations.servers(identifier(e.targetId??'local'),identifier(e.harnessId)));return;}
+  if(e.operation==='conversation-history'){await json(await this.conversations.history(e.source!,e.offset??0,e.revision));return;}
   if(e.operation==='catalog'){await json({name:this.state!.name,harnesses:await this.runtime.catalog()});return;}
-  if(e.operation==='models'){await json(await this.runtime.models({harnessId:identifier(e.harnessId),targetId:'local',authMode:'native'}));return;}
+  if(e.operation==='models'){await json(await this.conversations.models(identifier(e.harnessId),e.source));return;}
   if(e.operation==='effort'){
-   const sessionId=uuid(e.conversationId)?'mobile-'+hash([this.state!.machineId,device.id,e.conversationId].join(':')).slice(0,40):undefined;
+   const source=e.source?this.conversations.source(e.source):undefined;
+   const sessionId=source?.kind==='session'?source.id:uuid(e.conversationId)?'mobile-'+hash([this.state!.machineId,device.id,e.conversationId].join(':')).slice(0,40):undefined;
+   if(source && source.targetId!=='local'){await json({effort:null});return;}
    await json(await this.runtime.effort({harnessId:identifier(e.harnessId),targetId:'local',authMode:'native',model:requiredText(e.model,256),...(e.provider?{provider:requiredText(e.provider,256)}:{}),...(sessionId?{sessionId}:{})}));return;
   }
   if(e.operation==='projects'){
@@ -128,7 +137,10 @@ export class InstanceRelay {
   }
   if(!['prompt','recover','configure','interrupt'].includes(e.operation))fail('Unsupported instance operation');
   if(!uuid(e.conversationId)||!uuid(e.commandId))fail('Invalid conversation operation');
-  const sessionId='mobile-'+hash([this.state!.machineId,device.id,e.conversationId].join(':')).slice(0,40);
+  const mobileSessionId='mobile-'+hash([this.state!.machineId,device.id,e.conversationId].join(':')).slice(0,40);
+  const source=e.source?this.conversations.source(e.source):undefined,targetId=source?.targetId??'local';
+  const sessionId=source?await this.conversations.attach(source,mobileSessionId,device.id,e.conversationId,e.model??'',e.provider):mobileSessionId;
+  const command=async(value:any)=>(await this.conversations.command(targetId,sessionId,value)).receipt;
   if(e.operation==='configure'||e.operation==='interrupt'){
    const value:Record<string,unknown>={};
    if(e.operation==='configure'){
@@ -138,20 +150,22 @@ export class InstanceRelay {
     if(e.effort!==undefined)value.effort=e.effort===null?null:requiredText(e.effort,64);
     if(!Object.keys(value).length)fail('Select a model or effort');
    }
-   const receipt=await this.runtime.command(sessionId,{id:e.commandId,type:e.operation,...(e.operation==='configure'?{value}:{})});
+   const receipt=await command({id:e.commandId,type:e.operation,...(e.operation==='configure'?{value}:{})});
    // The command receipt, including its fingerprint, remains on the owning Host.
    // Retrying the same ID recovers an acknowledgement without executing twice.
-   await json({state:receipt.state});return;
+   await json({state:receipt.state,...(source?{source:{targetId,kind:'session',id:sessionId,harnessId:source.harnessId}}:{})});return;
   }
-  if(e.operation==='prompt'){
+  if(e.operation==='prompt'&&!source){
    const harnessId=identifier(e.harnessId);let workspace:string|undefined;
    if(e.projectId!==undefined){
     if(!/^[a-f0-9]{64}$/u.test(e.projectId))fail('Invalid project selection');
     const project=this.runtime.projects({harnessId,targetId:'local'}).projects.find(value=>value.id===e.projectId);
     if(!project)fail('The selected project is unavailable on this Host',409);workspace=project.path;
    }
-   await this.runtime.create({id:sessionId,harnessId,targetId:'local',authMode:'native',model:requiredText(e.model,256),...(e.provider?{nativeProvider:requiredText(e.provider,256)}:{}),...(e.effort?{effort:requiredText(e.effort,64)}:{}),...(workspace?{workspace}:{}),title:'iPhone · '+device.name});
+   const created=await this.runtime.create({id:sessionId,harnessId,targetId:'local',authMode:'native',model:requiredText(e.model,256),...(e.provider?{nativeProvider:requiredText(e.provider,256)}:{}),...(e.effort?{effort:requiredText(e.effort,64)}:{}),...(workspace?{workspace}:{}),title:'iPhone · '+device.name});
+   created.configuration={...created.configuration,mobileDeviceId:device.id,mobileConversationId:e.conversationId};this.runtime.store.save(created);
   }
+  if(source)await upload('data: '+JSON.stringify({type:'conversation.bound',source:{targetId,kind:'session',id:sessionId,harnessId:source.harnessId}})+'\n\n',false,200,'text/event-stream');
   const emit=async(event:HarnessEvent)=>{
    // Credentials, auth URLs, paths and arbitrary tool records never enter the
    // mobile transcript. The complete journal remains on the owning Host.
@@ -161,20 +175,20 @@ export class InstanceRelay {
   let cursor=Number.isSafeInteger(e.after)&&e.after!>=0?e.after!:0;
   if(e.operation==='prompt'){
    // Repeated IDs use the desktop runtime's receipt/fingerprint protection.
-   const session=this.runtime.snapshot(sessionId).session;
-   if(session.queuePaused&&session.state==='interrupted')await this.runtime.command(sessionId,{id:e.commandId!+'-resume',type:'resume_queue'});
-   await this.runtime.command(sessionId,{id:e.commandId!,type:'prompt',parts:[{type:'text',text:requiredText(e.text,32000)}]});
+   const session=(await this.conversations.snapshot(targetId,sessionId)).session;
+   if(session.queuePaused&&session.state==='interrupted')await command({id:e.commandId!+'-resume',type:'resume_queue'});
+   await command({id:e.commandId!,type:'prompt',parts:[{type:'text',text:requiredText(e.text,32000)}]});
   }
   let approvalPending=false;
   while(true){signal.throwIfAborted();this.device(e);
-   const batch=this.runtime.store.events(sessionId,cursor,500);for(const event of batch){cursor=event.seq;await emit(event);}
-   if(cursor<this.runtime.store.eventCursor(sessionId))continue;
-   const receipt=this.runtime.store.receipt(e.commandId!);
+   const batch=(await this.conversations.events(targetId,sessionId,cursor)).events as HarnessEvent[];for(const event of batch){cursor=event.seq;await emit(event);}
+   if(batch.length)continue;
+   const receipt=(await this.conversations.receipt(targetId,sessionId,e.commandId!)).receipt;
    if(!receipt||receipt.sessionId!==sessionId)fail('Operation not found',404);
    if(['completed','failed','cancelled','uncertain'].includes(receipt.state)){
     await upload('data: '+JSON.stringify({type:'terminal',state:receipt.state,cursor})+'\n\n',true,200,'text/event-stream');return;
    }
-   const awaitingApproval=this.runtime.snapshot(sessionId).interactions.length>0;
+   const awaitingApproval=(await this.conversations.snapshot(targetId,sessionId)).interactions.length>0;
    if(awaitingApproval&&!approvalPending)await upload('data: '+JSON.stringify({type:'approval_required',cursor})+'\n\n',false,200,'text/event-stream');
    approvalPending=awaitingApproval;
    await delay(150,undefined,{signal});
