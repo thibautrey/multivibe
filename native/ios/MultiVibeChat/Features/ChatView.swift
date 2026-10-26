@@ -50,6 +50,34 @@ private struct WelcomeExecutionGlassSurface: ViewModifier {
     }
 }
 
+@MainActor
+private struct WelcomeExecutionOverlayModifier: ViewModifier {
+    let isPresented: Bool
+    let panel: (CGFloat) -> AnyView
+
+    func body(content: Content) -> some View {
+        content.overlayPreferenceValue(WelcomeExecutionAnchorKey.self) { anchor in
+            GeometryReader { proxy in
+                if isPresented, let anchor {
+                    let selectorFrame = proxy[anchor]
+                    let panelWidth = min(310, max(0, proxy.size.width - 32))
+                    let panelLeading = min(
+                        max(16, selectorFrame.midX - panelWidth / 2),
+                        max(16, proxy.size.width - panelWidth - 16)
+                    )
+                    let panelHeight = max(180, min(520, proxy.size.height - selectorFrame.maxY - 24))
+                    panel(panelHeight)
+                        .frame(width: panelWidth)
+                        .offset(x: panelLeading, y: selectorFrame.maxY + 10)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                        .zIndex(100)
+                }
+            }
+            .allowsHitTesting(isPresented)
+        }
+    }
+}
+
 struct ChatView: View {
     @Environment(ConversationManager.self) private var manager
     @Environment(\.scenePhase) private var scenePhase
@@ -408,25 +436,7 @@ struct ChatView: View {
                     composer
                 }
             }
-            .overlayPreferenceValue(WelcomeExecutionAnchorKey.self) { anchor in
-                GeometryReader { proxy in
-                    if welcomeExecutionListExpanded, let anchor {
-                        let selectorFrame = proxy[anchor]
-                        let panelWidth = min(310, max(0, proxy.size.width - 32))
-                        let panelLeading = min(
-                            max(16, selectorFrame.midX - panelWidth / 2),
-                            max(16, proxy.size.width - panelWidth - 16)
-                        )
-                        let panelHeight = max(180, min(520, proxy.size.height - selectorFrame.maxY - 24))
-                        welcomeExecutionList(maxHeight: panelHeight)
-                            .frame(width: panelWidth)
-                            .offset(x: panelLeading, y: selectorFrame.maxY + 10)
-                            .transition(.opacity.combined(with: .move(edge: .top)))
-                            .zIndex(100)
-                    }
-                }
-                .allowsHitTesting(welcomeExecutionListExpanded)
-            }
+            .modifier(welcomeExecutionOverlay)
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .navigationBarBackButtonHidden(true)
@@ -1125,6 +1135,11 @@ struct ChatView: View {
         remoteChat?.harness ?? (ModelExecution(manager.selectedModel).isLocal ? "native" : "hermes-cloud")
     }
     private var selectedExecutionName: String { isRemoteConversation ? remoteHarnessName : localExecutionName }
+    private var welcomeExecutionOverlay: WelcomeExecutionOverlayModifier {
+        WelcomeExecutionOverlayModifier(isPresented: welcomeExecutionListExpanded) { maxHeight in
+            AnyView(welcomeExecutionList(maxHeight: maxHeight))
+        }
+    }
 
     private var welcomeExecutionSelector: some View {
         Button {
