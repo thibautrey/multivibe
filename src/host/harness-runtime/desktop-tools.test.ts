@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { spawn } from "node:child_process";
 import { DesktopTools, callDesktop } from "./desktop-tools.js";
 import { JsonPeer } from "./process.js";
@@ -43,7 +44,7 @@ test("real MCP subprocess discovers Host tools and returns native text plus scre
     const connection=await desktop.connection("mcp");
     assert.equal(fs.statSync(connection.env.MULTIVIBE_DESKTOP_SOCKET).mode&0o777,0o600);
     assert.equal(fs.statSync(path.dirname(connection.env.MULTIVIBE_DESKTOP_SOCKET)).mode&0o777,0o700);
-    const child=spawn(connection.command,connection.args,{env:{...process.env,...connection.env},stdio:"pipe"});
+    const child=spawn(connection.command,connection.args,{cwd:os.tmpdir(),env:{...process.env,...connection.env},stdio:"pipe"});
     peer=new JsonPeer(child,()=>{},async()=>({}),()=>{},()=>{});
     const hello=await peer.request("initialize",{protocolVersion:"2025-06-18",capabilities:{},clientInfo:{name:"test",version:"1"}});
     assert.equal(hello.serverInfo.name,"multivibe-desktop");peer.notify("notifications/initialized");
