@@ -7,11 +7,15 @@ Host's existing Cloud account authentication and `/relay/v1/machines`. The
 machine credential remains in the Host's private data directory. It is never
 returned to iOS, put into a QR, or used as a proxy/admin credential.
 
-The main chat's execution picker switches between this iPhone, Hermes Cloud and
-each paired instance's available harnesses. Remote conversations use the existing
+The main chat's central welcome identity switches between this iPhone, Hermes
+Cloud and each paired instance's available harnesses. Once a conversation has
+messages, the same compact identity moves to the navigation bar rather than
+occupying another row above the composer. Remote conversations use the existing
 composer, Markdown rendering and history sidebar, with their instance and harness
 shown explicitly. Instance management opens conversations in that same chat.
-Model and project pickers are searchable; effort options come from the harness.
+Local and remote execution share one model picker. When a harness advertises
+effort options, that picker also contains the Desktop-style effort scale. Project
+selection remains searchable and conversation-scoped.
 Preferences are retained per instance and harness. Switching sources preserves
 each conversation and stops following the previous stream without replaying it.
 
