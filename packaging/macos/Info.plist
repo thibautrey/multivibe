@@ -52,5 +52,7 @@
   <true/>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSCameraUsageDescription</key>
+  <string>MultiVibe peut reconnaître votre compte sur ce Mac, si vous activez cette option. La caméra ne s’allume que quelques secondes et aucune photo n’est conservée ni envoyée.</string>
 </dict>
 </plist>
