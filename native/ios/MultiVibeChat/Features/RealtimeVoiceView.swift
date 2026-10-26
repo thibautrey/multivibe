@@ -340,12 +340,7 @@ private struct RealtimeVoiceCanvas: View {
     private var hero: some View {
         VStack(spacing: 22) {
             Spacer(minLength: 24)
-            VoiceOrb(phase: phase, audioLevel: audioLevel, reduceMotion: reduceMotion)
-                .frame(width: 132, height: 132)
-                .accessibilityElement(children: .ignore)
-                .accessibilityIdentifier("voiceOrb")
-                .accessibilityLabel(accessibleOrbLabel)
-                .accessibilityValue(orbAccessibilityValue)
+            accessibleOrb(size: 132)
             VStack(spacing: 8) {
                 Text(VoiceCanvasPresentation.status(for: phase))
                     .font(.callout.weight(.medium))
@@ -399,12 +394,7 @@ private struct RealtimeVoiceCanvas: View {
 
     private var dockedOrb: some View {
         VStack(spacing: 7) {
-            VoiceOrb(phase: phase, audioLevel: audioLevel, reduceMotion: reduceMotion)
-                .frame(width: 68, height: 68)
-                .accessibilityElement(children: .ignore)
-                .accessibilityIdentifier("voiceOrb")
-                .accessibilityLabel(accessibleOrbLabel)
-                .accessibilityValue(orbAccessibilityValue)
+            accessibleOrb(size: 68)
             if let compactStatus = VoiceCanvasPresentation.compactStatus(for: phase) {
                 Text(compactStatus)
                     .font(.caption.weight(.medium))
@@ -498,6 +488,19 @@ private struct RealtimeVoiceCanvas: View {
 
     private var orbAccessibilityValue: String {
         "\(Int((min(1, max(0, audioLevel)) * 100).rounded())) %"
+    }
+
+    private func accessibleOrb(size: CGFloat) -> some View {
+        ZStack {
+            VoiceOrb(phase: phase, audioLevel: audioLevel, reduceMotion: reduceMotion)
+                .accessibilityHidden(true)
+            Color.clear
+                .accessibilityElement(children: .ignore)
+                .accessibilityIdentifier("voiceOrb")
+                .accessibilityLabel(accessibleOrbLabel)
+                .accessibilityValue(orbAccessibilityValue)
+        }
+        .frame(width: size, height: size)
     }
 
     @ViewBuilder private func errorView(_ error: String) -> some View {
