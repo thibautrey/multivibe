@@ -576,18 +576,21 @@ struct ChatView: View {
     private var displayMessages: [ChatMessage] { remoteChat?.messages ?? manager.current?.messages ?? [] }
     private var isGenerating: Bool { if let id = remoteChat?.id { return instances.activeChat == id }; return manager.isStreaming }
     private var remoteMachine: RemoteMachine? { remoteChat.flatMap { chat in instances.machines.first { $0.id == chat.machine } } }
-    private var remoteHarnessName: String { remoteChat.flatMap { chat in instances.harnesses[chat.machine]?.first { $0.id == chat.harness }?.name } ?? remoteChat?.harness ?? "Harness" }
+    private var remoteHarnessName: String {
+        remoteChat.flatMap { chat in instances.harnesses[chat.machine]?.first { $0.id == chat.harness }?.name }
+            ?? remoteChat.map { harnessDisplayName($0.harness) } ?? "Harness"
+    }
     private var localExecutionName: String { ModelExecution(manager.selectedModel).isLocal ? "Sur cet iPhone" : "Hermes Cloud" }
     private var pickerModels: [ModelOption] {
         guard let chat = remoteChat else { return manager.models }
         let catalog = instances.modelCatalog[chat.machine + ":" + chat.harness] ?? []
         var values = catalog.map { model in
-            let provider = normalizedRemoteProvider(model.provider)
+            let provider = normalizedRemoteProvider(model.provider, modelID: model.id, harnessID: chat.harness)
             return ModelOption(id: model.selectionID, name: model.displayName, author: provider, description: "Modèle fourni par \(remoteHarnessName).", logoPublisher: provider)
         }
         let selected = (chat.provider ?? "") + ":" + chat.model
         if !chat.model.isEmpty, !values.contains(where: { $0.id == selected }) {
-            let provider = normalizedRemoteProvider(chat.provider)
+            let provider = normalizedRemoteProvider(chat.provider, modelID: chat.model, harnessID: chat.harness)
             values.insert(ModelOption(id: selected, name: chat.model, author: provider, description: "Modèle conservé dans cette conversation.", logoPublisher: provider), at: 0)
         }
         return values
@@ -617,14 +620,30 @@ struct ChatView: View {
         }) { welcomeExecutionSelector }
     }
 
-    private func normalizedRemoteProvider(_ provider: String?) -> String? {
-        guard let value = provider?.lowercased() else { return nil }
+    private func harnessDisplayName(_ identifier: String) -> String {
+        switch identifier {
+        case "openai-codex": return "OpenAI Codex"
+        case "claude-code": return "Claude Code"
+        case "hermes-agent": return "Hermes Agent"
+        case "gemini-cli": return "Gemini CLI"
+        case "opencode": return "OpenCode"
+        case "pi": return "Pi"
+        default: return identifier.replacingOccurrences(of: "-", with: " ").capitalized
+        }
+    }
+
+    private func normalizedRemoteProvider(_ provider: String?, modelID: String, harnessID: String) -> String? {
+        let value = provider?.lowercased() ?? ""
         if value.contains("openai") { return "openai" }
         if value.contains("anthropic") || value.contains("claude") { return "anthropic" }
         if value.contains("google") || value.contains("gemini") { return "google" }
         if value.contains("mistral") { return "mistral" }
         if value.contains("deepseek") { return "deepseek" }
         if value.contains("meta") || value.contains("llama") { return "meta" }
+        let model = modelID.lowercased()
+        if harnessID == "openai-codex" || model.hasPrefix("gpt-") || model.contains("openai") { return "openai" }
+        if harnessID == "claude-code" || model.contains("claude") { return "anthropic" }
+        if harnessID == "gemini-cli" || model.contains("gemini") { return "google" }
         return provider
     }
 
