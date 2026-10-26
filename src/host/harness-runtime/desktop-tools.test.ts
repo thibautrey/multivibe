@@ -9,7 +9,7 @@ import desktopExtension from "./desktop-pi.js";
 
 const text=(value:string)=>({content:[{type:"text" as const,text:value}]});
 async function poll(desktop:DesktopTools,id:string,lease:string) {
-  for(;;){const request=await desktop.next(id,lease);if("id" in request)return request;}
+  for(;;){const request=await desktop.next(id,lease);if(request.id && request.command)return {id:request.id,command:request.command};}
 }
 test("Desktop capabilities isolate sessions, require an active turn, and never replay delivered input",async()=>{
   let active=false;const desktop=new DesktopTools(()=>active,1000);
