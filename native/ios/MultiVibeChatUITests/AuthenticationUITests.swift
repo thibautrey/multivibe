@@ -430,6 +430,8 @@ final class LocalInternetUITests: XCTestCase {
         let orb = app.descendants(matching: .any)["voiceOrb"].firstMatch
         XCTAssertTrue(orb.waitForExistence(timeout: 5))
         XCTAssertGreaterThan(orb.frame.width, 110)
+        XCTAssertEqual(orb.frame.midX, app.windows.firstMatch.frame.midX, accuracy: 1.5)
+        XCTAssertTrue((orb.value as? String)?.contains("78") == true)
         XCTAssertTrue(app.staticTexts["Je vous écoute"].exists)
         XCTAssertTrue(app.buttons["voiceSettings"].exists)
         XCTAssertTrue(app.buttons["Couper le micro"].exists)
@@ -451,11 +453,21 @@ final class LocalInternetUITests: XCTestCase {
         let orb = app.descendants(matching: .any)["voiceOrb"].firstMatch
         XCTAssertTrue(orb.exists)
         XCTAssertLessThan(orb.frame.width, 100)
+        XCTAssertEqual(orb.frame.midX, app.windows.firstMatch.frame.midX, accuracy: 1.5)
         XCTAssertTrue(app.buttons["Terminer"].isEnabled)
 
         let capture = XCTAttachment(screenshot: app.screenshot())
         capture.name = "realtime-voice-rich-answer"
         capture.lifetime = .keepAlways
         add(capture)
+    }
+
+    func testAgentAudioLevelDrivesTheCenteredDockedOrb() {
+        let app = launch("-realtime-voice-ui-fixture-speaking")
+        let orb = app.descendants(matching: .any)["voiceOrb"].firstMatch
+        XCTAssertTrue(orb.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["MultiVibe répond"].exists)
+        XCTAssertEqual(orb.frame.midX, app.windows.firstMatch.frame.midX, accuracy: 1.5)
+        XCTAssertTrue((orb.value as? String)?.contains("86") == true)
     }
 }

@@ -12,6 +12,9 @@ import UIKit
     var muted = false
     var error: String?
     var route = ""
+    var inputAudioLevel = 0.0
+    var outputAudioLevel = 0.0
+    var orbAudioLevel: Double { max(inputAudioLevel, outputAudioLevel) }
     private var socket: URLSessionWebSocketTask?
     private var webRTC: VoiceWebRTCTransport?
     private var capture = AVAudioEngine()
@@ -25,6 +28,7 @@ import UIKit
     private var remoteCommands: [(MPRemoteCommand, Any)] = []
     private var ledger = VoiceTranscriptLedger()
     private var captureTapInstalled = false
+    private var playbackMeterTapInstalled = false
     private var pendingAudio: [String: Int] = [:]
     private var audioFramers: [String: VoicePCM16Framer] = [:]
     private var audioGeneration = 0
@@ -57,6 +61,11 @@ import UIKit
                 webRTC = transport
                 transport.onEvent = { [weak self] data in Task { @MainActor in await self?.receive(data) } }
                 transport.onDisconnect = { [weak self] in self?.fail("La connexion audio est interrompue. Ouvrez une nouvelle session.") }
+                transport.onAudioLevels = { [weak self] input, output in
+                    guard let self else { return }
+                    self.inputAudioLevel = self.muted ? 0 : VoiceAudioLevel.smoothed(current: self.inputAudioLevel, target: input)
+                    self.outputAudioLevel = VoiceAudioLevel.smoothed(current: self.outputAudioLevel, target: output)
+                }
                 try await transport.connect(session.credential)
             } else {
                 guard session.credential.transport == "websocket", session.credential.endpoint.scheme == "wss" else { throw URLError(.unsupportedURL) }
@@ -69,6 +78,9 @@ import UIKit
                 socket = task; task.resume()
                 playback.attach(player)
                 playback.connect(player, to: playback.mainMixerNode, format: outputFormat)
+                playback.mainMixerNode.installTap(onBus: 0, bufferSize: 2_048, format: nil,
+                                                   block: Self.playbackMeterTap(controller: self))
+                playbackMeterTapInstalled = true
                 try playback.start(); player.play()
             }
             try Task.checkCancellation()
@@ -113,13 +125,25 @@ import UIKit
         let conversion = VoiceCaptureConversion(converter: converter, format: targetFormat)
         return { @Sendable [weak controller] buffer, _ in
             guard let data = Self.pcm24k(buffer, converter: conversion.converter, targetFormat: conversion.format) else { return }
-            Task { @MainActor [weak controller] in await controller?.sendCapturedAudio(data) }
+            let level = VoiceAudioLevel.normalizedPCM16(data)
+            Task { @MainActor [weak controller] in await controller?.sendCapturedAudio(data, level: level) }
         }
     }
-    private func sendCapturedAudio(_ data: Data) async {
-        guard !muted, [.listening, .thinking, .speaking].contains(phase) else { return }
+    nonisolated static func playbackMeterTap(controller: RealtimeVoiceController) -> AVAudioNodeTapBlock {
+        { @Sendable [weak controller] buffer, _ in
+            let level = VoiceAudioLevel.normalized(buffer)
+            Task { @MainActor [weak controller] in controller?.updateOutputLevel(level) }
+        }
+    }
+    private func sendCapturedAudio(_ data: Data, level: Double) async {
+        guard !muted, [.listening, .thinking, .speaking].contains(phase) else { inputAudioLevel = 0; return }
+        inputAudioLevel = VoiceAudioLevel.smoothed(current: inputAudioLevel, target: level)
         do { try await send(["type": "input_audio_buffer.append", "audio": data.base64EncodedString()]) }
         catch { fail("La connexion audio est interrompue.") }
+    }
+    private func updateOutputLevel(_ level: Double) {
+        guard phase != .ended else { outputAudioLevel = 0; return }
+        outputAudioLevel = VoiceAudioLevel.smoothed(current: outputAudioLevel, target: level)
     }
     nonisolated private static func pcm24k(_ source: AVAudioPCMBuffer, converter: AVAudioConverter, targetFormat: AVAudioFormat) -> Data? {
         let capacity = AVAudioFrameCount(Double(source.frameLength) * 24_000 / source.format.sampleRate + 32)
@@ -212,6 +236,7 @@ import UIKit
                 guard let self, self.audioGeneration == generation, self.phase != .ended else { return }
                 self.pendingAudio[response, default: 1] -= 1
                 if self.pendingAudio[response] == 0 {
+                    self.outputAudioLevel = 0
                     await self.persist(self.ledger.playbackFinished(response))
                 }
             }
@@ -232,7 +257,7 @@ import UIKit
     }
     func setMuted(_ value: Bool) {
         guard phase != .ended else { return }
-        muted = value; webRTC?.setMuted(value)
+        muted = value; if value { inputAudioLevel = 0 }; webRTC?.setMuted(value)
         Task { try? await send(["type": "input_audio_buffer.clear"]) }
         MPNowPlayingInfoCenter.default().playbackState = value ? .paused : .playing
     }
@@ -285,6 +310,7 @@ import UIKit
     }
     private func stopOutput() {
         audioGeneration += 1; pendingAudio.removeAll(); audioFramers.removeAll()
+        outputAudioLevel = 0
         player.stop(); player.reset()
         if playback.isRunning { player.play() }
     }
@@ -353,13 +379,53 @@ import UIKit
         if captureTapInstalled { capture.inputNode.removeTap(onBus: 0); captureTapInstalled = false }
         stopOutput()
         cuePlayer?.stop(); cueEngine?.stop(); cuePlayer = nil; cueEngine = nil
+        if playbackMeterTapInstalled { playback.mainMixerNode.removeTap(onBus: 0); playbackMeterTapInstalled = false }
         if playback.isRunning { playback.stop() }
         for observer in observers { NotificationCenter.default.removeObserver(observer) }; observers.removeAll()
         for (command, target) in remoteCommands { command.removeTarget(target); command.isEnabled = false }
         if !remoteCommands.isEmpty { MPNowPlayingInfoCenter.default().nowPlayingInfo = nil }
         remoteCommands.removeAll()
-        partialUser = ""; partialAssistant = ""
+        partialUser = ""; partialAssistant = ""; inputAudioLevel = 0; outputAudioLevel = 0
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+}
+
+enum VoiceAudioLevel {
+    nonisolated static func normalizedPCM16(_ data: Data) -> Double {
+        guard data.count >= MemoryLayout<Int16>.size else { return 0 }
+        var sum = 0.0, count = 0
+        data.withUnsafeBytes { raw in
+            for offset in stride(from: 0, to: data.count - 1, by: MemoryLayout<Int16>.size) {
+                let value = Double(Int16(littleEndian: raw.loadUnaligned(fromByteOffset: offset, as: Int16.self))) / 32_768
+                sum += value * value; count += 1
+            }
+        }
+        return normalizedRMS(count == 0 ? 0 : sqrt(sum / Double(count)))
+    }
+
+    nonisolated static func normalized(_ buffer: AVAudioPCMBuffer) -> Double {
+        guard buffer.frameLength > 0, let channels = buffer.floatChannelData else { return 0 }
+        let channelCount = Int(buffer.format.channelCount), frames = Int(buffer.frameLength)
+        var sum = 0.0
+        for channel in 0..<channelCount {
+            for frame in 0..<frames {
+                let value = Double(channels[channel][frame]); sum += value * value
+            }
+        }
+        return normalizedRMS(sqrt(sum / Double(max(1, channelCount * frames))))
+    }
+
+    nonisolated static func normalizedRMS(_ rms: Double) -> Double {
+        guard rms.isFinite, rms > 0.002 else { return 0 }
+        let decibels = 20 * log10(min(1, rms))
+        return pow(min(1, max(0, (decibels + 52) / 46)), 1.25)
+    }
+
+    nonisolated static func smoothed(current: Double, target: Double) -> Double {
+        let boundedCurrent = min(1, max(0, current)), boundedTarget = min(1, max(0, target))
+        let coefficient = boundedTarget > boundedCurrent ? 0.58 : 0.20
+        let next = boundedCurrent + (boundedTarget - boundedCurrent) * coefficient
+        return next < 0.008 ? 0 : next
     }
 }
 

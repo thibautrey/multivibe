@@ -38,6 +38,7 @@ struct RealtimeVoiceView: View {
                     error: controller.error,
                     muted: controller.muted,
                     closing: closing,
+                    audioLevel: controller.orbAudioLevel,
                     typed: $typed,
                     reduceMotion: reduceMotion,
                     openSettings: { settings = true },
@@ -265,6 +266,7 @@ private struct RealtimeVoiceCanvas: View {
     let error: String?
     let muted: Bool
     let closing: Bool
+    let audioLevel: Double
     @Binding var typed: String
     let reduceMotion: Bool
     let openSettings: () -> Void
@@ -338,7 +340,7 @@ private struct RealtimeVoiceCanvas: View {
     private var hero: some View {
         VStack(spacing: 22) {
             Spacer(minLength: 24)
-            VoiceOrb(phase: phase, reduceMotion: reduceMotion)
+            VoiceOrb(phase: phase, audioLevel: audioLevel, reduceMotion: reduceMotion)
                 .matchedGeometryEffect(id: "voice-orb", in: orbTransition)
                 .frame(width: 132, height: 132)
                 .accessibilityLabel(accessibleOrbLabel)
@@ -394,7 +396,7 @@ private struct RealtimeVoiceCanvas: View {
 
     private var dockedOrb: some View {
         VStack(spacing: 7) {
-            VoiceOrb(phase: phase, reduceMotion: reduceMotion)
+            VoiceOrb(phase: phase, audioLevel: audioLevel, reduceMotion: reduceMotion)
                 .matchedGeometryEffect(id: "voice-orb", in: orbTransition)
                 .frame(width: 68, height: 68)
                 .accessibilityLabel(accessibleOrbLabel)
@@ -405,6 +407,7 @@ private struct RealtimeVoiceCanvas: View {
                     .transition(.opacity)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .center)
         .padding(.bottom, 5)
         .allowsHitTesting(false)
     }
@@ -556,6 +559,7 @@ private struct VoiceStreamingMessage: View {
 
 private struct VoiceOrb: View {
     let phase: RealtimeVoiceController.Phase
+    let audioLevel: Double
     let reduceMotion: Bool
 
     var body: some View {
@@ -563,7 +567,9 @@ private struct VoiceOrb: View {
             GeometryReader { geometry in
                 let side = min(geometry.size.width, geometry.size.height)
                 let time = reduceMotion ? 0.4 : timeline.date.timeIntervalSinceReferenceDate
-                let speed = phase == .speaking ? 2.0 : phase == .listening ? 1.15 : 0.72
+                let level = CGFloat(min(1, max(0, audioLevel)))
+                let reactiveLevel = reduceMotion ? level * 0.28 : level
+                let speed = (phase == .speaking ? 1.7 : phase == .listening ? 1.05 : 0.68) + Double(reactiveLevel) * 3.2
                 let wave = CGFloat(sin(time * speed))
                 let crossWave = CGFloat(cos(time * speed * 0.73))
 
@@ -576,39 +582,43 @@ private struct VoiceOrb: View {
                         ))
                     Ellipse()
                         .fill(Color.black.opacity(0.92))
-                        .frame(width: side * 1.28, height: side * 0.66)
+                        .frame(width: side * (1.28 + reactiveLevel * 0.16), height: side * (0.66 - reactiveLevel * 0.08))
                         .blur(radius: side * 0.10)
-                        .rotationEffect(.degrees(Double(wave) * 9 - 8))
-                        .offset(x: crossWave * side * 0.08, y: -side * 0.18 + wave * side * 0.05)
+                        .rotationEffect(.degrees(Double(wave) * (9 + Double(reactiveLevel) * 10) - 8))
+                        .offset(x: crossWave * side * (0.08 + reactiveLevel * 0.05),
+                                y: -side * 0.18 + wave * side * (0.05 + reactiveLevel * 0.05))
                     Ellipse()
-                        .fill(Color.white.opacity(phase == .speaking ? 0.88 : 0.72))
-                        .frame(width: side * 1.35, height: side * 0.48)
+                        .fill(Color.white.opacity(0.68 + Double(reactiveLevel) * 0.26))
+                        .frame(width: side * (1.35 + reactiveLevel * 0.16), height: side * (0.48 + reactiveLevel * 0.06))
                         .blur(radius: side * 0.12)
-                        .rotationEffect(.degrees(Double(crossWave) * 8 + 5))
-                        .offset(x: wave * side * 0.10, y: side * 0.12 + crossWave * side * 0.04)
+                        .rotationEffect(.degrees(Double(crossWave) * (8 + Double(reactiveLevel) * 9) + 5))
+                        .offset(x: wave * side * (0.10 + reactiveLevel * 0.06),
+                                y: side * 0.12 + crossWave * side * (0.04 + reactiveLevel * 0.04))
                     Circle()
                         .fill(RadialGradient(
                             colors: [Color.white.opacity(0.55), .clear],
-                            center: UnitPoint(x: 0.62 + Double(wave) * 0.08, y: 0.72),
+                            center: UnitPoint(x: 0.62 + Double(wave) * (0.08 + Double(reactiveLevel) * 0.05),
+                                              y: 0.72 - Double(reactiveLevel) * 0.06),
                             startRadius: 0,
                             endRadius: side * 0.52
                         ))
                         .blur(radius: side * 0.06)
                     Ellipse()
                         .fill(Color(white: 0.4).opacity(0.44))
-                        .frame(width: side * 0.82, height: side * 0.24)
+                        .frame(width: side * (0.82 + reactiveLevel * 0.10), height: side * (0.24 + reactiveLevel * 0.08))
                         .blur(radius: side * 0.08)
                         .offset(x: -crossWave * side * 0.15, y: wave * side * 0.16)
                 }
                 .clipShape(Circle())
                 .overlay(Circle().stroke(.white.opacity(0.16), lineWidth: 0.7))
-                .scaleEffect(reduceMotion ? 1 : 1 + wave * (phase == .speaking ? 0.025 : 0.012))
+                .scaleEffect(1 + reactiveLevel * 0.09 + (reduceMotion ? 0 : wave * (phase == .speaking ? 0.022 : 0.010)))
                 .shadow(color: .black.opacity(0.18), radius: side * 0.12, y: side * 0.05)
                 .drawingGroup(opaque: false, colorMode: .linear)
             }
         }
         .aspectRatio(1, contentMode: .fit)
         .accessibilityIdentifier("voiceOrb")
+        .accessibilityValue("\(Int((min(1, max(0, audioLevel)) * 100).rounded())) %")
     }
 }
 
@@ -616,16 +626,18 @@ private struct VoiceOrb: View {
 struct RealtimeVoiceFixtureView: View {
     @State private var typed = ""
     private let hero = ProcessInfo.processInfo.arguments.contains("-realtime-voice-ui-fixture-hero")
+    private let speaking = ProcessInfo.processInfo.arguments.contains("-realtime-voice-ui-fixture-speaking")
 
     var body: some View {
         RealtimeVoiceCanvas(
             messages: hero ? [] : Self.sampleMessages,
             assistantDraft: "",
             userDraft: "",
-            phase: hero ? .listening : .thinking,
+            phase: hero ? .listening : speaking ? .speaking : .thinking,
             error: nil,
             muted: false,
             closing: false,
+            audioLevel: hero ? 0.78 : speaking ? 0.86 : 0.64,
             typed: $typed,
             reduceMotion: false,
             openSettings: {},
