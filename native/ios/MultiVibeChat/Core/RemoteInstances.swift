@@ -55,6 +55,18 @@ enum RemoteAuthorizationStore {
     static func clear(_ account: String, _ machine: String) {
         SecItemDelete(query(account, machine) as CFDictionary)
     }
+    static func clearAccount(_ account: String) {
+        let service = NativeApplicationIdentity.identifier("instance-device")
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+            kSecReturnAttributes as String: true, kSecMatchLimit as String: kSecMatchLimitAll]
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(q as CFDictionary, &result) == errSecSuccess, let entries = result as? [[String: Any]] else { return }
+        for entry in entries {
+            if let name = entry[kSecAttrAccount as String] as? String, name.hasPrefix(account + ":") {
+                SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: name] as CFDictionary)
+            }
+        }
+    }
 }
 
 actor RemoteInstanceAPI {
@@ -305,7 +317,10 @@ struct RemoteModelPreference: Codable { var harness: String; var model: String; 
     func logout() async {
         stopFollowing()
         guard let owner = account else { return }
-        for machine in paired { do { try await disconnect(machine) } catch { RemoteAuthorizationStore.clear(owner, machine) } }
+        for machine in paired { do { try await disconnect(machine) } catch { } }
+        // Also clear credentials restored in an earlier launch, even when the
+        // directory was never reopened or a control request was already busy.
+        RemoteAuthorizationStore.clearAccount(owner)
         activate(nil)
     }
 }

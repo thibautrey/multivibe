@@ -25,6 +25,7 @@ export class InstanceRelay {
  private controller?:AbortController;
  private handoff?:{digest:string;expiresAt:number;attempts:number};
  private running=false;
+ private connecting=false;
  private lastError?:string;
  private rotations=new Map<string,{token:string;expiresAt:number}>();
  constructor(private readonly runtime:HostHarnessRuntime,private readonly file:string,private readonly fetcher:typeof fetch=fetch,private readonly clock=Date.now) {
@@ -40,7 +41,9 @@ export class InstanceRelay {
   return JSON.parse(text);
  }
  async connect(accessToken:string,accountId:string,name:string){
-  if(this.state)fail('Disconnect the existing instance before changing accounts',409);
+  if(this.state||this.connecting)fail('Disconnect the existing instance before changing accounts',409);
+  this.connecting=true;
+  try {
   if(!uuid(accountId)||typeof accessToken!=='string'||accessToken.length>16384)fail('Invalid account');
   const verified=await this.account('/native/v1/auth/session',accessToken);
   if(verified.accountId!==accountId)fail('Account identity changed',403);
@@ -49,6 +52,7 @@ export class InstanceRelay {
   this.state={version:1,accountId,machineId:issued.id,name,machineToken:issued.token,devices:[]};
   try{this.persist();}catch(error){await this.account('/relay/v1/machines/'+issued.id,accessToken,undefined,'DELETE').catch(()=>{});this.state=undefined;throw error;}
   this.start();return this.status();
+  } finally {this.connecting=false;}
  }
  pairing(){
   if(!this.state||!this.running)fail('Connect this Host to Relay first',409);
@@ -61,10 +65,12 @@ export class InstanceRelay {
  revokeDevice(id:string){if(this.state){this.state.devices=this.state.devices.filter(d=>d.id!==id);this.persist();}return this.status();}
  async disconnect(accessToken:string){
   const old=this.state;if(!old)return;
-  const identity=await this.account('/native/v1/auth/session',accessToken);
-  if(identity.accountId!==old.accountId)fail('Reconnect the owning account',403);
-  await this.account('/relay/v1/machines/'+old.machineId,accessToken,undefined,'DELETE');
   this.stop();this.state=undefined;this.handoff=undefined;fs.rmSync(this.file,{force:true});
+  try {
+   const identity=await this.account('/native/v1/auth/session',accessToken);
+   if(identity.accountId!==old.accountId)fail('Reconnect the owning account',403);
+   await this.account('/relay/v1/machines/'+old.machineId,accessToken,undefined,'DELETE');
+  } catch {fail('Local access disabled; Cloud revocation could not be confirmed',502);}
  }
  stop(){this.controller?.abort();this.controller=undefined;this.running=false;}
  start(){if(this.controller||!this.state)return;const controller=new AbortController();this.controller=controller;void this.run(controller.signal).finally(()=>{if(this.controller===controller){this.running=false;this.controller=undefined;}});}

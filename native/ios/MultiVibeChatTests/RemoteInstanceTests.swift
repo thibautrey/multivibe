@@ -30,5 +30,8 @@ final class RemoteInstanceTests: XCTestCase {
         XCTAssertNil(try RemoteAuthorizationStore.load(UUID().uuidString, machine))
         XCTAssertNil(try RemoteAuthorizationStore.load(account, UUID().uuidString))
         RemoteAuthorizationStore.clear(account, machine); XCTAssertNil(try RemoteAuthorizationStore.load(account, machine))
+        try RemoteAuthorizationStore.save(value, account, machine)
+        RemoteAuthorizationStore.clearAccount(account)
+        XCTAssertNil(try RemoteAuthorizationStore.load(account, machine))
     }
 }
