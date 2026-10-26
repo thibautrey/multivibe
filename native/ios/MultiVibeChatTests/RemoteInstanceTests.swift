@@ -1,4 +1,5 @@
 import XCTest
+import SwiftUI
 @testable import MultiVibeChat
 
 final class RemoteInstanceTests: XCTestCase {
@@ -53,5 +54,14 @@ final class RemoteInstanceTests: XCTestCase {
         XCTAssertEqual(restored.pendingConfiguration?.fields["model"]?.string, "openai-api:gpt-6.1-sol")
         XCTAssertNil(restored.pendingConfiguration?.fields["projectId"])
         XCTAssertEqual(RemoteConfiguration(effort: nil).fields["effort"], .null)
+    }
+    @MainActor func testDesktopStyleEffortScaleRendersTheSelectedHarnessEffort() {
+        let effort = ModelPickerEffort(options: [
+            .init(value: "low", label: "Low"), .init(value: "medium", label: "Medium"), .init(value: "high", label: "High")
+        ], selected: "high", defaultValue: "medium", disabled: false, select: { _ in })
+        XCTAssertEqual(effort.selectedLabel, "High")
+        let renderer = ImageRenderer(content: ModelEffortScale(effort: effort, disabled: false, select: { _ in }).frame(width: 320))
+        renderer.scale = 1
+        XCTAssertNotNil(renderer.uiImage)
     }
 }
