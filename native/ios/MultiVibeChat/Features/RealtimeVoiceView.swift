@@ -579,6 +579,7 @@ private struct VoiceOrb: View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { timeline in
             GeometryReader { geometry in
                 let side = min(geometry.size.width, geometry.size.height)
+                let orbSide = side * 0.88
                 let time = reduceMotion ? 0.4 : timeline.date.timeIntervalSinceReferenceDate
                 let level = CGFloat(min(1, max(0, audioLevel)))
                 let reactiveLevel = reduceMotion ? level * 0.28 : level
@@ -595,38 +596,39 @@ private struct VoiceOrb: View {
                         ))
                     Ellipse()
                         .fill(Color.black.opacity(0.92))
-                        .frame(width: side * (1.28 + reactiveLevel * 0.16), height: side * (0.66 - reactiveLevel * 0.08))
-                        .blur(radius: side * 0.10)
+                        .frame(width: orbSide * (1.28 + reactiveLevel * 0.16), height: orbSide * (0.66 - reactiveLevel * 0.08))
+                        .blur(radius: orbSide * 0.10)
                         .rotationEffect(.degrees(Double(wave) * (9 + Double(reactiveLevel) * 10) - 8))
-                        .offset(x: crossWave * side * (0.08 + reactiveLevel * 0.05),
-                                y: -side * 0.18 + wave * side * (0.05 + reactiveLevel * 0.05))
+                        .offset(x: crossWave * orbSide * (0.08 + reactiveLevel * 0.05),
+                                y: -orbSide * 0.18 + wave * orbSide * (0.05 + reactiveLevel * 0.05))
                     Ellipse()
                         .fill(Color.white.opacity(0.68 + Double(reactiveLevel) * 0.26))
-                        .frame(width: side * (1.35 + reactiveLevel * 0.16), height: side * (0.48 + reactiveLevel * 0.06))
-                        .blur(radius: side * 0.12)
+                        .frame(width: orbSide * (1.35 + reactiveLevel * 0.16), height: orbSide * (0.48 + reactiveLevel * 0.06))
+                        .blur(radius: orbSide * 0.12)
                         .rotationEffect(.degrees(Double(crossWave) * (8 + Double(reactiveLevel) * 9) + 5))
-                        .offset(x: wave * side * (0.10 + reactiveLevel * 0.06),
-                                y: side * 0.12 + crossWave * side * (0.04 + reactiveLevel * 0.04))
+                        .offset(x: wave * orbSide * (0.10 + reactiveLevel * 0.06),
+                                y: orbSide * 0.12 + crossWave * orbSide * (0.04 + reactiveLevel * 0.04))
                     Circle()
                         .fill(RadialGradient(
                             colors: [Color.white.opacity(0.55), .clear],
                             center: UnitPoint(x: 0.62 + Double(wave) * (0.08 + Double(reactiveLevel) * 0.05),
                                               y: 0.72 - Double(reactiveLevel) * 0.06),
                             startRadius: 0,
-                            endRadius: side * 0.52
+                            endRadius: orbSide * 0.52
                         ))
-                        .blur(radius: side * 0.06)
+                        .blur(radius: orbSide * 0.06)
                     Ellipse()
                         .fill(Color(white: 0.4).opacity(0.44))
-                        .frame(width: side * (0.82 + reactiveLevel * 0.10), height: side * (0.24 + reactiveLevel * 0.08))
-                        .blur(radius: side * 0.08)
-                        .offset(x: -crossWave * side * 0.15, y: wave * side * 0.16)
+                        .frame(width: orbSide * (0.82 + reactiveLevel * 0.10), height: orbSide * (0.24 + reactiveLevel * 0.08))
+                        .blur(radius: orbSide * 0.08)
+                        .offset(x: -crossWave * orbSide * 0.15, y: wave * orbSide * 0.16)
                 }
-                .frame(width: side, height: side)
+                .frame(width: orbSide, height: orbSide)
                 .clipShape(Circle())
                 .overlay(Circle().stroke(.white.opacity(0.16), lineWidth: 0.7))
                 .scaleEffect(1 + reactiveLevel * 0.09 + (reduceMotion ? 0 : wave * (phase == .speaking ? 0.022 : 0.010)))
-                .shadow(color: .black.opacity(0.18), radius: side * 0.12, y: side * 0.05)
+                .shadow(color: .black.opacity(0.18), radius: orbSide * 0.12, y: orbSide * 0.05)
+                .frame(width: side, height: side)
                 .drawingGroup(opaque: false, colorMode: .linear)
             }
         }
