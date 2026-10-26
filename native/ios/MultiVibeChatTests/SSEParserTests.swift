@@ -1338,6 +1338,29 @@ private final class ProviderTestProtocol: URLProtocol, @unchecked Sendable {
         configuration.protocolClasses = [ProviderTestProtocol.self]
         return ChatAPI(session: URLSession(configuration: configuration))
     }
+    func testUsageUsesNativeBearerAndPreservesSmallDecimalCosts() async throws {
+        let fixture = String(decoding: try CloudUsageFixture.data(), as: UTF8.self)
+        let api = api { request in
+            XCTAssertEqual(request.url?.absoluteString, "https://app.multivibe.cloud/native/v1/analytics")
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer usage-fixture")
+            XCTAssertNil(request.value(forHTTPHeaderField: "Cookie"))
+            return (200, fixture)
+        }
+        let snapshot = try await api.usageAnalytics(token: "usage-fixture")
+        XCTAssertTrue(snapshot.isValid)
+        XCTAssertEqual(snapshot.periods["7d"]?.summary.costUsd, Decimal(string: "2.52"))
+        XCTAssertEqual(snapshot.periods["7d"]?.recentRequests.first?.costUsd, Decimal(string: "0.000001"))
+    }
+    func testUnavailableUsageNeverBecomesAnEmptySuccess() async {
+        for status in [401, 403, 404, 503] {
+            let api = api { _ in (status, #"{"error":"analytics_unavailable"}"#) }
+            do { _ = try await api.usageAnalytics(token: "fixture"); XCTFail("Expected an explicit failure") }
+            catch { if case APIError.server(status, _) = error {} else { XCTFail("Unexpected error: \(error)") } }
+        }
+        let incomplete = api { _ in (200, #"{"generatedAt":"2026-10-26T12:00:00Z","windowDays":30,"periods":{}}"#) }
+        do { _ = try await incomplete.usageAnalytics(token: "fixture"); XCTFail("Incomplete periods must fail") } catch {}
+    }
     func testProviderConnectionUsesNativeBearerBoundary() async throws {
         let api = api { request in
             XCTAssertEqual(request.url?.path, "/native/v1/providers")
@@ -1367,5 +1390,53 @@ private final class ProviderTestProtocol: URLProtocol, @unchecked Sendable {
         XCTAssertEqual(challenge.expiry.timeIntervalSince1970, 2000000000)
         XCTAssertEqual(challenge.intervalSeconds, 5)
         XCTAssertEqual(challenge.flowToken, "opaque-fixture")
+    }
+}
+
+final class CloudUsageTests: XCTestCase {
+    func testMissingMeasurementsStayUnknownAndEmptyUsageIsSeparate() throws {
+        let missing = try XCTUnwrap(CloudUsageFixture.snapshot(missing: true).periods["7d"])
+        XCTAssertTrue(missing.isValid)
+        XCTAssertNil(missing.summary.measuredCost)
+        XCTAssertNil(missing.summary.averageCost)
+        XCTAssertNil(missing.summary.totalTokens)
+        XCTAssertEqual(CloudUsageFormat.credits(missing.summary.measuredCost), "—")
+        XCTAssertNil(missing.recentRequests.first?.costUsd)
+        let empty = try XCTUnwrap(CloudUsageFixture.snapshot(empty: true).periods["24h"])
+        XCTAssertEqual(empty.summary.requests, 0)
+        XCTAssertEqual(empty.summary.measuredCost, 0)
+        XCTAssertNil(empty.summary.successRate)
+        XCTAssertTrue(empty.recentRequests.isEmpty)
+    }
+    func testCSVPreservesPrecisionEscapesCellsAndNeutralizesFormulas() throws {
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: CloudUsageFixture.data()) as? [String: Any])
+        var periods = try XCTUnwrap(object["periods"] as? [String: [String: Any]])
+        var period = try XCTUnwrap(periods["7d"])
+        var requests = try XCTUnwrap(period["recentRequests"] as? [[String: Any]])
+        requests[0]["model"] = "=HYPERLINK(\"example\")"
+        requests[0]["project"] = "Projet, avec \"guillemets\""
+        period["recentRequests"] = requests; periods["7d"] = period; object["periods"] = periods
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        let snapshot = try decoder.decode(CloudUsageSnapshot.self, from: JSONSerialization.data(withJSONObject: object))
+        let csv = try XCTUnwrap(snapshot.periods["7d"]?.csv)
+        XCTAssertTrue(csv.contains("\"'=HYPERLINK(\"\"example\"\")\""))
+        XCTAssertTrue(csv.contains("\"Projet, avec \"\"guillemets\"\"\""))
+        XCTAssertTrue(csv.contains("\"0.000001\""))
+        XCTAssertFalse(csv.contains("prompt")); XCTAssertFalse(csv.contains("Bearer"))
+    }
+    func testSuccessRateUsesKnownOutcomesAndInvalidNumbersAreRejected() throws {
+        var raw = try XCTUnwrap(JSONSerialization.jsonObject(with: CloudUsageFixture.data()) as? [String: Any])
+        let periods = try XCTUnwrap(raw["periods"] as? [String: [String: Any]])
+        var metrics = try XCTUnwrap(periods["7d"]?["summary"] as? [String: Any])
+        metrics["succeeded"] = 30; metrics["failed"] = 10; metrics["unknownOutcomeRequests"] = 2
+        let decode: ([String: Any]) throws -> CloudUsageMetrics = { try JSONDecoder().decode(CloudUsageMetrics.self, from: JSONSerialization.data(withJSONObject: $0)) }
+        XCTAssertEqual(try decode(metrics).successRate, 0.75)
+        metrics["costKnownRequests"] = 43
+        XCTAssertFalse(try decode(metrics).isValid)
+        metrics["costKnownRequests"] = 42; metrics["costUsd"] = -1
+        XCTAssertFalse(try decode(metrics).isValid)
+        raw["windowDays"] = 90
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        XCTAssertFalse(try decoder.decode(CloudUsageSnapshot.self, from: JSONSerialization.data(withJSONObject: raw)).isValid)
     }
 }
