@@ -1038,7 +1038,7 @@ private enum ModelPickerScope {
     var includesMarketplace: Bool { if case .catalog = self { true } else { false } }
 }
 
-private struct ModelPickerEffort {
+struct ModelPickerEffort {
     struct Option: Identifiable { let value: String; let label: String; var id: String { value } }
     let options: [Option]
     let selected: String?
@@ -1216,7 +1216,7 @@ private struct ModelQuickPicker: View {
     }
 }
 
-private struct ModelEffortScale: View {
+struct ModelEffortScale: View {
     let effort: ModelPickerEffort
     let disabled: Bool
     let select: (String?) -> Void
