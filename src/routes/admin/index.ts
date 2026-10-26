@@ -110,6 +110,7 @@ import type { MultivibeTeamSyncService, TeamSyncManifest } from "../../team-sync
 import type { ManagedTeamEnrollmentService } from "../../managed-team-enrollment.js";
 import type { HostHarnessRuntime } from "../../host/harness-runtime/runtime.js";
 import { harnessRuntimeRoutes } from "../../host/harness-runtime/routes.js";
+import { instanceRelayRoutes, type InstanceRelay } from "../../host/instance-relay.js";
 import { legacyHarnessRun } from "../../host/harness-runtime/legacy.js";
 import { isInstallableConversationHarness } from "../../host/conversation-harnesses.js";
 
@@ -144,6 +145,7 @@ export type AdminRoutesOptions = {
   hostHarnessIntegrations?: HostHarnessIntegrationManager;
   hostConversationHarnesses?: HostConversationHarnessManager;
   hostHarnessRuntime?: HostHarnessRuntime;
+  instanceRelay?: InstanceRelay;
   moduleManager?: ModuleManager;
   hostUpdateController?: HostUpdateController;
   multivibeCloud?: MultivibeCloudService;
@@ -445,6 +447,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
 
   const router = express.Router();
   router.use("/host-harness-runtime/v1", harnessRuntimeRoutes(options.hostHarnessRuntime));
+  router.use("/instance-relay/v1", instanceRelayRoutes(options.instanceRelay));
   const benchmarkClient = createCachedModelBenchmarkClient(
     createModelBenchmarkClient({ artificialAnalysisApiKey: ARTIFICIAL_ANALYSIS_API_KEY }),
     { path: path.join(path.dirname(storagePaths.accountsPath), "model-benchmarks-v1.json") },

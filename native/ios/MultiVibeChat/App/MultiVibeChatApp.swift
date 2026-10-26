@@ -5,6 +5,7 @@ import SwiftUI
     @Environment(\.scenePhase) private var scenePhase
     @State private var manager = ConversationManager.shared
     @State private var sdkAuthorization: SDKAuthorizationRequest?
+    @State private var remoteInstancesPresented = false
     var body: some Scene {
         WindowGroup {
             ChatEntryView()
@@ -14,7 +15,7 @@ import SwiftUI
             } message: { Text(LocalModelLibrary.shared.storageError ?? "") }
             .tint(MultiVibeTheme.accent)
             .task { LocalModelLibrary.shared.start(); await manager.restoreForNativeEntry(); configureAutomations(); if manager.session != nil { await manager.reloadModels() } }
-            .onChange(of: manager.session?.accountId) { _, _ in configureAutomations() }
+            .onChange(of: manager.session?.accountId) { _, account in configureAutomations(); RemoteInstances.shared.activate(account) }
             .onChange(of: scenePhase) { _, phase in
                 AutomationCoordinator.shared.foreground(phase == .active)
                 if phase == .background { Task { await DownloadedModelRuntime.shared.unload(reason: .background) } }
@@ -23,7 +24,9 @@ import SwiftUI
                 Task { await DownloadedModelRuntime.shared.unload(reason: .memoryPressure) }
             }
             .sheet(item: $sdkAuthorization) { request in SDKConsentView(request: request).environment(manager) }
+            .sheet(isPresented: $remoteInstancesPresented) { RemoteInstancesView().environment(manager) }
             .onOpenURL { url in
+                if let pairing = RemotePairing.parse(url) { RemoteInstances.shared.pendingPairing = pairing; remoteInstancesPresented = true; return }
                 if let request = SDKAuthorizationRequest(url: url) { sdkAuthorization = request; return }
                 guard let request = PasswordRecoveryRequest(url: url) else { return }
                 manager.voice.silence()

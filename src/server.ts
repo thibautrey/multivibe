@@ -26,6 +26,7 @@ import { createAdminRouter } from "./routes/admin/index.js";
 import { HostHarnessIntegrationManager } from "./host/harness-integrations.js";
 import { HostConversationHarnessManager } from "./host/conversation-harnesses.js";
 import { HostHarnessRuntime } from "./host/harness-runtime/runtime.js";
+import { InstanceRelay } from "./host/instance-relay.js";
 import { oauthConfig } from "./oauth-config.js";
 import {
   ADMIN_TOKEN,
@@ -227,6 +228,7 @@ const hostConversationHarnesses = hostHarnessIntegrations
 const hostHarnessRuntime = hostHarnessIntegrations
   ? new HostHarnessRuntime(path.join(dataDir, "harness-runtime-v1"), hostHarnessIntegrations, undefined, PROXY_API_KEY ? {modelConnection:()=>({baseUrl:MULTIVIBE_CONTROL_PLANE?V1_EDGE_BASE_URL:`http://127.0.0.1:${nodePort}`,apiKey:PROXY_API_KEY})} : {})
   : undefined;
+const instanceRelay = hostHarnessRuntime ? new InstanceRelay(hostHarnessRuntime, path.join(dataDir, 'instance-relay-v1.json')) : undefined;
 const capacityTracker = new CapacityTracker();
 const jobStore = new JobStore(
   JOBS_DB_PATH,
@@ -353,6 +355,7 @@ const multivibeCloud = new MultivibeCloudService(store, oauthStore, {
   managedTeamIdentity: teamSync,
 });
 multivibeCloud.start();
+instanceRelay?.start();
 
 const teamSyncTimer=setInterval(()=>{void multivibeCloud.syncTeam(teamSync).catch(()=>undefined);},60_000);
 teamSyncTimer.unref();
@@ -459,6 +462,7 @@ const adminRouter = createAdminRouter({
   hostHarnessIntegrations,
   hostConversationHarnesses,
   hostHarnessRuntime,
+  instanceRelay,
   moduleManager,
   hostUpdateController,
   multivibeCloud,
@@ -797,6 +801,7 @@ server.listen(nodeHost ? { port: nodePort, host: nodeHost } : { port: nodePort }
 let shuttingDown = false;
 async function shutdown(signal: NodeJS.Signals) {
   multivibeCloud.stop();
+  instanceRelay?.stop();
   if (shuttingDown) return;
   shuttingDown = true;
   smartRouting.stopHealthMonitoring();
