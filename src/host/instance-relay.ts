@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {setTimeout as delay} from 'node:timers/promises';
 import express from 'express';
+import {instanceActivity} from './instance-activity.js';
 import {InstanceConversations,type InstanceConversationSource} from './instance-conversations.js';
 import type {HostHarnessRuntime} from './harness-runtime/runtime.js';
 import {fail,identifier,requiredText,type HarnessEvent} from './harness-runtime/types.js';
@@ -175,8 +176,10 @@ export class InstanceRelay {
   }
   if(source)await upload('data: '+JSON.stringify({type:'conversation.bound',source:{targetId,kind:'session',id:sessionId,harnessId:source.harnessId}})+'\n\n',false,200,'text/event-stream');
   const emit=async(event:HarnessEvent)=>{
-   // Credentials, auth URLs, paths and arbitrary tool records never enter the
-   // mobile transcript. The complete journal remains on the owning Host.
+   if(event.turnId!==e.commandId)return;
+   // Transmit only the bounded display projection, never the raw native record.
+   const activity=instanceActivity(event);
+   if(activity)await upload('data: '+JSON.stringify({type:'activity',activity,seq:event.seq})+'\n\n',false,200,'text/event-stream');
    const p=event.payload as any;
    if(event.turnId===e.commandId&&['message.delta','message.part'].includes(event.type)&&p?.role==='assistant'&&typeof p.text==='string')await upload('data: '+JSON.stringify({type:event.type,text:p.text,itemId:event.itemId??'assistant',seq:event.seq})+'\n\n',false,200,'text/event-stream');
   };
@@ -194,6 +197,10 @@ export class InstanceRelay {
    const receipt=(await this.conversations.receipt(targetId,sessionId,e.commandId!)).receipt;
    if(!receipt||receipt.sessionId!==sessionId)fail('Operation not found',404);
    if(['completed','failed','cancelled','uncertain'].includes(receipt.state)){
+    // The turn can finish between the empty poll and receipt read. Drain its
+    // final tool/message events before closing the stream and advancing cursor.
+    const tail=(await this.conversations.events(targetId,sessionId,cursor)).events as HarnessEvent[];
+    if(tail.length){for(const event of tail){cursor=event.seq;await emit(event);}continue;}
     await upload('data: '+JSON.stringify({type:'terminal',state:receipt.state,cursor})+'\n\n',true,200,'text/event-stream');return;
    }
    const awaitingApproval=(await this.conversations.snapshot(targetId,sessionId)).interactions.length>0;

@@ -129,10 +129,14 @@ import Network
                         await output("FIXTURE-REPLY")
                         return
                     }
+                    if ProcessInfo.processInfo.arguments.contains("-local-agent-ui-progress") {
+                        await workspace.recordHarness(tool: "hermes_message", input: "", output: "Je consulte la page demandée.", status: "info")
+                    }
                     let result = try await workspace.execute(action: "fetch_website", query: "https://example.com", documentID: "", text: "", lhs: 0, rhs: 0)
                     await output(result)
                 }, webFetch: { url, _ in
-                    LocalWebResponse(url: url, status: 200, contentType: "text/plain", text: "EXAMPLE-FETCH-SUCCEEDED")
+                    if ProcessInfo.processInfo.arguments.contains("-local-agent-ui-progress") { try await Task.sleep(for: .seconds(5)) }
+                    return LocalWebResponse(url: url, status: 200, contentType: "text/plain", text: "EXAMPLE-FETCH-SUCCEEDED")
                 }, memoryIndex: { _ in try MemoryIndex(url: nil) }, monitorConnectivity: false))
             if ProcessInfo.processInfo.arguments.contains("-native-intent-local-draft") {
                 manager.queueNativeShortcut(.init(localDraft: "NATIVE-SHORTCUT-DRAFT"))
