@@ -35,7 +35,7 @@ export class InstanceConversations {
   const summary=(source:InstanceConversationSource,title:string,updatedAt:number,model?:string,canContinue=true,extra={})=>({source,title:String(redact(title)),updatedAt,model,canContinue,...extra});
   const conversations=[...sessions.map(s=>summary({targetId,kind:'session',id:s.id,harnessId:s.harnessId},s.title,s.updatedAt,s.model,true,{
    ...(s.configuration?.mobileDeviceId===deviceId?{conversationId:s.configuration.mobileConversationId}:{}),
-   ...(typeof s.configuration?.sourceId==='string'?{nativeSourceId:s.configuration.sourceId}:{}),nativeSessionId:s.nativeSessionId,connectionId:s.configuration?.connectionId,
+   ...(typeof s.configuration?.sourceId==='string'?{nativeSourceId:s.configuration.sourceId}:{}),...(['librechat','openwebui'].includes(s.harnessId)?{nativeSessionId:s.nativeSessionId,connectionId:s.configuration?.connectionId}:{}),
   })),...result.nativeSessions.filter((s:any)=>!supervised.has(s.harnessId+':'+s.sourceId)&&!supervised.has(s.harnessId+':'+s.nativeSessionId)).map((s:any)=>summary({targetId,kind:'native',id:s.sourceId,harnessId:s.harnessId},s.title,s.updatedAt,undefined,s.canContinue))];
   return {conversations,nextPage:result.nextPage};
  }

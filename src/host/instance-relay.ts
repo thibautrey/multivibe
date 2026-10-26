@@ -21,6 +21,14 @@ type State={version:1;machineId:string;name:string;machineToken:string;devices:D
 type Envelope={version:1;accountId:string;machineId:string;operation:string;deviceId?:string;deviceToken?:string;handoff?:string;name?:string;harnessId?:string;model?:string;provider?:string;effort?:string|null;projectId?:string;conversationId?:string;commandId?:string;text?:string;after?:number;targetId?:string;page?:number;source?:InstanceConversationSource;offset?:number;revision?:string};
 type Upload=(data:string,terminal?:boolean,status?:number,contentType?:string)=>Promise<void>;
 
+// Relay limits each persisted chunk to 32 KiB. Split at UTF-16 boundaries
+// without separating a surrogate pair; 8,192 code units fit for every UTF-8 string.
+export function instanceRelayChunks(data:string):string[]{
+ const chunks:string[]=[];
+ for(let offset=0;offset<data.length;){let end=Math.min(offset+8192,data.length);if(end<data.length&&/[\uD800-\uDBFF]/u.test(data[end-1]!))end--;chunks.push(data.slice(offset,end));offset=end;}
+ return chunks.length?chunks:[''];
+}
+
 export class InstanceRelay {
  readonly conversations:InstanceConversations;
  private state?:State;
@@ -200,7 +208,7 @@ export class InstanceRelay {
   this.envelope(job.body);const start=await this.machine('jobs/'+job.id+'/start',{},signal);if(start.execute!==true)fail('Relay start rejected',409);
   const local=new AbortController(),execution=AbortSignal.any([signal,local.signal]);let seq=0,total=0,checking=false;
   const timer=setInterval(()=>{if(checking)return;checking=true;void this.machine('jobs/'+job.id+'/status',undefined,execution).then(v=>{if(v.state!=='running')local.abort();},()=>{}).finally(()=>{checking=false;});},2000);timer.unref();
-  const upload:Upload=async(data,terminal=false,status=200,contentType='application/json')=>{total+=Buffer.byteLength(data);if(total>8*1024*1024||seq>2047)fail('Instance response exceeds limit',413);await this.machine('jobs/'+job.id+'/chunks',{sequence:seq++,data,terminal,status,contentType},execution);};
+  const upload:Upload=async(data,terminal=false,status=200,contentType='application/json')=>{total+=Buffer.byteLength(data);if(total>8*1024*1024)fail('Instance response exceeds limit',413);const chunks=instanceRelayChunks(data);for(const [index,chunk] of chunks.entries()){if(seq>2047)fail('Instance response exceeds limit',413);await this.machine('jobs/'+job.id+'/chunks',{sequence:seq++,data:chunk,terminal:terminal&&index===chunks.length-1,status,contentType},execution);}};
   try{await this.dispatch(job.body,upload,execution);}
   catch(error:any){if(seq===0&&!execution.aborted)await upload(JSON.stringify({error:'Instance operation refused',status:error.status??502}),true,error.status??502);else await this.machine('jobs/'+job.id+'/fail',{},AbortSignal.timeout(5000)).catch(()=>{});}
   finally{clearInterval(timer);local.abort();}

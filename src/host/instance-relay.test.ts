@@ -6,7 +6,7 @@ import path from 'node:path';
 import {randomUUID,randomBytes,createHash} from 'node:crypto';
 import {HostHarnessRuntime} from './harness-runtime/runtime.js';
 import {InstanceConversations} from './instance-conversations.js';
-import {InstanceRelay,INSTANCE_RELAY_MODEL} from './instance-relay.js';
+import {InstanceRelay,INSTANCE_RELAY_MODEL,instanceRelayChunks} from './instance-relay.js';
 
 async function fixture(t:any,options:{prompt?:()=>Promise<void>}={}){
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'multivibe-instance-')),account=randomUUID(),machine=randomUUID();let now=Date.now(),calls=0;
@@ -173,4 +173,12 @@ test('registered environments use their own bridge, never the Mac history, and s
  const servers=await remote.servers('local','librechat');const source=servers.conversations[0].source;
  assert.equal((await remote.history(source)).messages[0].content,'Server only');assert.ok(!JSON.stringify(await remote.history(source)).includes('secret'));
  identity.connectionId='second-account';await assert.rejects(remote.history(source),/original remote account/);
+});
+
+
+test('large Unicode histories fit the existing Relay chunk contract without corruption',()=>{
+ const text='a'.repeat(8191)+'🌌'+'é漢🌌'.repeat(15000);
+ const chunks=instanceRelayChunks(text);assert.equal(chunks.join(''),text);assert.ok(chunks.length>1);
+ for(const chunk of chunks){assert.ok(Buffer.byteLength(chunk)<=32768);assert.equal(Buffer.from(chunk).toString('utf8'),chunk);}
+ assert.deepEqual(instanceRelayChunks(''),['']);
 });
