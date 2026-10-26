@@ -820,7 +820,7 @@ struct ChatView: View {
     private var localExecutionName: String { ModelExecution(manager.selectedModel).isLocal ? "Sur cet iPhone" : "MultiVibe Cloud" }
     private var pickerModels: [ModelOption] {
         guard let chat = remoteChat else { return manager.models }
-        let catalog = instances.modelCatalog[chat.machine + ":" + chat.harness] ?? []
+        let catalog = instances.modelCatalog[instances.modelKey(chat.machine, harness: chat.harness)] ?? []
         var values = catalog.map { model in
             let provider = normalizedRemoteProvider(model.provider, modelID: model.id, harnessID: chat.harness)
             return ModelOption(id: model.selectionID, name: model.displayName, author: provider, description: "Modèle fourni par \(remoteHarnessName).", logoPublisher: provider)
@@ -891,7 +891,7 @@ struct ChatView: View {
 
     private func selectPickerModel(_ option: ModelOption) async throws {
         guard let chat = remoteChat else { await manager.chooseModel(option); return }
-        let key = chat.machine + ":" + chat.harness
+        let key = instances.modelKey(chat.machine, harness: chat.harness)
         guard let model = instances.modelCatalog[key]?.first(where: { $0.selectionID == option.id }) else { throw APIError.noModel }
         remoteConfigurationError = nil
         try await instances.choose(chat.machine, harness: chat.harness, model: model)

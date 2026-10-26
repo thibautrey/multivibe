@@ -390,8 +390,9 @@ struct RemoteModelPreference: Codable {
         }
     }
     func runSynchronization() async {
+        var nextDirectoryRefresh = Date.distantPast
         while !Task.isCancelled {
-            await reload()
+            if Date() >= nextDirectoryRefresh { await reload(); nextDirectoryRefresh = Date().addingTimeInterval(30) }
             for machine in machines where paired.contains(machine.id) && machine.online && harnesses[machine.id] == nil { try? await catalog(machine.id) }
             await synchronizeConversations()
             do { try await Task.sleep(for: .seconds(5)) } catch { return }
@@ -497,7 +498,7 @@ struct RemoteModelPreference: Codable {
         if let chat = current, chat.machine == machine, let source = chat.source { fields["source"] = source.fields }
         let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: fields); try check(owner, epoch)
         let values = try JSONDecoder().decode([RemoteHarnessModel].self, from: JSONEncoder().encode(result.object?["models"] ?? .array([])))
-        modelCatalog[machine + ":" + harness] = values
+        modelCatalog[modelKey(machine, harness: harness)] = values
         var preference = preference(machine, harness: harness) ?? .init(harness: harness, model: "")
         if preference.model.isEmpty, let selected = result.object?["currentModelId"]?.string.flatMap({ id in values.first { $0.id == id } }) ?? values.first {
             preference.model = selected.id; preference.provider = selected.provider
@@ -540,6 +541,12 @@ struct RemoteModelPreference: Codable {
         } else if let preference = preference(machine, harness: harness), !preference.model.isEmpty {
             try await efforts(machine, harness: harness, model: preference.model, provider: preference.provider)
         }
+    }
+    func modelKey(_ machine: String, harness: String) -> String {
+        if let chat = current, chat.machine == machine, chat.harness == harness, let target = chat.source?.targetId, target != "local" {
+            return machine + ":" + target + ":" + harness
+        }
+        return machine + ":" + harness
     }
     func preference(_ machine: String, harness: String) -> RemoteModelPreference? {
         preferences[machine + ":" + harness] ?? preferences[machine].flatMap { $0.harness == harness ? $0 : nil }
