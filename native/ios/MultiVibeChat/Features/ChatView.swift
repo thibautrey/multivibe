@@ -309,6 +309,14 @@ struct ChatView: View {
                                             .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
                                             .padding(.leading, 36)
                                     } else {
+                                        if let events = message.localEvents?.filter({ $0.tool != "hermes_agent" }), !events.isEmpty {
+                                            AgentActivityView(events: events, completion: message.completion)
+                                        } else if message.completion == .streaming && message.content.isEmpty {
+                                            HStack(spacing: 8) {
+                                                ProgressView().controlSize(.small)
+                                                Text("L’assistant travaille…").font(.subheadline).foregroundStyle(.secondary)
+                                            }.accessibilityIdentifier("agentWorking")
+                                        }
                                         if !message.content.isEmpty || message.nativeContent != nil {
                                             VStack(alignment: .leading, spacing: 14) {
                                                 if let payload = message.nativeContent, payload.version == NativeContentPayload.currentVersion {
@@ -389,6 +397,7 @@ struct ChatView: View {
                     .onChange(of: displayMessages.count) { _, _ in
                         scrollToLatest(proxy)
                     }
+                    .onChange(of: displayMessages.last?.localEvents) { _, _ in scrollToLatest(proxy) }
                     .onChange(of: displayMessages.last?.content) { _, _ in scrollToLatest(proxy) }
                     .onChange(of: manager.selection) { _, _ in
                         followsLatest = true
@@ -4535,6 +4544,55 @@ private struct CloudConflictReviewView: View {
                 }
                 Button("Annuler",role:.cancel) {}
             } message: { Text("Une nouvelle révision réunira toutes les versions examinées. Leur contenu ne sera pas fusionné.") }
+    }
+}
+
+/// Keep each tool visible while its arguments and result stay available on demand.
+struct AgentActivityView: View {
+    let events: [LocalAgentEvent]
+    let completion: ChatMessage.Completion?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(events.filter { $0.tool != "hermes_agent" }) { event in
+                if event.tool == "hermes_message" {
+                    Text(event.detail).font(.subheadline).foregroundStyle(.secondary).textSelection(.enabled)
+                        .accessibilityIdentifier("agentIntermediateMessage")
+                } else {
+                    let running = event.status == "running" && completion == .streaming
+                    let interrupted = event.status == "running" && completion != .streaming
+                    DisclosureGroup {
+                        VStack(alignment: .leading, spacing: 8) {
+                            if !event.detail.isEmpty { Text(event.detail).font(.caption) }
+                            if let input = event.input, !input.isEmpty {
+                                Text("Paramètres").font(.caption.bold())
+                                Text(input).font(.caption.monospaced())
+                            }
+                            if let output = event.output, !output.isEmpty {
+                                Text("Résultat").font(.caption.bold())
+                                Text(output).font(.caption)
+                            }
+                        }.textSelection(.enabled).padding(.top, 6)
+                    } label: {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            if running { ProgressView().controlSize(.mini) }
+                            else { Image(systemName: event.status == "error" ? "exclamationmark.circle" : interrupted || event.status == "stopped" ? "pause.circle" : "checkmark.circle")
+                                .foregroundStyle(event.status == "error" ? Color.orange : Color.secondary) }
+                            Text(event.tool.replacingOccurrences(of: "_", with: " ")).font(.subheadline.weight(.medium))
+                            Spacer(minLength: 4)
+                            Text(running ? "En cours" : interrupted || event.status == "stopped" ? "Interrompu" : event.status == "error" ? "Erreur" : event.status == "needs_input" ? "À préciser" : "Terminé")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }.accessibilityIdentifier("agentToolActivity")
+                }
+            }
+            if completion == .streaming && !events.contains(where: { $0.status == "running" }) {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.mini)
+                    Text("L’assistant travaille…").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }.padding(12)
+            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
     }
 }
 

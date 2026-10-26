@@ -1,3 +1,4 @@
+import {instanceActivity,mergeInstanceActivity,type InstanceActivity} from './instance-activity.js';
 import {createHash} from 'node:crypto';
 import {HostHarnessRuntime,ADAPTERS} from './harness-runtime/runtime.js';
 import {RemoteHarnessHosts} from './harness-runtime/remote.js';
@@ -90,18 +91,26 @@ export class InstanceConversations {
    if(['librechat','openwebui'].includes(source.harnessId)&&snapshot.session.nativeSessionId){
     return this.history({...source,kind:'server',id:snapshot.session.nativeSessionId,connectionId:snapshot.session.configuration?.connectionId},offset,revision);
    }
-   const items=new Map<string,any>(),imported=new Map<string,any>();let after=0;
+   const items=new Map<string,any>(),imported=new Map<string,any>(),activities=new Map<string,InstanceActivity[]>();let after=0;
    for(let page=0;;page++){
     if(page>400)fail('Conversation exceeds history limit',413);
     const batch=(await this.events(source.targetId,source.id,after)).events;
     if(!batch.length)break;
     for(const e of batch){after=e.seq;const p=e.payload as any;
+     const activity=instanceActivity(e);
+     if(activity&&e.turnId){const values=activities.get(e.turnId)??[];mergeInstanceActivity(values,activity);activities.set(e.turnId,values);}
      if(e.type==='history.message'&&['user','assistant','system','tool'].includes(p?.role)&&typeof p.text==='string'){const key=e.itemId??String(e.seq),prior=imported.get(key);imported.set(key,{id:'history:'+key,role:p.role,content:p.append?(prior?.content??'')+p.text:p.text,done:true});}
      if(e.type==='message.user'){const text=p?.parts?.filter((v:any)=>v.type==='text').map((v:any)=>v.text).join('\n');if(text)items.set('user:'+(e.turnId??e.itemId),{id:'user:'+(e.turnId??e.itemId),role:'user',content:text,done:true});}
      if(['message.delta','message.part'].includes(e.type)&&['user','assistant','system','tool'].includes(p?.role)&&typeof p.text==='string'){
       const key=(e.turnId??'')+':'+(e.itemId??p.role),prior=items.get(key);items.set(key,{id:key,role:p.role,content:e.type==='message.delta'?(prior?.content??'')+p.text:p.text,done:e.turnId!==snapshot.session.activeTurnId || !snapshot.session.activeTurnId});
      }
     }
+   }
+   for(const [turn,values] of activities){
+    const replies=[...items.values()].filter((v:any)=>v.role==='assistant'&&v.id.startsWith(turn+':'));
+    const reply=replies[0];
+    if(reply)reply.activities=values;
+    else items.set(turn+':activity',{id:turn+':activity',role:'assistant',content:'',done:turn!==snapshot.session.activeTurnId,activities:values});
    }
    messages=[...imported.values(),...items.values()];
    if(!imported.size&&typeof snapshot.session.configuration?.sourceId==='string'){
@@ -112,7 +121,7 @@ export class InstanceConversations {
   }
   if(!Number.isSafeInteger(offset)||offset<0||offset>messages.length)fail('Invalid history offset');
   if(revision && revision!==version)fail('History changed during pagination; retry',409);
-  const projected=messages.map(({id,role,content,done})=>({id,role,content:String(redact(content)),done}));
+  const projected=messages.map(({id,role,content,done,activities})=>({id,role,content:String(redact(content)),done,...(activities?{activities}:{})}));
   const batch:any[]=[];let bytes=0;
   for(const message of projected.slice(offset)){const size=Buffer.byteLength(JSON.stringify(message));if(batch.length&&(bytes+size>512_000||batch.length>=100))break;if(size>6_000_000)fail('Message exceeds relay limit',413);batch.push(message);bytes+=size;}
   return {messages:batch,revision:version,model,nextOffset:offset+batch.length<messages.length?offset+batch.length:null};

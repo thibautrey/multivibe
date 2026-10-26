@@ -130,3 +130,32 @@ extension RemoteInstanceTests {
         XCTAssertEqual(chats.count, 2)
     }
 }
+
+
+extension RemoteInstanceTests {
+    func testHarnessActivityUpdatesSameToolIgnoresReplayAndSurvivesArchive() throws {
+        var chat = RemoteChat(machine: "mac", harness: "hermes-agent", model: "model")
+        chat.messages = [.init(role: "user", content: "Inspecte"), .init(role: "assistant", content: "", completion: .streaming)]
+        let progress = RemoteHarnessActivity(id: "progress", kind: "message", text: "Je consulte la source.")
+        chat.receiveActivity(progress, sequence: 1)
+        chat.receiveActivity(progress, sequence: 1)
+        chat.receiveActivity(.init(id: "web", kind: "tool", title: "Lecture web", status: "running", input: "https://example.com"), sequence: 2)
+        XCTAssertEqual(chat.messages.last?.localEvents?.count, 2)
+        let tool = try XCTUnwrap(chat.messages.last?.localEvents?.last)
+        chat.receiveActivity(.init(id: "web", kind: "tool", status: "error", output: "HTTP 404"), sequence: 3)
+        let restored = try JSONDecoder().decode(RemoteChat.self, from: JSONEncoder().encode(chat))
+        let events = try XCTUnwrap(restored.messages.last?.localEvents)
+        XCTAssertEqual(events.count, 2); XCTAssertEqual(events[0].detail, "Je consulte la source.")
+        XCTAssertEqual(events[1].id, tool.id); XCTAssertEqual(events[1].tool, "Lecture web")
+        XCTAssertEqual(events[1].input, "https://example.com"); XCTAssertEqual(events[1].status, "error")
+        XCTAssertEqual(events[1].output, "HTTP 404"); XCTAssertEqual(restored.cursor, 3)
+    }
+    @MainActor func testHarnessActivityRendersDuringRunAndAfterInterruption() {
+        let events = [LocalAgentEvent(tool: "hermes_message", detail: "Je vérifie les données.", status: "info"),
+                      LocalAgentEvent(tool: "Lecture web", detail: "", status: "running")]
+        for completion in [ChatMessage.Completion.streaming, .stopped, .failed, .completed] {
+            let renderer = ImageRenderer(content: AgentActivityView(events: events, completion: completion).frame(width: 350))
+            XCTAssertNotNil(renderer.uiImage)
+        }
+    }
+}

@@ -8,13 +8,13 @@ import {HostHarnessRuntime} from './harness-runtime/runtime.js';
 import {InstanceConversations} from './instance-conversations.js';
 import {InstanceRelay,INSTANCE_RELAY_MODEL,instanceRelayChunks} from './instance-relay.js';
 
-async function fixture(t:any,options:{prompt?:()=>Promise<void>}={}){
+async function fixture(t:any,options:{prompt?:(ctx:any)=>Promise<void>}={}){
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'multivibe-instance-')),account=randomUUID(),machine=randomUUID();let now=Date.now(),calls=0;
  const configurations:Record<string,unknown>[]=[],workspace=path.join(root,'project');fs.mkdirSync(workspace);
  const projectId=createHash('sha256').update('pi:'+workspace).digest('hex');
  const integration={list:async()=>[{id:'pi',detected:true,configured:true}],executablePath:async(id:string)=>id==='pi'?process.execPath:null} as any;
  const runtime=new HostHarnessRuntime(path.join(root,'runtime'),integration,ctx=>({
-  start:async()=>{},prompt:async()=>{calls++;ctx.emit({type:'message.delta',payload:{role:'assistant',text:'Verified response '+calls}});await options.prompt?.();},
+  start:async()=>{},prompt:async()=>{calls++;ctx.emit({type:'message.delta',payload:{role:'assistant',text:'Verified response '+calls}});await options.prompt?.(ctx);},
   inspect:async subject=>subject==='effort'?{options:[{value:'low',label:'Low'},{value:'high',label:'High'}],defaultValue:'low'}:[{id:'fixture/model',name:'Fixture'}],interrupt:async()=>{},compact:async()=>{},configure:async value=>{configurations.push(value);},native:async()=>{},close:()=>{}
  }));
  runtime.projects=()=>({projects:[{id:projectId,harnessId:'pi',name:'Fixture project',path:workspace,updatedAt:now}]});
@@ -194,4 +194,28 @@ test('imported history is authoritative even when its original CLI file no longe
  const result=await f.service.conversations.history({targetId:'local',kind:'session',id:session.id,harnessId:'pi'});
  assert.deepEqual(result.messages.map((m:any)=>[m.content,m.done]),[['Imported original',true],['Past response',true],['Current response',false]]);
  assert.equal(f.calls(),0);
+});
+
+test('mobile activity streams before completion, recovers by cursor and survives history refresh',async t=>{
+ let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});
+ const f=await fixture(t,{prompt:async ctx=>{
+  ctx.emit({type:'reasoning',payload:{type:'text',text:'Je vérifie la source.'}});
+  ctx.emit({type:'tool',itemId:'web-1',payload:{title:'Lire la page',status:'in_progress',rawInput:{url:'https://example.com',api_key:'synthetic-private-value'},env:{PRIVATE:'must-not-travel'}}});
+  await gate;
+  ctx.emit({type:'tool',itemId:'web-1',payload:{status:'completed',content:[{type:'content',content:{type:'text',text:'Source vérifiée'}}]}});
+ }}),a=await f.pair(),auth={deviceId:a.deviceId,deviceToken:a.deviceToken},conversationId=randomUUID(),commandId=randomUUID();
+ const chunks:string[]=[];let seen!:()=>void;const activity=new Promise<void>(resolve=>{seen=resolve;});
+ const pending=f.service.dispatch(f.envelope({...auth,operation:'prompt',harnessId:'pi',model:'fixture/model',conversationId,commandId,text:'Inspect'}),async data=>{chunks.push(data);if(data.includes('in_progress')||data.includes('"status":"running"'))seen();},AbortSignal.timeout(3000));
+ try {await Promise.race([activity,pending]);assert.ok(chunks.some(v=>v.includes('"status":"running"')));assert.doesNotMatch(chunks.join(''),/terminal|synthetic-private-value|must-not-travel/);}
+ finally {release();}
+ await pending;
+ const events=chunks.join('').split('\n').filter(v=>v.startsWith('data: ')).map(v=>JSON.parse(v.slice(6)));
+ const tools=events.filter(v=>v.activity?.kind==='tool');assert.equal(tools.length,2);assert.equal(tools[0].activity.status,'running');assert.equal(tools[1].activity.status,'success');
+ assert.ok(events.some(v=>v.activity?.text==='Je vérifie la source.'));
+ const replay=await f.send({...auth,operation:'recover',conversationId,commandId,after:tools[0].seq});
+ assert.doesNotMatch(replay,/Je vérifie la source/);assert.match(replay,/Source vérifiée/);assert.equal(f.calls(),1);
+ const session=f.runtime.store.sessions()[0];
+ const history=await f.service.conversations.history({targetId:'local',kind:'session',id:session.id,harnessId:'pi'});
+ const saved=history.messages.find((v:any)=>v.activities)?.activities;
+ assert.equal(saved.length,2);assert.equal(saved[1].title,'Lire la page');assert.equal(saved[1].status,'success');assert.equal(saved[1].output,'Source vérifiée');
 });
