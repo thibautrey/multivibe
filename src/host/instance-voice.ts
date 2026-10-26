@@ -43,14 +43,15 @@ export class InstanceVoiceBridge {
     if(!response.ok)throw Error('Speech runtime unavailable');
     const models=await response.json() as {data:{id:string}[]},loaded=new Set(models.data.map(m=>m.id));
     if(!loaded.has(SPEECH_MODELS.stt))throw Error('Transcription model unavailable');
-    this.voices.clear();
+    const available=new Map<string,{model:string;voice:string;name:string}>();
     for(const [provider,label] of [['kokoro','Kokoro'],['qwen','Qwen3 TTS']] as const){
       const model=SPEECH_MODELS[provider];if(!loaded.has(model))continue;
       const result=await fetch(this.speech+'/v1/audio/voices?model='+encodeURIComponent(model),{redirect:'error',signal:AbortSignal.timeout(5000)});
       if(!result.ok)continue;const body=await result.json() as {voices:string[]};
-      for(const voice of body.voices){if(!/^[A-Za-z0-9_-]{1,80}$/.test(voice))continue;this.voices.set(provider+':'+voice,{model,voice,name:label+' · '+voice});}
+      for(const voice of body.voices){if(!/^[A-Za-z0-9_-]{1,80}$/.test(voice))continue;available.set(provider+':'+voice,{model,voice,name:label+' · '+voice});}
     }
-    const voices=[...this.voices].map(([id,v])=>({id,name:v.name}));
+    this.voices=available;
+    const voices=[...available].map(([id,v])=>({id,name:v.name}));
     voices.sort((a,b)=>a.id==='kokoro:ff_siwis'?-1:b.id==='kokoro:ff_siwis'?1:a.name.localeCompare(b.name));
     return {enabled:voices.length>0,voices,backgroundAudio:false,tools:false,retainsAudio:false,llmModel:this.options.llmModel,transcriptionModel:SPEECH_MODELS.stt};
   }

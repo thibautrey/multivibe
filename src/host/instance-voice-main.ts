@@ -6,6 +6,7 @@ import {randomBytes} from 'node:crypto';
 import {spawn} from 'node:child_process';
 import {setTimeout as delay} from 'node:timers/promises';
 import {InstanceVoiceBridge,loopbackOrigin,SPEECH_MODELS} from './instance-voice.js';
+import {wavPcm24k} from './instance-voice-audio.js';
 
 // A separately supervised companion: starting or stopping it never signals the
 // main Host, its harnesses, or the independently managed speech runtime.
@@ -33,12 +34,17 @@ const tts=http.createServer(async(request,response)=>{
     for await(const chunk of request){bytes+=chunk.length;if(bytes>128*1024)throw Error();chunks.push(Buffer.from(chunk));}
     const body=JSON.parse(Buffer.concat(chunks).toString('utf8'));
     const selected=bridge?.speechVoice(body.voice);if(!selected||typeof body.input!=='string'||body.input.length>32_000)throw Error();
+    const abort=new AbortController();response.once('close',()=>abort.abort());
     const upstream=await fetch(speech+'/v1/audio/speech',{method:'POST',redirect:'error',headers:{'content-type':'application/json'},
-      body:JSON.stringify({model:selected.model,voice:selected.voice,input:body.input,response_format:'pcm',stream:true}),signal:AbortSignal.timeout(120_000)});
+      body:JSON.stringify({model:selected.model,voice:selected.voice,input:body.input,response_format:'wav',stream:true}),signal:AbortSignal.any([abort.signal,AbortSignal.timeout(120_000)])});
     if(!upstream.ok||!upstream.body){response.writeHead(502);response.end();return;}
     response.writeHead(200,{'content-type':'application/octet-stream'});
-    const reader=upstream.body.getReader();response.once('close',()=>{void reader.cancel().catch(()=>{});});
-    for(;;){const {done,value}=await reader.read();if(done||response.destroyed)break;response.write(value);}
+    for await(const value of wavPcm24k(upstream.body)){
+      if(response.destroyed)break;
+      if(!response.write(value))await new Promise<void>(resolve=>{
+        const done=()=>{response.off('drain',done);response.off('close',done);resolve();};response.once('drain',done);response.once('close',done);
+      });
+    }
     response.end();
   }catch{if(!response.headersSent)response.writeHead(400);response.end();}
 });
