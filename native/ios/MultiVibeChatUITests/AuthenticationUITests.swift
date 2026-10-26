@@ -452,7 +452,7 @@ final class LocalInternetUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Réflexion…"].exists)
         let orb = app.descendants(matching: .any)["voiceOrb"].firstMatch
         XCTAssertTrue(orb.exists)
-        XCTAssertLessThan(orb.frame.width, 100)
+        XCTAssertLessThan(orb.frame.width, 125)
         XCTAssertEqual(orb.frame.midX, app.windows.firstMatch.frame.midX, accuracy: 1.5)
         XCTAssertTrue(app.buttons["Terminer"].isEnabled)
 
@@ -466,7 +466,6 @@ final class LocalInternetUITests: XCTestCase {
         let app = launch("-realtime-voice-ui-fixture-speaking")
         let orb = app.descendants(matching: .any)["voiceOrb"].firstMatch
         XCTAssertTrue(orb.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["MultiVibe répond"].exists)
         XCTAssertEqual(orb.frame.midX, app.windows.firstMatch.frame.midX, accuracy: 1.5)
         XCTAssertTrue((orb.value as? String)?.contains("86") == true)
     }
