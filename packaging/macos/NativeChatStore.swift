@@ -92,6 +92,10 @@ private struct NativeChatModelPreference: Codable {
     private var nativeTasks: [UUID: Task<Void, Never>] = [:]
     private var subscriptions: [UUID: Task<Void, Never>] = [:]
     private var submissions: [UUID: Task<Void, Never>] = [:]
+    private var desktopConnecting: [UUID: Task<Void, Error>] = [:]
+    private var desktopWorkers: [UUID: Task<Void, Never>] = [:]
+    private var desktopActions: [UUID: Task<Void, Never>] = [:]
+    private var desktopLeases: [UUID: String] = [:]
     private var saveTask: Task<Void, Never>?
     private let runtime: any DesktopHarnessServing
     private let file: URL
@@ -120,7 +124,10 @@ private struct NativeChatModelPreference: Codable {
         selection = conversations.first?.id
         computer.onStop = { [weak self] in
             guard let self else { return }
-            if let owner = self.computer.conversationID { self.nativeTasks[owner]?.cancel() }
+            if let owner = self.computer.conversationID {
+                self.nativeTasks[owner]?.cancel()
+                if self.conversations.first(where: { $0.id == owner })?.runtimeSessionID != nil { self.runtimeCommand(owner, type: "interrupt") }
+            }
         }
         for conversation in conversations where conversation.runtimeSessionID != nil { attachRuntime(conversation.id) }
     }
@@ -245,6 +252,10 @@ private struct NativeChatModelPreference: Codable {
         removeConversation(id)
     }
     private func removeConversation(_ id: UUID) {
+        desktopConnecting.removeValue(forKey: id)?.cancel()
+        desktopWorkers.removeValue(forKey: id)?.cancel()
+        desktopActions.removeValue(forKey: id)?.cancel()
+        computer.releaseExternal(conversation: id)
         subscriptions.removeValue(forKey: id)?.cancel()
         conversations.removeAll { $0.id == id }
         if selection == id { selection = conversations.first?.id }
@@ -274,7 +285,9 @@ private struct NativeChatModelPreference: Codable {
     func stop() {
         guard let id = selection, let index = conversations.firstIndex(where: { $0.id == id }) else { return }
         conversations[index].queuePaused = true
-        if conversations[index].runtimeSessionID != nil { runtimeCommand(id, type: "interrupt") }
+        let graphical = computer.running && computer.conversationID == id
+        if graphical { computer.stop() }
+        if conversations[index].runtimeSessionID != nil { if !graphical { runtimeCommand(id, type: "interrupt") } }
         else { nativeTasks[id]?.cancel(); if computer.running && computer.conversationID == id { computer.stop() } }
         save()
     }
@@ -372,7 +385,7 @@ private struct NativeChatModelPreference: Codable {
     }
     private func ensureRuntime(_ id: UUID) async throws -> String {
         guard let i = conversations.firstIndex(where: { $0.id == id }), let harness = conversations[i].harnessID else { throw DesktopHarnessError.invalidResponse }
-        if let sessionID = conversations[i].runtimeSessionID { return sessionID }
+        if let sessionID = conversations[i].runtimeSessionID { try await ensureDesktop(id); return sessionID }
         let conversation = conversations[i]
         var body: [String: HarnessJSON] = ["id": .string(id.uuidString.lowercased()), "harnessId": .string(harness), "targetId": .string(conversation.executionTargetID ?? "local"), "authMode": .string(conversation.authMode ?? "native"), "title": .string(conversation.title)]
         if conversation.authMode == "multivibe", !conversation.model.isEmpty { body["model"] = .string(conversation.model) }
@@ -393,7 +406,58 @@ private struct NativeChatModelPreference: Codable {
         guard let current = conversations.firstIndex(where: { $0.id == id }) else { throw DesktopHarnessError.invalidResponse }
         conversations[current].runtimeSessionID = session.id; conversations[current].runtimeSession = session
         conversations[current].harnessSessionID = session.nativeSessionId; bindRemoteSession(session, at: current); save(); attachRuntime(id)
+        try await ensureDesktop(id)
         return session.id
+    }
+    /// Long polling runs independently from execution so a cancelled tool or turn
+    /// can dismiss an approval immediately, without replaying a delivered action.
+    private func ensureDesktop(_ id: UUID) async throws {
+        guard let conversation = conversations.first(where: { $0.id == id }),
+              let session = conversation.runtimeSessionID,
+              (conversation.executionTargetID ?? "local") == "local",
+              !["librechat", "openwebui"].contains(conversation.harnessID ?? "") else { return }
+        if desktopWorkers[id] != nil { return }
+        if let connecting = desktopConnecting[id] { try await connecting.value; return }
+        let connecting = Task { @MainActor in
+            let value = try await runtime.call("/sessions/\(session)/desktop/attach", method: "POST", target: "local", body: .object(desktopLeases[id].map { ["lease": .string($0)] } ?? [:]))
+            guard let lease = value["lease"].string else { throw DesktopHarnessError.invalidResponse }
+            desktopLeases[id] = lease
+            desktopWorkers[id] = Task { @MainActor in
+                defer { desktopWorkers[id] = nil; desktopActions.removeValue(forKey: id)?.cancel(); computer.releaseExternal(conversation: id) }
+                while !Task.isCancelled {
+                    do {
+                        let next = try await runtime.call("/sessions/\(session)/desktop/next", method: "POST", target: "local", body: .object(["lease": .string(lease)]))
+                        try Task.checkCancellation()
+                        if next["release"] == .bool(true) {
+                            let action = desktopActions.removeValue(forKey: id); action?.cancel()
+                            await action?.value
+                            computer.releaseExternal(conversation: id)
+                        }
+                        guard let requestID = next["id"].string else { continue }
+                        if let previous = desktopActions[id] { await previous.value }
+                        try Task.checkCancellation()
+                        desktopActions[id] = Task { @MainActor in
+                            defer { desktopActions[id] = nil }
+                            var result: HarnessJSON
+                            do {
+                                let command = try next["command"].decode(ComputerUseCommand.self)
+                                let content = try await computer.executeExternal(conversation: id, command: command)
+                                result = .object(["content": try .encode(content)])
+                            } catch { result = .object(["isError": .bool(true), "content": .array([.object(["type": .string("text"), "text": .string(error.localizedDescription)])])]) }
+                            // Results have an at-most-once request identity; never retry a GUI action.
+                            _ = try? await runtime.call("/sessions/\(session)/desktop/result", method: "POST", target: "local", body: .object(["lease": .string(lease), "id": .string(requestID), "result": result]))
+                        }
+                    } catch {
+                        if !Task.isCancelled && selection == id { self.error = "Outils Desktop déconnectés : \(error.localizedDescription)" }
+                        break
+                    }
+                }
+                _ = try? await runtime.call("/sessions/\(session)/desktop/detach", method: "POST", target: "local", body: .object(["lease": .string(lease)]))
+            }
+        }
+        desktopConnecting[id] = connecting
+        defer { desktopConnecting[id] = nil }
+        try await connecting.value
     }
     private func submitHarness(_ id: UUID, interactiveAnswers: Bool, steer: Bool = false) {
         guard let i = conversations.firstIndex(where: { $0.id == id }) else { return }
@@ -543,6 +607,7 @@ private struct NativeChatModelPreference: Codable {
         saveSoon()
     }
     private func attachRuntime(_ id: UUID) {
+        Task { @MainActor in try? await ensureDesktop(id) }
         guard subscriptions[id] == nil else { return }
         subscriptions[id] = Task { @MainActor in
             var delay: UInt64 = 1_000_000_000
