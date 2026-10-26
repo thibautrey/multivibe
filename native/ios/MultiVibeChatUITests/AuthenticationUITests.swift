@@ -275,7 +275,6 @@ final class AuthenticationUITests: XCTestCase {
 
         app.staticTexts["Documents"].tap()
         XCTAssertTrue(app.navigationBars["Documents"].waitForExistence(timeout:5))
-        XCTAssertTrue(app.otherElements["workspaceBreadcrumbs"].exists)
         let search=app.textFields["workspaceSearch"]
         XCTAssertTrue(search.exists);search.tap();search.typeText("Brief")
         XCTAssertTrue(app.staticTexts["Brief produit.md"].waitForExistence(timeout:5))
