@@ -16,43 +16,89 @@ import MultiVibeChatUI
 struct SDKApplicationsView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var client = SDKAccountClient.make()
-    @State private var error:String?
-    @State private var connections:[Connection] = []
-    @State private var revokeTarget:Connection?
-    private struct Connection:Decodable,Identifiable {let id:String;let name:String}
-    private struct Connections:Decodable {let data:[Connection]}
-    private struct Empty:Decodable {}
-    var body:some View {
+    @State private var error: String?
+    @State private var connections: [Connection] = []
+    @State private var revokeTarget: Connection?
+    private struct Connection: Decodable, Identifiable { let id: String; let name: String }
+    private struct Connections: Decodable { let data: [Connection] }
+    private struct Empty: Decodable {}
+    private var applicationIDs: [String] {
+        Array(Dictionary(grouping: client.conversations, by: \.appId).keys).sorted()
+    }
+
+    var body: some View {
         List {
-            if let error {Text(error).foregroundStyle(.red)}
+            if let error {
+                MultiVibeStatusMessage(message: error, actionTitle: "Réessayer") { Task { await reload() } }
+            }
             if !client.isHistoryUnlocked || client.hasPendingHistoryWrite {
                 Section { MultiVibeHistoryControls(client: client) }
             }
-            ForEach(Array(Dictionary(grouping:client.conversations,by: \.appId).keys).sorted(),id:\.self) {appID in
-                let conversations = client.conversations.filter {$0.appId == appID}
-                DisclosureGroup(conversations.first?.appName ?? appID) {
-                    ForEach(conversations) {conversation in
-                        NavigationLink(conversation.title) {MultiVibeChatView(client:client,conversation:conversation).navigationTitle(client.isHistoryUnlocked ? conversation.title : "Historique verrouillé")}
-                            .swipeActions {Button("Supprimer",role:.destructive) {Task {do {try await client.delete(conversation)} catch {self.error = error.localizedDescription}}}}
+            Section("Conversations des applications") {
+                if applicationIDs.isEmpty {
+                    ContentUnavailableView("Aucune conversation", systemImage: "bubble.left.and.bubble.right",
+                        description: Text(client.isHistoryUnlocked
+                            ? "Les conversations créées par une application autorisée apparaîtront ici."
+                            : "Déverrouillez l’historique pour afficher les conversations des applications."))
+                }
+                ForEach(applicationIDs, id: \.self) { appID in
+                    let conversations = client.conversations.filter { $0.appId == appID }
+                    DisclosureGroup(conversations.first?.appName ?? appID) {
+                        ForEach(conversations) { conversation in
+                            NavigationLink(conversation.title) {
+                                MultiVibeChatView(client: client, conversation: conversation)
+                                    .navigationTitle(client.isHistoryUnlocked ? conversation.title : "Historique verrouillé")
+                            }
+                            .swipeActions(allowsFullSwipe: false) {
+                                Button("Supprimer", role: .destructive) {
+                                    Task { do { try await client.delete(conversation) } catch { self.error = error.localizedDescription } }
+                                }
+                            }
+                        }
                     }
                 }
             }
             Section("Applications autorisées") {
-                ForEach(connections) {connection in HStack {Text(connection.name);Spacer();Button("Révoquer",role:.destructive) {revokeTarget = connection}}}
+                if connections.isEmpty {
+                    ContentUnavailableView("Aucune application autorisée", systemImage: "app.badge",
+                        description: Text("Les applications que vous connectez à MultiVibe apparaîtront ici."))
+                }
+                ForEach(connections) { connection in
+                    HStack(spacing: 12) {
+                        Label(connection.name, systemImage: "app")
+                        Spacer(minLength: 8)
+                        Button("Révoquer", role: .destructive) { revokeTarget = connection }
+                            .buttonStyle(.borderless)
+                    }
+                    .frame(minHeight: 44)
+                }
             }
-        }.navigationTitle("Applications")
+        }
+        .navigationTitle("Applications")
         .toolbar {
             if client.isHistoryUnlocked { Button("Verrouiller") { client.lockHistory() } }
         }
         .onChange(of: scenePhase) { _, phase in if phase == .background { client.lockHistory() } }
-        .task {await reload()}
-        .refreshable {await reload()}
-        .confirmationDialog("Révoquer cette application ?",isPresented:Binding(get:{revokeTarget != nil},set:{if !$0 {revokeTarget = nil}}),titleVisibility:.visible) {
-            if let connection = revokeTarget {Button("Révoquer",role:.destructive) {Task {do {let _:Empty = try await client.accountRequest("/native/v1/sdk/connections/\(connection.id)/revoke",body:Data("{}".utf8),as:Empty.self);await reload()} catch {self.error = error.localizedDescription}}}}
-        } message: {Text("L’application perdra son accès. Vos conversations seront conservées.")}
+        .task { await reload() }
+        .refreshable { await reload() }
+        .confirmationDialog("Révoquer cette application ?", isPresented: Binding(get: { revokeTarget != nil }, set: { if !$0 { revokeTarget = nil } }), titleVisibility: .visible) {
+            if let connection = revokeTarget {
+                Button("Révoquer", role: .destructive) {
+                    Task { do {
+                        let _: Empty = try await client.accountRequest("/native/v1/sdk/connections/\(connection.id)/revoke", body: Data("{}".utf8), as: Empty.self)
+                        revokeTarget = nil
+                        await reload()
+                    } catch { self.error = error.localizedDescription } }
+                }
+            }
+        } message: { Text("L’application perdra son accès. Vos conversations seront conservées.") }
     }
     private func reload() async {
-        do {if !client.hasPendingHistoryWrite { try await client.connect() }; connections = try await client.accountRequest("/native/v1/sdk/connections",as:Connections.self).data;error = nil} catch {self.error = error.localizedDescription}
+        do {
+            if !client.hasPendingHistoryWrite { try await client.connect() }
+            connections = try await client.accountRequest("/native/v1/sdk/connections", as: Connections.self).data
+            error = nil
+        } catch { self.error = error.localizedDescription }
     }
 }
 
@@ -97,7 +143,7 @@ struct SDKConsentView:View {
                     Button("Autoriser") {decide(true)}.disabled(busy)
                     Button("Refuser",role:.destructive) {decide(false)}.disabled(busy)
                 } else {ProgressView()}
-                if let error {Text(error).foregroundStyle(.red)}
+                if let error { MultiVibeStatusMessage(message: error) }
             }.navigationTitle("Connexion MultiVibe")
             .toolbar {Button("Fermer") {dismiss()}}
             .sheet(isPresented:$signingIn) {AuthenticationView().environment(manager)}
