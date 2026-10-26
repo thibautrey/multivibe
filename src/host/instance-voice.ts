@@ -144,7 +144,9 @@ export class InstanceVoiceBridge {
           socket.addEventListener('message',event=>{void(async()=>{
             if(typeof event.data!=='string'||event.data.length>2*1024*1024)throw Error();await this.packet(JSON.parse(event.data));
           })().catch(()=>socket.close());});
-          socket.addEventListener('error',()=>socket.close());socket.addEventListener('close',()=>resolve());
+          // Undici already fails the connection on error. Calling close while
+          // its handshake is failing can synchronously dispatch another error.
+          socket.addEventListener('error',()=>resolve());socket.addEventListener('close',()=>resolve());
         });
       }catch{}
       for(const id of this.sessions.keys())this.close(id,false);
