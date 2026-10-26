@@ -14,7 +14,7 @@ export const INSTANCE_RELAY_MODEL='multivibe/host-harness-v1';
 const ORIGIN='https://app.multivibe.cloud';
 const hash=(v:string)=>createHash('sha256').update(v).digest('hex');
 const equal=(a:string,b:string)=>a.length===b.length&&timingSafeEqual(Buffer.from(a),Buffer.from(b));
-const uuid=(v:unknown):v is string=>typeof v==='string'&&/^[0-9a-f-]{36}$/i.test(v);
+const uuid=(v:unknown):v is string=>typeof v==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
 type Device={id:string;name:string;digest:string;expiresAt:number;previous?:{digest:string;expiresAt:number}};
 type State={version:1;accountId:string;machineId:string;name:string;machineToken:string;devices:Device[]};
 type Envelope={version:1;accountId:string;machineId:string;operation:string;deviceId?:string;deviceToken?:string;handoff?:string;name?:string;harnessId?:string;model?:string;provider?:string;conversationId?:string;commandId?:string;text?:string;after?:number};
@@ -56,13 +56,14 @@ export class InstanceRelay {
  }
  pairing(){
   if(!this.state||!this.running)fail('Connect this Host to Relay first',409);
-  const code=randomBytes(9).toString('base64url').toUpperCase();
+  const alphabet='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const code=Array.from(randomBytes(12),byte=>alphabet[byte&31]).join('');
   this.handoff={digest:hash(code),expiresAt:this.clock()+5*60_000,attempts:0};
   const uri=new URL('multivibe-chat://instance/pair');uri.searchParams.set('machine',this.state.machineId);uri.searchParams.set('handoff',code);
   return {code,uri:uri.toString(),expiresAt:this.handoff.expiresAt,name:this.state.name};
  }
  cancelPairing(){this.handoff=undefined;return {cancelled:true};}
- revokeDevice(id:string){if(this.state){this.state.devices=this.state.devices.filter(d=>d.id!==id);this.persist();}return this.status();}
+ revokeDevice(id:string){this.rotations.delete(id);if(this.state){this.state.devices=this.state.devices.filter(d=>d.id!==id);this.persist();}return this.status();}
  async disconnect(accessToken:string){
   const old=this.state;if(!old)return;
   this.stop();this.state=undefined;this.handoff=undefined;fs.rmSync(this.file,{force:true});
@@ -99,6 +100,7 @@ export class InstanceRelay {
    const h=this.handoff;const code=typeof e.handoff==='string'?e.handoff.toUpperCase():'';
    if(!h||h.expiresAt<=this.clock()||++h.attempts>8||!equal(h.digest,hash(code)))fail('Pairing code expired or invalid',403);
    this.handoff=undefined;
+   this.state!.devices=this.state!.devices.filter(d=>d.expiresAt>this.clock());
    if(this.state!.devices.filter(d=>d.expiresAt>this.clock()).length>=10)fail('Device limit reached',409);
    const token=randomBytes(32).toString('base64url'),d:Device={id:randomUUID(),name:requiredText(e.name,80),digest:hash(token),expiresAt:this.clock()+24*3600_000};
    this.state!.devices.push(d);this.persist();return {deviceId:d.id,deviceToken:token,expiresAt:d.expiresAt};

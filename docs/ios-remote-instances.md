@@ -21,7 +21,7 @@ the existing Relay message allowance. The transport is not zero-access: Cloud ca
 read its transient encrypted payloads. It does not export local iPhone history or
 silently fall back to another inference provider.
 
-Pairing uses a random 72-bit, single-use handoff, bound to the account-owned
+Pairing uses a random 60-bit, single-use handoff, bound to the account-owned
 machine. It expires after five minutes, eight failed guesses, replacement or
 closing the Desktop sheet. Manual pairing requires selecting the same machine
 from the account directory. The QR contains only its public machine selector and
