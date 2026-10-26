@@ -93,13 +93,33 @@ struct ChatView: View {
                             .font(.title2.bold())
                         Spacer()
                         Button("Rechercher", systemImage: "magnifyingglass") { sidebarSearchFocused = true }
+                            .labelStyle(.iconOnly)
+                            .font(.title2.weight(.medium))
+                            .frame(width: 44, height: 44)
+                            .background(.regularMaterial, in: Circle())
+                            .overlay(Circle().stroke(.primary.opacity(0.10), lineWidth: 0.7))
+                            .contentShape(Circle())
+                            .accessibilityIdentifier("searchConversations")
+                        Menu("Plus d’options", systemImage: "ellipsis") {
+                            Button("Synchroniser l’historique", systemImage: "arrow.triangle.2.circlepath") {
+                                if manager.session == nil { manager.authenticationPresented = true } else { confirmHistorySync = true }
+                            }
+                            .disabled(manager.isSynchronizing || manager.isStreaming || manager.isRestoring)
+                            if manager.session != nil {
+                                Button("Importer les conversations invitées") { confirmGuestImport = true }
+                                if manager.automaticSync {
+                                    Button("Désactiver la synchronisation automatique") { manager.disableAutomaticSync() }
+                                }
+                            }
+                            Button("Confidentialité et données", systemImage: "hand.raised") { privacyPresented = true }
+                            Button("Documents et outils locaux", systemImage: "doc") { documentsPresented = true }
+                        }
                         .labelStyle(.iconOnly)
                         .font(.title2.weight(.medium))
                         .frame(width: 44, height: 44)
                         .background(.regularMaterial, in: Circle())
                         .overlay(Circle().stroke(.primary.opacity(0.10), lineWidth: 0.7))
-                        .contentShape(Circle())
-                        .accessibilityIdentifier("searchConversations")
+                        .accessibilityIdentifier("sidebarMoreOptions")
                     }
                     .padding(.vertical, 8)
                     .listRowBackground(Color.clear)
@@ -207,6 +227,7 @@ struct ChatView: View {
             .scrollContentBackground(.hidden)
             .background(Color(uiColor: .systemBackground).ignoresSafeArea())
             .navigationTitle("")
+            .toolbar(.hidden, for: .navigationBar)
             .safeAreaInset(edge: .bottom) {
                 VStack(spacing: 10) {
                     if let status = manager.historyStatus, status != "Historique synchronisé avec votre compte." {
@@ -241,24 +262,6 @@ struct ChatView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
                 .background(.ultraThinMaterial)
-            }
-            .toolbar {
-                ToolbarItem(placement: .secondaryAction) {
-                    Button("Synchroniser l’historique", systemImage: "arrow.triangle.2.circlepath") {
-                        if manager.session == nil { manager.authenticationPresented = true } else { confirmHistorySync = true }
-                    }
-                    .disabled(manager.isSynchronizing || manager.isStreaming || manager.isRestoring)
-                }
-                ToolbarItem(placement: .secondaryAction) {
-                    if manager.session != nil {
-                        Button("Importer les conversations invitées") { confirmGuestImport = true }
-                        if manager.automaticSync { Button("Désactiver la synchronisation automatique") { manager.disableAutomaticSync() } }
-                    }
-                }
-                ToolbarItem(placement: .secondaryAction) { Button("Confidentialité et données", systemImage: "hand.raised") { privacyPresented = true } }
-                ToolbarItem(placement: .secondaryAction) {
-                    Button("Documents et outils locaux", systemImage: "doc") { documentsPresented = true }
-                }
             }
         } detail: {
             VStack(spacing: 0) {
