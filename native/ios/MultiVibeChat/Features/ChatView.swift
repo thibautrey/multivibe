@@ -49,7 +49,6 @@ struct ChatView: View {
     @State private var remoteConversationToDelete: RemoteChat?
     @State private var remoteConfigurationError: String?
     @State private var remoteInstancesPresented = false
-    @State private var remoteModelPickerPresented = false
     @State private var remoteProjectPickerPresented = false
     @FocusState private var composerFocused: Bool
     private let latestMessageAnchor = "latest-message"
@@ -378,6 +377,9 @@ struct ChatView: View {
                     }
                     .accessibilityIdentifier("openConversationHistory")
                 }
+                ToolbarItem(placement: .principal) {
+                    if !isNewConversation { conversationExecutionSelector }
+                }
                 ToolbarItem(placement: .primaryAction) {
                     ControlGroup {
                         Button("Nouvelle conversation", systemImage: "square.and.pencil") { openNewConversation() }
@@ -498,7 +500,6 @@ struct ChatView: View {
             .presentationCornerRadius(44)
         }
         .sheet(isPresented: $remoteInstancesPresented) { RemoteInstancesView().environment(manager) }
-        .sheet(isPresented: $remoteModelPickerPresented) { if let chat = remoteChat { RemoteHarnessModelPicker(chatID: chat.id) } }
         .sheet(isPresented: $remoteProjectPickerPresented) { if let chat = remoteChat { RemoteHarnessProjectPicker(chatID: chat.id) } }
         .sheet(isPresented: $suggestionsPresented) {
             SuggestionsEditor(suggestions: $suggestions, highlighted: highlightedSuggestion) {
@@ -577,11 +578,70 @@ struct ChatView: View {
     private var remoteMachine: RemoteMachine? { remoteChat.flatMap { chat in instances.machines.first { $0.id == chat.machine } } }
     private var remoteHarnessName: String { remoteChat.flatMap { chat in instances.harnesses[chat.machine]?.first { $0.id == chat.harness }?.name } ?? remoteChat?.harness ?? "Harness" }
     private var localExecutionName: String { ModelExecution(manager.selectedModel).isLocal ? "Sur cet iPhone" : "Hermes Cloud" }
+    private var pickerModels: [ModelOption] {
+        guard let chat = remoteChat else { return manager.models }
+        let catalog = instances.modelCatalog[chat.machine + ":" + chat.harness] ?? []
+        var values = catalog.map { model in
+            let provider = normalizedRemoteProvider(model.provider)
+            return ModelOption(id: model.selectionID, name: model.displayName, author: provider, description: "Modèle fourni par \(remoteHarnessName).", logoPublisher: provider)
+        }
+        let selected = (chat.provider ?? "") + ":" + chat.model
+        if !chat.model.isEmpty, !values.contains(where: { $0.id == selected }) {
+            let provider = normalizedRemoteProvider(chat.provider)
+            values.insert(ModelOption(id: selected, name: chat.model, author: provider, description: "Modèle conservé dans cette conversation.", logoPublisher: provider), at: 0)
+        }
+        return values
+    }
+    private var pickerSelectedModel: String {
+        remoteChat.map { ($0.provider ?? "") + ":" + $0.model } ?? manager.selectedModel
+    }
+    private var pickerScope: ModelPickerScope { isRemoteConversation ? .harness(remoteHarnessName) : .catalog }
+    private var pickerEffort: ModelPickerEffort? {
+        guard let chat = remoteChat else { return nil }
+        let effort = instances.effortCatalog[chat.machine + ":" + chat.harness + ":" + chat.model]
+        guard effort?.options.isEmpty == false || chat.effort != nil else { return nil }
+        return ModelPickerEffort(options: effort?.options.map { .init(value: $0.value, label: $0.label) } ?? [], selected: chat.effort ?? effort?.currentValue,
+            defaultValue: effort?.defaultValue, disabled: chat.command != nil || chat.pendingConfiguration != nil || isGenerating || instances.busy) { value in
+                try await instances.chooseEffort(value, machine: chat.machine)
+            }
+    }
+    private var pickerIsLoading: Bool { isRemoteConversation ? instances.busy : manager.isLoadingModels }
+    private var pickerIsDisabled: Bool {
+        if let chat = remoteChat { return chat.command != nil || chat.pendingConfiguration != nil || isGenerating || instances.busy }
+        return manager.isStreaming
+    }
     private var welcome: some View {
         ChatWelcomeView(suggestions: suggestions, execute: executeSuggestion, edit: { suggestion in
             highlightedSuggestion = suggestion.id
             suggestionsPresented = true
-        })
+        }) { welcomeExecutionSelector }
+    }
+
+    private func normalizedRemoteProvider(_ provider: String?) -> String? {
+        guard let value = provider?.lowercased() else { return nil }
+        if value.contains("openai") { return "openai" }
+        if value.contains("anthropic") || value.contains("claude") { return "anthropic" }
+        if value.contains("google") || value.contains("gemini") { return "google" }
+        if value.contains("mistral") { return "mistral" }
+        if value.contains("deepseek") { return "deepseek" }
+        if value.contains("meta") || value.contains("llama") { return "meta" }
+        return provider
+    }
+
+    private func selectPickerModel(_ option: ModelOption) async throws {
+        guard let chat = remoteChat else { await manager.chooseModel(option); return }
+        let key = chat.machine + ":" + chat.harness
+        guard let model = instances.modelCatalog[key]?.first(where: { $0.selectionID == option.id }) else { throw APIError.noModel }
+        remoteConfigurationError = nil
+        try await instances.choose(chat.machine, harness: chat.harness, model: model)
+        do { try await instances.efforts(chat.machine, harness: chat.harness, model: model.id, provider: model.provider) }
+        catch { remoteConfigurationError = "Le modèle est sélectionné ; son catalogue d’effort est momentanément indisponible." }
+    }
+
+    private func reloadPickerModels() async {
+        guard let chat = remoteChat else { await manager.reloadModels(); return }
+        do { try await instances.prepare(chat.machine, harness: chat.harness); remoteConfigurationError = nil }
+        catch { remoteConfigurationError = "Catalogue indisponible sur cette instance." }
     }
 
     private var isNewConversation: Bool { displayMessages.isEmpty }
@@ -628,7 +688,6 @@ struct ChatView: View {
     private var composer: some View {
         @Bindable var manager = manager
         return VStack(alignment: .leading, spacing: 8) {
-            executionSelector
             if !isRemoteConversation && !ModelExecution(manager.selectedModel).isLocal && manager.session != nil {
                 DisclosureGroup(isExpanded: $composerContextExpanded) {
                     VStack(alignment: .leading, spacing: 8) {
@@ -655,8 +714,7 @@ struct ChatView: View {
                     }
                     .padding(.top, 6)
                 } label: {
-                    Label(ModelExecution(manager.selectedModel).isLocal ? "Sur cet iPhone" : "Hermes Cloud",
-                          systemImage: ModelExecution(manager.selectedModel).isLocal ? "iphone" : "cloud")
+                    Label("Statut et autorisations", systemImage: "lock.shield")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                 }
@@ -709,11 +767,9 @@ struct ChatView: View {
                         .labelStyle(.iconOnly)
                         .font(.title2.weight(.regular))
                         .frame(width: 40, height: 40)
-                        ModelPickerButton(models: manager.models, selectedModel: $manager.selectedModel,
-                                          isLoading: manager.isLoadingModels, isDisabled: manager.isStreaming) {
-                            await manager.reloadModels()
-                        }
                     }
+                    ModelPickerButton(models: pickerModels, selectedModel: pickerSelectedModel, scope: pickerScope, effort: pickerEffort,
+                                      isLoading: pickerIsLoading, isDisabled: pickerIsDisabled, reload: reloadPickerModels, select: selectPickerModel)
                     Spacer(minLength: 0)
                     if isGenerating {
                         composerCircleButton("Arrêter", systemImage: "stop.fill", foreground: .white, background: .primary, size: 36) {
@@ -754,79 +810,78 @@ struct ChatView: View {
         .frame(maxWidth: .infinity)
     }
 
-    private var executionSelector: some View {
-        Menu {
-            Button { selectLocalExecution() } label: {
-                Label("Cet iPhone", systemImage: instances.selection == nil && ModelExecution(manager.selectedModel).isLocal ? "checkmark" : "iphone")
-            }
-            Button { selectLocalExecution(cloud: true) } label: {
-                Label("Hermes Cloud", systemImage: instances.selection == nil && !ModelExecution(manager.selectedModel).isLocal ? "checkmark" : "cloud")
-            }
-            ForEach(instances.machines.filter { instances.paired.contains($0.id) }) { machine in
-                Menu(machine.name) {
-                    let available = instances.harnesses[machine.id]?.filter { $0.available } ?? []
-                    if available.isEmpty {
-                        Button("Charger les harness…") { Task { try? await instances.catalog(machine.id) } }
-                    } else {
-                        ForEach(available) { harness in
-                            Button {
-                                selectRemoteExecution(machine: machine, harness: harness)
-                            } label: {
-                                Label(harness.name, systemImage: remoteChat?.machine == machine.id && remoteChat?.harness == harness.id ? "checkmark" : "cpu")
-                            }.disabled(!machine.online || instances.busy)
-                        }
+    @ViewBuilder private var executionMenuItems: some View {
+        Button { selectLocalExecution() } label: {
+            Label("Cet iPhone", systemImage: instances.selection == nil && ModelExecution(manager.selectedModel).isLocal ? "checkmark" : "iphone")
+        }
+        Button { selectLocalExecution(cloud: true) } label: {
+            Label("Hermes Cloud", systemImage: instances.selection == nil && !ModelExecution(manager.selectedModel).isLocal ? "checkmark" : "cloud")
+        }
+        ForEach(instances.machines.filter { instances.paired.contains($0.id) }) { machine in
+            Menu(machine.name) {
+                let available = instances.harnesses[machine.id]?.filter { $0.available } ?? []
+                if available.isEmpty {
+                    Button("Charger les harness…") { Task { try? await instances.catalog(machine.id) } }
+                } else {
+                    ForEach(available) { harness in
+                        Button {
+                            selectRemoteExecution(machine: machine, harness: harness)
+                        } label: {
+                            Label(harness.name, systemImage: remoteChat?.machine == machine.id && remoteChat?.harness == harness.id ? "checkmark" : "cpu")
+                        }.disabled(!machine.online || instances.busy)
                     }
                 }
             }
-            Divider()
-            Button("Actualiser les instances", systemImage: "arrow.clockwise") { Task { await instances.reload() } }
-            Button("Gérer les instances…", systemImage: "desktopcomputer.and.iphone") { remoteInstancesPresented = true }
+        }
+        Divider()
+        Button("Actualiser les instances", systemImage: "arrow.clockwise") { Task { await instances.reload() } }
+        Button("Gérer les instances…", systemImage: "desktopcomputer.and.iphone") { remoteInstancesPresented = true }
+    }
+
+    private var selectedExecutionHarnessID: String {
+        remoteChat?.harness ?? (ModelExecution(manager.selectedModel).isLocal ? "native" : "hermes-cloud")
+    }
+    private var selectedExecutionName: String { isRemoteConversation ? remoteHarnessName : localExecutionName }
+
+    private var welcomeExecutionSelector: some View {
+        Menu {
+            executionMenuItems
         } label: {
-            HStack(spacing: 7) {
-                Image(systemName: isRemoteConversation ? "desktopcomputer" : (ModelExecution(manager.selectedModel).isLocal ? "iphone" : "cloud"))
-                Text(isRemoteConversation ? (remoteMachine?.name ?? "Instance") + " · " + remoteHarnessName : localExecutionName)
-                    .lineLimit(1)
-                Image(systemName: "chevron.up.chevron.down").font(.system(size: 8, weight: .semibold))
+            VStack(spacing: 7) {
+                HarnessIdentityLogo(id: selectedExecutionHarnessID, name: selectedExecutionName, size: 64)
+                HStack(spacing: 5) {
+                    Text(selectedExecutionName).lineLimit(1)
+                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
+                }
+                .font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                if let machine = remoteMachine { Text(machine.name).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
             }
-            .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-            .padding(.horizontal, 12).frame(minHeight: 30)
+            .frame(minWidth: 132).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Lieu d’exécution et harness")
+        .accessibilityIdentifier("welcomeExecutionPicker")
+        .accessibilityValue(isRemoteConversation ? (remoteMachine?.name ?? "Instance") + ", " + remoteHarnessName : localExecutionName)
+    }
+
+    private var conversationExecutionSelector: some View {
+        Menu { executionMenuItems } label: {
+            HStack(spacing: 7) {
+                HarnessIdentityLogo(id: selectedExecutionHarnessID, name: selectedExecutionName, size: 22)
+                Text(selectedExecutionName).lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold)).foregroundStyle(.tertiary)
+            }
+            .font(.caption.weight(.semibold)).foregroundStyle(.secondary).frame(maxWidth: 170)
         }
         .accessibilityLabel("Lieu d’exécution et harness")
         .accessibilityIdentifier("executionPicker")
-        .accessibilityValue(isRemoteConversation ? (remoteMachine?.name ?? "Instance") + ", " + (remoteChat?.harness ?? "") : localExecutionName)
+        .accessibilityValue(isRemoteConversation ? (remoteMachine?.name ?? "Instance") + ", " + remoteHarnessName : localExecutionName)
     }
 
     @ViewBuilder private var remoteConfigurationControls: some View {
         if let chat = remoteChat {
-            let key = chat.machine + ":" + chat.harness
-            let effortKey = key + ":" + chat.model
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    Button {
-                        remoteConfigurationError = nil; remoteModelPickerPresented = true
-                    } label: {
-                        Label((instances.modelCatalog[key] ?? []).first(where: { $0.id == chat.model && $0.provider == chat.provider })?.displayName ?? (chat.model.isEmpty ? "Modèle" : chat.model), systemImage: "cpu")
-                            .lineLimit(1)
-                    }
-                    .disabled(chat.command != nil || chat.pendingConfiguration != nil || isGenerating || instances.busy)
-                    .accessibilityIdentifier("integratedRemoteModelPicker")
-
-                    if let effort = instances.effortCatalog[effortKey], !effort.options.isEmpty {
-                        Menu {
-                            ForEach(effort.options) { option in
-                                Button {
-                                    Task { do { remoteConfigurationError = nil; try await instances.chooseEffort(option.value, machine: chat.machine) }
-                                        catch { remoteConfigurationError = "Le changement d’effort n’a pas été confirmé." } }
-                                } label: { Label(option.label, systemImage: option.value == chat.effort ? "checkmark" : "gauge.with.dots.needle.33percent") }
-                            }
-                            if effort.defaultValue != nil { Button("Valeur par défaut") { Task { try? await instances.chooseEffort(effort.defaultValue, machine: chat.machine) } } }
-                        } label: {
-                            Label(effort.options.first(where: { $0.value == chat.effort })?.label ?? "Effort", systemImage: "gauge.with.dots.needle.33percent")
-                        }
-                        .disabled(chat.command != nil || chat.pendingConfiguration != nil || isGenerating || instances.busy)
-                        .accessibilityIdentifier("integratedRemoteEffortPicker")
-                    }
-
                     Button { remoteProjectPickerPresented = true } label: {
                         Label(chat.projectName ?? "Aucun projet", systemImage: chat.projectId == nil ? "folder" : "folder.fill")
                     }
@@ -837,7 +892,7 @@ struct ChatView: View {
                 .font(.caption.weight(.medium)).buttonStyle(.bordered).controlSize(.small)
                 .padding(.horizontal, 12)
             }
-            Text(instances.transportLabel + " · Les réglages sont attachés à cette conversation")
+            Text(instances.transportLabel + " · Le projet est attaché à cette conversation")
                 .font(.caption2).foregroundStyle(.secondary).padding(.horizontal, 12)
             if chat.pendingConfiguration != nil {
                 Button("Vérifier le changement de configuration", systemImage: "arrow.clockwise") {
@@ -956,14 +1011,34 @@ struct ChatView: View {
 }
 
 
+private enum ModelPickerScope {
+    case catalog
+    case harness(String)
+    var title: String { if case .harness(let name) = self { "Modèle et effort · \(name)" } else { "Changer de modèle" } }
+    var dismissesAfterSelection: Bool { if case .catalog = self { true } else { false } }
+    var includesMarketplace: Bool { if case .catalog = self { true } else { false } }
+}
+
+private struct ModelPickerEffort {
+    struct Option: Identifiable { let value: String; let label: String; var id: String { value } }
+    let options: [Option]
+    let selected: String?
+    let defaultValue: String?
+    let disabled: Bool
+    let select: @MainActor (String?) async throws -> Void
+    var selectedLabel: String? { options.first { $0.value == selected }?.label ?? options.first { $0.value == defaultValue }?.label ?? selected }
+}
+
 private struct ModelPickerButton: View {
-    @Environment(ConversationManager.self) private var manager
     let models: [ModelOption]
-    @Binding var selectedModel: String
+    let selectedModel: String
+    let scope: ModelPickerScope
+    let effort: ModelPickerEffort?
     let isLoading: Bool
     let isDisabled: Bool
     var compact = false
     let reload: @MainActor () async -> Void
+    let select: @MainActor (ModelOption) async throws -> Void
     @State private var presented = false
     @State private var detent: PresentationDetent = .medium
     @State private var favorites = ModelFavoriteStore.load()
@@ -973,6 +1048,7 @@ private struct ModelPickerButton: View {
             favorites = ModelFavoriteStore.load()
             detent = .medium
             presented = true
+            if models.isEmpty { Task { await reload() } }
         } label: {
             if compact {
                 Image(systemName: "plus")
@@ -985,20 +1061,22 @@ private struct ModelPickerButton: View {
                     }
                     Text(models.first(where: { $0.id == selectedModel })?.displayName ?? "Choisir un modèle")
                         .lineLimit(1)
+                    if let label = effort?.selectedLabel {
+                        Text(label).foregroundStyle(.tertiary).lineLimit(1)
+                    }
                     Image(systemName: "chevron.down").font(.caption2)
                 }.font(.subheadline).frame(minHeight: 44)
             }
         }
         .disabled(isDisabled)
-        .accessibilityLabel("Modèle")
-        .accessibilityValue(models.first(where: { $0.id == selectedModel })?.displayName ?? "Aucun modèle choisi")
+        .accessibilityIdentifier("unifiedModelPicker")
+        .accessibilityLabel(effort == nil ? "Modèle" : "Modèle et effort")
+        .accessibilityValue([models.first(where: { $0.id == selectedModel })?.displayName, effort?.selectedLabel].compactMap { $0 }.joined(separator: ", "))
         .sheet(isPresented: $presented) {
             NavigationStack {
                 ModelQuickPicker(models: models, selectedModel: selectedModel, favorites: $favorites,
-                                 isLoading: isLoading, reload: reload, expand: { detent = .large }) { model in
-                    presented = false
-                    Task { await manager.chooseModel(model) }
-                }
+                                 scope: scope, effort: effort, isLoading: isLoading, reload: reload,
+                                 expand: { detent = .large }, close: { presented = false }, select: select)
             }
             .presentationDetents([.medium, .large], selection: $detent)
             .presentationDragIndicator(.visible)
@@ -1011,59 +1089,152 @@ private struct ModelQuickPicker: View {
     let models: [ModelOption]
     let selectedModel: String
     @Binding var favorites: Set<String>
+    let scope: ModelPickerScope
+    let effort: ModelPickerEffort?
     let isLoading: Bool
     let reload: @MainActor () async -> Void
     let expand: () -> Void
-    let select: (ModelOption) -> Void
+    let close: () -> Void
+    let select: @MainActor (ModelOption) async throws -> Void
     @Environment(\.dismiss) private var dismiss
+    @State private var search = ""
+    @State private var changing = false
+    @State private var failure: String?
     private var selected: ModelOption? { models.first { $0.id == selectedModel } }
-    private var favoriteModels: [ModelOption] { models.filter { favorites.contains($0.id) && $0.id != selectedModel } }
+    private var visibleModels: [ModelOption] { models.filter { $0.id != selectedModel && (search.isEmpty || $0.displayName.localizedCaseInsensitiveContains(search) || $0.id.localizedCaseInsensitiveContains(search)) } }
+    private var favoriteModels: [ModelOption] { visibleModels.filter { favorites.contains($0.id) } }
 
     var body: some View {
+        modelList
+            .navigationTitle(scope.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fermer") { close(); dismiss() } } }
+            .overlay { if changing || isLoading { ProgressView().padding(14).background(.regularMaterial, in: Capsule()) } }
+            .searchable(text: $search, prompt: scope.includesMarketplace ? "Rechercher dans cette liste" : "Rechercher un modèle du harness")
+    }
+
+    private var modelList: some View {
         List {
+            if let failure { Section { Text(failure).foregroundStyle(.red) } }
             if let selected {
                 Section("Modèle actuel") {
-                    Button { select(selected) } label: {
-                        ModelPickerRow(model: selected, favorite: favorites.contains(selected.id), trailing: "checkmark")
-                    }
+                    ModelPickerRow(model: selected, favorite: favorites.contains(selected.id), trailing: "checkmark")
                 }
             }
-            if !favoriteModels.isEmpty {
+            if let effort, !effort.options.isEmpty {
+                Section("Effort") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Text("Niveau de raisonnement").font(.subheadline.weight(.medium))
+                            Spacer()
+                            Text(effort.selectedLabel ?? "Par défaut").font(.subheadline).foregroundStyle(.secondary)
+                            if effort.defaultValue != nil {
+                                Button("Réinitialiser", systemImage: "arrow.counterclockwise") { chooseEffort(effort.defaultValue) }
+                                    .labelStyle(.iconOnly).disabled(effort.disabled || changing || (effort.selected ?? effort.defaultValue) == effort.defaultValue)
+                            }
+                        }
+                        ModelEffortScale(effort: effort, disabled: changing || effort.disabled, select: chooseEffort)
+                    }.padding(.vertical, 5)
+                }
+            }
+            if scope.includesMarketplace && !favoriteModels.isEmpty {
                 Section("Favoris") {
                     ForEach(favoriteModels) { model in
-                        Button { select(model) } label: { ModelPickerRow(model: model, favorite: true) }
+                        Button { choose(model) } label: { ModelPickerRow(model: model, favorite: true) }
                     }
                 }
             }
-            if !LocalModelLibrary.shared.installed.isEmpty {
+            if scope.includesMarketplace && !LocalModelLibrary.shared.installed.isEmpty {
                 Section("Sur cet appareil") {
                     ForEach(LocalModelLibrary.shared.installed) { model in
-                        Button { select(model.option) } label: { ModelPickerRow(model: model.option, favorite: favorites.contains(model.id)) }
+                        Button { choose(model.option) } label: { ModelPickerRow(model: model.option, favorite: favorites.contains(model.id)) }
                     }
+                }
+            }
+            if !scope.includesMarketplace && !visibleModels.isEmpty {
+                Section("Modèles du harness") {
+                    ForEach(visibleModels) { model in Button { choose(model) } label: { ModelPickerRow(model: model, favorite: false) } }
                 }
             }
             Section {
-                NavigationLink {
-                    ModelMarketplaceView(models: models, favorites: $favorites, select: select).onAppear(perform: expand)
-                } label: {
-                    Label("Explorer tous les modèles", systemImage: "sparkles.rectangle.stack")
-                        .font(.body.weight(.semibold)).foregroundStyle(MultiVibeTheme.accent)
+                if scope.includesMarketplace {
+                    NavigationLink {
+                        ModelMarketplaceView(models: models, favorites: $favorites, select: choose).onAppear(perform: expand)
+                    } label: {
+                        Label("Explorer tous les modèles", systemImage: "sparkles.rectangle.stack")
+                            .font(.body.weight(.semibold)).foregroundStyle(MultiVibeTheme.accent)
+                    }
                 }
                 Button { Task { await reload() } } label: {
                     Label("Actualiser les modèles", systemImage: "arrow.clockwise")
-                }.disabled(isLoading)
+                }.disabled(isLoading || changing)
             }
         }
-        .navigationTitle("Changer de modèle")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fermer") { dismiss() } } }
         .overlay {
-            if selected == nil && favoriteModels.isEmpty && models.isEmpty && !isLoading {
+            if selected == nil && visibleModels.isEmpty && models.isEmpty && !isLoading {
                 ContentUnavailableView("Aucun modèle disponible", systemImage: "cpu",
                                        description: Text("Actualisez le catalogue ou connectez-vous à votre compte."))
                     .allowsHitTesting(false)
             }
         }
+    }
+
+    private func choose(_ model: ModelOption) {
+        guard !changing else { return }; changing = true; failure = nil
+        Task { @MainActor in
+            do { try await select(model); if scope.dismissesAfterSelection { close() } }
+            catch { failure = error.localizedDescription }
+            changing = false
+        }
+    }
+    private func chooseEffort(_ value: String?) {
+        guard !changing, let effort else { return }; changing = true; failure = nil
+        Task { @MainActor in
+            do { try await effort.select(value) }
+            catch { failure = error.localizedDescription }
+            changing = false
+        }
+    }
+}
+
+private struct ModelEffortScale: View {
+    let effort: ModelPickerEffort
+    let disabled: Bool
+    let select: (String?) -> Void
+    private var selectedIndex: Int {
+        effort.options.firstIndex { $0.value == effort.selected } ?? effort.options.firstIndex { $0.value == effort.defaultValue } ?? 0
+    }
+    var body: some View {
+        GeometryReader { geometry in
+            let inset: CGFloat = 22
+            let available = max(0, geometry.size.width - inset * 2)
+            let step = effort.options.count > 1 ? available / CGFloat(effort.options.count - 1) : 0
+            let thumbX = inset + step * CGFloat(selectedIndex)
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color(uiColor: .secondarySystemBackground))
+                    .overlay(Capsule().stroke(.primary.opacity(0.08), lineWidth: 1))
+                Capsule().fill(MultiVibeTheme.accent).frame(width: max(44, thumbX + inset))
+                HStack(spacing: 0) {
+                    ForEach(Array(effort.options.enumerated()), id: \.element.id) { index, option in
+                        Button { select(option.value) } label: {
+                            Circle().fill(.white.opacity(index <= selectedIndex ? 0.52 : 0.38)).frame(width: 7, height: 7)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        }.buttonStyle(.plain).disabled(disabled)
+                            .accessibilityLabel(option.label).accessibilityValue(index == selectedIndex ? "Sélectionné" : "")
+                    }
+                }.padding(.horizontal, inset - 3)
+                Circle().fill(.white).frame(width: 42, height: 42)
+                    .shadow(color: .black.opacity(0.16), radius: 3, y: 1).offset(x: thumbX - 21).allowsHitTesting(false)
+            }
+            .contentShape(Capsule())
+            .gesture(DragGesture(minimumDistance: 0).onEnded { value in
+                guard !disabled, !effort.options.isEmpty else { return }
+                let raw = step > 0 ? (value.location.x - inset) / step : 0
+                let index = min(effort.options.count - 1, max(0, Int(raw.rounded())))
+                select(effort.options[index].value)
+            })
+        }
+        .frame(height: 48).accessibilityElement(children: .contain).accessibilityLabel("Niveau d’effort")
     }
 }
 
@@ -1787,19 +1958,55 @@ private struct ContactController: UIViewControllerRepresentable {
     func updateUIViewController(_ controller: UINavigationController, context: Context) {}
 }
 
-struct ChatWelcomeView: View {
+private struct HarnessIdentityLogo: View {
+    let id: String
+    let name: String
+    let size: CGFloat
+    var body: some View {
+        Group {
+            switch id {
+            case "native":
+                Image("MultiVibeMark").resizable().scaledToFit().padding(size * 0.12)
+            case "openai-codex":
+                Image("ProviderOpenAI").resizable().renderingMode(.template).scaledToFit().padding(size * 0.2)
+            case "claude-code":
+                Image("ProviderAnthropic").resizable().renderingMode(.template).scaledToFit().padding(size * 0.2)
+            case "gemini-cli":
+                Image("ProviderGemini").resizable().renderingMode(.template).scaledToFit().padding(size * 0.2)
+            case "hermes-cloud":
+                Image(systemName: "cloud.fill").resizable().scaledToFit().padding(size * 0.23)
+            case "hermes-agent":
+                Image(systemName: "bolt.horizontal.circle.fill").resizable().scaledToFit().padding(size * 0.14)
+            case "pi":
+                Image(systemName: "circle.hexagongrid.fill").resizable().scaledToFit().padding(size * 0.16)
+            case "opencode":
+                Image(systemName: "terminal.fill").resizable().scaledToFit().padding(size * 0.2)
+            default:
+                Text(name.split(separator: " ").prefix(2).compactMap(\.first).map(String.init).joined().uppercased())
+                    .font(.system(size: size * 0.3, weight: .bold, design: .rounded))
+            }
+        }
+        .foregroundStyle(MultiVibeTheme.accent)
+        .frame(width: size, height: size)
+        .background(Color(uiColor: .secondarySystemBackground).opacity(id == "native" ? 0 : 1), in: RoundedRectangle(cornerRadius: size * 0.28, style: .continuous))
+        .accessibilityHidden(true)
+    }
+}
+
+struct ChatWelcomeView<ExecutionSelector: View>: View {
     let suggestions: [HomeSuggestion]
     let execute: (HomeSuggestion) -> Void
     let edit: (HomeSuggestion) -> Void
+    let executionSelector: ExecutionSelector
+    init(suggestions: [HomeSuggestion], execute: @escaping (HomeSuggestion) -> Void,
+         edit: @escaping (HomeSuggestion) -> Void, @ViewBuilder executionSelector: () -> ExecutionSelector) {
+        self.suggestions = suggestions; self.execute = execute; self.edit = edit; self.executionSelector = executionSelector()
+    }
     var body: some View {
         ScrollView {
             VStack(spacing: 24) {
                 Spacer(minLength: 96)
-                Image("MultiVibeMark")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 64, height: 64)
-                    .accessibilityHidden(true)
+                executionSelector
                 VStack(spacing: 8) {
                     Text("Comment puis-je vous aider ?")
                         .font(.title2.bold())
