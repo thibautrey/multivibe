@@ -35,6 +35,15 @@ serveur ou de mode démo. Ne pas supposer qu'un lancement local rend disponibles
 les nouvelles routes : les modifications du backend frère `multivibe-cloud`
 n'ont pas été déployées par cette tâche.
 
+Dans Compte, **Crédits disponibles** ouvre **Usage et crédits** : graphiques
+sur 24 h, 7 jours ou 30 jours, détail des tokens, répartitions par modèle,
+projet et fournisseur, performances et dernières requêtes avec export CSV.
+Le solde reste actuel, indépendamment de la période. Les statistiques couvrent
+l'espace Cloud associé au compte et distinguent les mesures absentes des zéros.
+Le client utilise `GET /native/v1/analytics` avec son bearer iOS ; cette route
+doit être présente sur le Cloud pour charger les statistiques. L'export contient
+au plus les 50 dernières requêtes de la période, sans contenu de conversation.
+
 L'email/mot de passe, l'inscription, le TOTP et la récupération utilisent des
 écrans natifs. Le SSO utilise la session d'authentification système, avec PKCE
 et vérification d'état, et non une saisie du mot de passe fournisseur dans l'app.
