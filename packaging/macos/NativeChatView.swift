@@ -451,7 +451,7 @@ private struct NativeChatSuggestionEditor: View {
         .task(id: store.current?.executionTargetID ?? "local") { await store.runRemoteSynchronization() }
         .task(id: projectCatalogKey) { await loadProjects() }
         .sheet(isPresented: $cloudConsent) { consentSheet }
-        .sheet(isPresented: $instancePairing) { NativeInstancePairingView(agent: agent) }
+        .sheet(isPresented: $instancePairing) { NativeInstancePairingView() }
         .sheet(isPresented: Binding(get: { configuringRemoteHarness != nil }, set: { if !$0 { configuringRemoteHarness = nil } })) {
             let remoteID = configuringRemoteHarness ?? "librechat"
             RemoteHarnessConnectionSheet(harnessID: remoteID, target: store.current?.executionTargetID ?? "local") {
@@ -728,6 +728,7 @@ private struct NativeChatSuggestionEditor: View {
                 if agent.busy { ProgressView().controlSize(.mini) }
                 Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
             }.contentShape(Rectangle()) }.buttonStyle(.plain).accessibilityLabel("Compte : \(identity.displayName). Choisir un compte")
+            Button("Connecter un iPhone à ce Mac…") { instancePairing = true }.buttonStyle(.borderless)
             if agent.accountID == nil {
                 Button("Connecter MultiVibe Cloud") {
                     Task { await identity.addAccount() }
@@ -737,7 +738,6 @@ private struct NativeChatSuggestionEditor: View {
                     Button("Gérer le Cloud") { selectedImports = []; cloudConsent = true }.buttonStyle(.borderless)
                     Spacer()
                     Menu("Actions") {
-                        Button("Connecter un iPhone à ce Mac…") { instancePairing = true }
                         Button("Synchroniser l’espace Cloud") {
                             Task { do { try await agent.synchronize(); try await agent.recoverRuns() } catch { agent.error = error.localizedDescription } }
                         }.disabled(agent.consent?.cloudEnabled != true)
