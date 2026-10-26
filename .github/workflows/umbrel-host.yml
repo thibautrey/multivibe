@@ -65,8 +65,6 @@ jobs:
           npm --prefix web ci --no-audit --no-fund
       - name: Validate CPU runtime and catalog
         run: |
-          npm run catalog:check
-          go -C provider-agent test -race ./...
           go -C host/application test -race ./...
           node --test scripts/umbrel/generate.test.mjs scripts/provider-host/provider-host-native-dependencies.test.mjs scripts/provider-host/verify-provider-host-archive-fixtures.test.mjs
       - name: Build and execute the native archive

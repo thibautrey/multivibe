@@ -56,7 +56,7 @@ export function renderContainerReleaseNotes(metadata) {
   validateContainerReleaseMetadata(metadata, metadata.version, metadata.sourceCommit);
   return `## Container image
 
-Pull the versioned Linux amd64 NVIDIA image:
+Pull the versioned Linux amd64 image:
 
 \`\`\`sh
 docker pull ${metadata.versionTag}

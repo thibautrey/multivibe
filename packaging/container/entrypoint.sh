@@ -30,7 +30,6 @@ current_user_id=$(id -u)
 current_group_id=$(id -g)
 if [ "$current_user_id" = 0 ]; then
   prepare_mount /data
-  prepare_mount /models
   exec /usr/bin/setpriv \
     --reuid="$APPLICATION_USER_ID" \
     --regid="$APPLICATION_GROUP_ID" \

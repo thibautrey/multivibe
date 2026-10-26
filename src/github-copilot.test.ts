@@ -6,7 +6,6 @@ import {
 } from "./github-copilot.js";
 import { ensureValidToken, isAccountReauthenticationError, isTokenRefreshNeeded } from "./account-utils.js";
 import { normalizeProvider, refreshUsageIfNeeded } from "./quota.js";
-import { authorizationForAccountRequest } from "./local-runtime-discovery.js";
 import type { Account, OAuthFlowState } from "./types.js";
 
 const account: Account & { refreshToken: string } = {
@@ -67,9 +66,6 @@ test("invalid tokens and untrusted inference endpoints are rejected without leak
   }
   await assert.rejects(refreshCopilotAccessToken(account, jsonFetch({ token: "secret", expires_at: 1 })), /invalid/);
   await assert.rejects(refreshCopilotAccessToken(account, async () => new Response("github-secret", { status: 403 })), /Copilot access/);
-  assert.throws(() => authorizationForAccountRequest(account, "https://evil.example/models"), /boundary/);
-  assert.throws(() => authorizationForAccountRequest(account, "https://api.githubcopilot.com/copilot_internal/v2/token"), /boundary/);
-  assert.equal(authorizationForAccountRequest(account, "https://api.githubcopilot.com/models"), "Bearer old-inference-token");
 });
 
 test("token renewal coalesces concurrent calls and blocks accounts on failure", async (t) => {

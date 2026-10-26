@@ -61,29 +61,27 @@ library from an arbitrary latest version. Follow CONTRIBUTIONS.md and run:
 ./.github/scripts/ci.py --app multivibe-host --train community --test-file basic-values.yaml --render-only=true
 ```
 
-The package requires a selected NVIDIA GPU, a public URL and two dedicated host
-paths. Startup assigns their ownership to UID/GID 10001. Select datasets meant
+The package requires a public URL and a dedicated appdata host
+path. Startup assigns its ownership to UID/GID 10001. Select datasets meant
 only for this app. `templates/test_values/basic-values.yaml` contains reserved
-example addresses and a dummy GPU UUID for rendering, not live deployment.
-Test GPU inference, permissions, non-default port, restart/update and retention
+example addresses for rendering, not live deployment.
+Test proxy access, permissions, non-default port, restart/update and retention
 on TrueNAS before opening a catalog PR. Increment the catalog `version` for
 subsequent package updates independently of upstream `app_version`.
 
 `packaging/truenas/docker-compose.custom.yml` also supports a custom Compose
-installation. Supply the required origin, GPU UUID and dedicated storage paths;
+installation. Supply the required origin and dedicated appdata path;
 these inputs deliberately fail validation when omitted.
 
 ## 4. CasaOS / ZimaOS
 
 Copy `packaging/casaos/Apps/MultiVibeHost/` into the upstream app-store tree, run
 its `scripts/build_dist.sh`, and submit a PR after a real installation test.
-The Compose file uses the NVIDIA runtime, amd64 only, version/digest pinning and
+The Compose file uses amd64, version/digest pinning and
 standard `/DATA/AppData/multivibe-host/` persistence. The public URL is blank on
 purpose: set `MULTIVIBE_HOST_PUBLIC_URL` in app settings before startup, for
 example `http://192.168.1.10:1455`. A blank URL fails closed in the Host. Set
-`NVIDIA_VISIBLE_DEVICES` to one GPU UUID when desired and keep container CUDA
-index 0. Match the public URL and store launch port when changing the host port.
-This package requires the NVIDIA runtime to be installed and configured.
+the published port and public origin for your deployment.
 
 Current v2 contribution rules:
 https://github.com/IceWhaleTech/CasaOS-AppStore/blob/main/CONTRIBUTING.md
@@ -110,9 +108,9 @@ an existing immutable release.
 The release workflow emits WinGet manifests only when the setup EXE exists.
 Hashes are computed after signing. Before submitting those files to
 `microsoft/winget-pkgs`, run `winget validate` and Microsoft's SandboxTest.ps1,
-and test on Windows x64 with a supported NVIDIA GPU. The clean-runner wrapper
+and test on Windows x64. The clean-runner wrapper
 CI test checks silent install/uninstall and error propagation using tiny native
-script stand-ins; it does not prove GPU installation or inference works.
+script stand-ins; it does not prove provider connectivity works.
 
 The existing native updater remains in charge after installation. Its native
 version can advance independently of the wrapper's Apps & Features version;
@@ -121,8 +119,8 @@ updates in MultiVibe if they prefer to update solely through WinGet.
 
 ## Umbrel
 
-See `packaging/umbrel/README.md`. Linux ARM64 and amd64 CPU support, conservative
-small-model profiles, native CI builds and a multiarchitecture package generator
+See `packaging/umbrel/README.md`. Linux ARM64 and amd64 support,
+native CI builds and a multiarchitecture package generator
 are implemented. Image publication and real Umbrel hardware/browser validation
 remain prerequisites for official submission.
 

@@ -152,19 +152,6 @@ struct MenuBarSummary: Decodable {
     let earnings: Earnings
 }
 
-struct LocalWorkerStatusResponse: Decodable {
-    struct LocalWorker: Decodable {
-        let configurationState: String
-        let connectURL: URL
-
-        enum CodingKeys: String, CodingKey {
-            case configurationState = "configuration_state"
-            case connectURL = "connect_url"
-        }
-    }
-
-    let localWorker: LocalWorker?
-}
 
 struct DesktopSession: Decodable {
     let path: String
@@ -184,21 +171,4 @@ struct HostUpdateStatus: Decodable {
         case installRequested = "install_requested"
         case lastError = "last_error"
     }
-}
-
-struct CloudEnrollmentResult: Decodable {
-    let state: String
-}
-
-struct CloudEnrollmentError: Decodable {
-    let error: String
-}
-
-enum CloudEnrollmentFailure {
-    case invalidLink
-    case localAgentUnavailable
-    case expiredGrant
-    case conflict
-    case cloudRejected
-    case cloudUnavailable
 }
