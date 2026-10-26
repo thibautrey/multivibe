@@ -15,6 +15,7 @@ import Foundation
     @Published private(set) var runs: [String: NativeAgentRun] = [:]
     private(set) var loginEpoch = UUID()
     private let session: NativeCloudSession?
+    var cloudSession: NativeCloudSession? { session }
     private let client: NativeAgentClient?
     private let root: URL
     func instanceAuthorization() async throws -> (String, String) {
@@ -73,14 +74,39 @@ import Foundation
     /// User initiated only: opening a device chat never uploads its history.
     func connect(window: NSWindow) async {
         guard !busy, let session else { return }
+        clearActiveAccount()
         busy = true; error = nil
         let epoch = UUID(); loginEpoch = epoch
         defer { if loginEpoch == epoch { busy = false } }
         do {
             try await session.signIn(window: window)
             guard loginEpoch == epoch else { return }
-            try await activate()
+            if session.accountID != nil { try await activate() }
         } catch { if loginEpoch == epoch { self.error = error.localizedDescription } }
+    }
+    /// Fence the outgoing identity before suspending. Its durable journal remains on disk.
+    private func clearActiveAccount() {
+        loginEpoch = UUID(); accountID = nil; consent = nil; journal = nil
+        importedConversationIDs = []; cloudObjects = [:]; runs = [:]; models = []; busy = false; error = nil
+    }
+    func lockAccount() {
+        clearActiveAccount()
+        session?.lock()
+    }
+    func selectAccount(_ id: String, pin: String? = nil) async throws {
+        guard let session else { throw NativeCloudSessionError.disconnected }
+        clearActiveAccount()
+        let epoch = loginEpoch
+        busy = true
+        defer { if loginEpoch == epoch { busy = false } }
+        try await session.selectAccount(id, pin: pin)
+        guard loginEpoch == epoch else { throw CancellationError() }
+        try await activate()
+    }
+    func removeAccount(_ id: String) async throws {
+        guard let session else { return }
+        if session.selectedAccountID == id { clearActiveAccount() }
+        try await session.removeAccount(id)
     }
     func restore() async {
         guard !busy, accountID == nil, let session else { return }
@@ -109,7 +135,7 @@ import Foundation
         try check(account, epoch); consent = remote
     }
     func disconnect() async {
-        loginEpoch = UUID(); accountID = nil; consent = nil; journal = nil; importedConversationIDs = []; cloudObjects = [:]; runs = [:]; models = []; busy = false
+        clearActiveAccount()
         do { try await session?.disconnect() } catch { self.error = error.localizedDescription }
     }
     /// Each checked conversation is a separate explicit export. Pending operations survive errors.

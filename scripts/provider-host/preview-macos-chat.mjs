@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn, execFileSync } from 'node:child_process';
 import { buildAndInstallCef } from './cef-runtime.mjs';
 import { resolveMacOSDeveloperDirectory } from './build-macos-native.mjs';
+import { prepareFaceRecognition } from './prepare-face-recognition.mjs';
 
 const repository = fileURLToPath(new URL('../../', import.meta.url));
 const root = await mkdtemp(path.join(tmpdir(), 'multivibe-chat-preview-'));
@@ -151,6 +152,7 @@ let child;
 try {
   const contents = path.join(root, 'MultiVibe UI Preview.app/Contents');
   const resources = path.join(contents, 'Resources'); await mkdir(resources, { recursive: true }); await mkdir(path.join(contents, 'MacOS'));
+  await prepareFaceRecognition({ resources });
   const generated = path.join(root, 'MultiVibeMenuBar.swift');
   await writeFile(generated, (await readFile(path.join(repository, 'packaging/macos/MultiVibeMenuBar.swift'), 'utf8')).replace('@main\nfinal class MultiVibeMenuBarApp', 'class MultiVibeMenuBarApp').replace('    static func main()', '    @MainActor static func main()'));
   await writeFile(path.join(root, 'host-credentials.json'), JSON.stringify({ schema_version: 1, admin_token: 'isolated-preview-admin', proxy_api_key: 'isolated-preview-model' }));
