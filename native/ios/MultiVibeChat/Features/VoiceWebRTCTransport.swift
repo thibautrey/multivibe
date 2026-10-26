@@ -7,8 +7,10 @@ import Foundation
     private var peer: RTCPeerConnection?
     private var events: RTCDataChannel?
     private var microphone: RTCAudioTrack?
+    private var meteringTask: Task<Void, Never>?
     var onEvent: ((Data) -> Void)?
     var onDisconnect: (() -> Void)?
+    var onAudioLevels: ((Double, Double) -> Void)?
 
     func connect(_ credential: VoiceCredential) async throws {
         guard credential.transport == "webrtc", credential.endpoint.scheme == "https",
@@ -72,6 +74,7 @@ import Foundation
             guard peer === connection, Date() < channelDeadline else { throw URLError(.timedOut) }
             try await Task.sleep(for: .milliseconds(50))
         }
+        startMetering(connection)
     }
 
     func send(_ data: Data) throws {
@@ -80,6 +83,8 @@ import Foundation
     }
     func setMuted(_ muted: Bool) { microphone?.isEnabled = !muted }
     func close() {
+        meteringTask?.cancel(); meteringTask = nil
+        onAudioLevels?(0, 0)
         microphone?.isEnabled = false
         microphone = nil
         events?.delegate = nil
@@ -88,6 +93,44 @@ import Foundation
         peer?.delegate = nil
         peer?.close()
         peer = nil
+    }
+
+    private func startMetering(_ connection: RTCPeerConnection) {
+        meteringTask?.cancel()
+        meteringTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self, self.peer === connection else { return }
+                let levels = await VoiceWebRTCAudioMeter.levels(connection)
+                guard !Task.isCancelled, self.peer === connection else { return }
+                self.onAudioLevels?(levels.input, levels.output)
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+        }
+    }
+}
+
+struct VoiceWebRTCAudioLevels: Sendable, Equatable { let input: Double; let output: Double }
+
+enum VoiceWebRTCAudioMeter {
+    nonisolated static func levels(_ peer: RTCPeerConnection) async -> VoiceWebRTCAudioLevels {
+        await withCheckedContinuation { continuation in
+            peer.statistics { report in
+                continuation.resume(returning: levels(report.statistics.values.map { ($0.type, $0.values) }))
+            }
+        }
+    }
+
+    nonisolated static func levels(_ entries: [(String, [String: NSObject])]) -> VoiceWebRTCAudioLevels {
+        var input = 0.0, output = 0.0
+        for (type, values) in entries {
+            let kind = (values["kind"] as? NSString).map(String.init)
+                ?? (values["mediaType"] as? NSString).map(String.init)
+            guard kind == "audio", let raw = (values["audioLevel"] as? NSNumber)?.doubleValue else { continue }
+            let level = VoiceAudioLevel.normalizedRMS(raw)
+            if type == "media-source" { input = max(input, level) }
+            if type == "inbound-rtp" { output = max(output, level) }
+        }
+        return .init(input: input, output: output)
     }
 }
 

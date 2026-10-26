@@ -6,6 +6,56 @@ import AuthenticationServices
 private struct CapturedVoiceTap: @unchecked Sendable { let block: AVAudioNodeTapBlock }
 
 @MainActor final class RealtimeVoiceCaptureTests: XCTestCase {
+    func testAudioMeterMapsSilenceSpeechAndFullScaleIntoABoundedLevel() throws {
+        func pcm(_ value: Int16) -> Data {
+            let samples = [Int16](repeating: value.littleEndian, count: 480)
+            return samples.withUnsafeBytes(Data.init)
+        }
+        XCTAssertEqual(VoiceAudioLevel.normalizedPCM16(pcm(0)), 0)
+        XCTAssertGreaterThan(VoiceAudioLevel.normalizedPCM16(pcm(1_024)), 0.30)
+        XCTAssertGreaterThan(VoiceAudioLevel.normalizedPCM16(pcm(16_384)), 0.95)
+        XCTAssertLessThanOrEqual(VoiceAudioLevel.normalizedPCM16(pcm(.max)), 1)
+
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2))
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1_024))
+        buffer.frameLength = 1_024
+        for channel in 0..<2 { for frame in 0..<1_024 { buffer.floatChannelData?[channel][frame] = 0.1 } }
+        XCTAssertGreaterThan(VoiceAudioLevel.normalized(buffer), 0.55)
+    }
+
+    func testAudioMeterUsesFastAttackAndGentleRelease() {
+        let attack = VoiceAudioLevel.smoothed(current: 0, target: 1)
+        let release = VoiceAudioLevel.smoothed(current: 1, target: 0)
+        XCTAssertGreaterThan(attack, 0.5)
+        XCTAssertGreaterThan(release, attack)
+        XCTAssertEqual(VoiceAudioLevel.smoothed(current: 0.005, target: 0), 0)
+    }
+
+    func testWebRTCStatsSeparateMicrophoneAndAgentAudio() {
+        let levels = VoiceWebRTCAudioMeter.levels([
+            ("media-source", ["kind": NSString(string: "audio"), "audioLevel": NSNumber(value: 0.04)]),
+            ("inbound-rtp", ["mediaType": NSString(string: "audio"), "audioLevel": NSNumber(value: 0.18)]),
+            ("inbound-rtp", ["kind": NSString(string: "video"), "audioLevel": NSNumber(value: 1.0)])
+        ])
+        XCTAssertGreaterThan(levels.input, 0)
+        XCTAssertGreaterThan(levels.output, levels.input)
+        XCTAssertLessThanOrEqual(levels.output, 1)
+    }
+
+    func testPlaybackTapPublishesRenderedAgentAmplitudeFromTheAudioQueue() async throws {
+        let controller = RealtimeVoiceController(); controller.phase = .speaking
+        let callback = CapturedVoiceTap(block: RealtimeVoiceController.playbackMeterTap(controller: controller))
+        try await Task.detached {
+            let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
+            let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 2_048))
+            buffer.frameLength = 2_048
+            for frame in 0..<2_048 { buffer.floatChannelData?[0][frame] = 0.12 }
+            callback.block(buffer, AVAudioTime(sampleTime: 0, atRate: 48_000))
+        }.value
+        await Task.yield()
+        XCTAssertGreaterThan(controller.outputAudioLevel, 0.3)
+    }
+
     func testPCM16NetworkChunksPreserveSamplesAcrossOddPacketBoundaries() {
         var framer = VoicePCM16Framer()
         XCTAssertEqual(framer.append(Data([0x01])), Data())
