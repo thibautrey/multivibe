@@ -166,7 +166,7 @@ jobs:
           set -euo pipefail
           archive="release-linux/multivibe-host_${{ needs.validate-tag.outputs.version }}_linux_amd64.tar.gz"
           split --bytes=1900M --numeric-suffixes=1 --suffix-length=3 "$archive" "$archive.part-"
-          test "$(find release-linux -maxdepth 1 -type f -name "$(basename "$archive").part-*" | wc -l)" -ge 2
+          test "$(find release-linux -maxdepth 1 -type f -name "$(basename "$archive").part-*" | wc -l)" -ge 1
           rm -- "$archive"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -525,8 +525,9 @@ jobs:
         run: |
           set -euo pipefail
           archive="release/multivibe-host_${{ needs.validate-tag.outputs.version }}_linux_amd64.tar.gz"
+          shopt -s nullglob
           parts=("$archive".part-*)
-          test "${#parts[@]}" -ge 2
+          test "${#parts[@]}" -ge 1
           cat "${parts[@]}" > "$archive"
           rm -- "${parts[@]}"
       - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
@@ -615,8 +616,9 @@ jobs:
         run: |
           set -euo pipefail
           archive="release-linux/multivibe-host_${{ needs.validate-tag.outputs.version }}_linux_amd64.tar.gz"
+          shopt -s nullglob
           parts=("$archive".part-*)
-          test "${#parts[@]}" -ge 2
+          test "${#parts[@]}" -ge 1
           cat "${parts[@]}" > "$archive"
           rm -- "${parts[@]}"
       - name: Build and exercise the Linux Host image
