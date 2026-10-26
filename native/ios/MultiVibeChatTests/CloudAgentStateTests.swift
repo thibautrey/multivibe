@@ -76,6 +76,57 @@ extension CloudAgentStateTests {
 }
 
 extension CloudAgentStateTests {
+    private func browserFile(_ id:String,_ path:String,type:String="hermes_workspace_file",bytes:Int?=nil,content:String="",conflicted:Bool=false,deleted:Bool=false) -> ConversationManager.CloudAgentSummary {
+        var value:[String:HistoryJSON]=["type":.string(type),"path":.string(path)]
+        if type == "hermes_workspace_file" { value["content"] = .string(content) }
+        if let bytes { value["byteLength"] = .number(Double(bytes)) }
+        return .init(id:id,kind:"file",title:path,conflicted:conflicted,deleted:deleted,value:.object(value))
+    }
+
+    func testWorkspaceBrowserBuildsFinderHierarchyAndCountsDescendants() {
+        let files=[
+            browserFile("1","notes/readme.md",content:"Read me"),
+            browserFile("2","notes/images/sky.png",type:"hermes_artifact_file",bytes:2_048),
+            browserFile("3","todo.txt",content:"Todo")
+        ]
+        let index=CloudWorkspaceBrowserIndex(files:files,pendingIDs:[])
+        let root=index.entries(directory:[],search:"",filter:.all,sort:.name,ascending:true)
+        XCTAssertEqual(root.map(\.name),["notes","todo.txt"])
+        XCTAssertEqual(root.first?.descendantCount,2)
+        XCTAssertEqual(root.map(\.isFolder),[true,false])
+        let notes=index.entries(directory:["notes"],search:"",filter:.all,sort:.name,ascending:true)
+        XCTAssertEqual(notes.map(\.name),["images","readme.md"])
+        XCTAssertEqual(notes.first?.path,"notes/images")
+    }
+
+    func testWorkspaceBrowserFiltersRecursiveTypesAndSearchesFolders() {
+        let files=[
+            browserFile("1","Documents/guide.md",content:"Guide"),
+            browserFile("2","Images/cover.JPG",type:"hermes_artifact_file",bytes:512),
+            browserFile("3","archive.zip",type:"hermes_artifact_file",bytes:1_024)
+        ]
+        let index=CloudWorkspaceBrowserIndex(files:files,pendingIDs:[])
+        XCTAssertEqual(index.entries(directory:[],search:"",filter:.images,sort:.name,ascending:true).map(\.path),["Images/cover.JPG"])
+        XCTAssertEqual(index.entries(directory:[],search:"",filter:.text,sort:.name,ascending:true).map(\.path),["Documents/guide.md"])
+        XCTAssertEqual(index.entries(directory:[],search:"doc",filter:.folders,sort:.name,ascending:true).map(\.path),["Documents"])
+        XCTAssertEqual(index.entries(directory:[],search:"guide",filter:.all,sort:.name,ascending:true).map(\.path),["Documents/guide.md"])
+    }
+
+    func testWorkspaceBrowserKeepsSyncConflictAndSizeSortingVisible() {
+        let files=[
+            browserFile("small","small.pdf",type:"hermes_artifact_file",bytes:20),
+            browserFile("large","large.pdf",type:"hermes_artifact_file",bytes:2_000),
+            browserFile("conflict","conflict.txt",content:"two versions",conflicted:true)
+        ]
+        let entries=CloudWorkspaceBrowserIndex(files:files,pendingIDs:["small"]).entries(directory:[],search:"",filter:.all,sort:.size,ascending:false)
+        XCTAssertEqual(entries.map(\.name),["large.pdf","conflict.txt","small.pdf"])
+        XCTAssertTrue(entries.last?.pending == true)
+        XCTAssertTrue(entries.first(where:{$0.id == "conflict"})?.conflicted == true)
+        XCTAssertEqual(entries.first?.detail,ByteCountFormatter.string(fromByteCount:2_000,countStyle:.file))
+    }
+}
+
+extension CloudAgentStateTests {
     func testWorkspaceIdentityAndUnicodeValidationMatchCloud() throws {
         XCTAssertEqual(CloudAgentState.workspaceFileID(projectId:id(1),path:"notes/cafe.txt"),"f27d8d37-0c00-5b9d-891f-998ffa5de55e")
         try CloudAgentState.validateWorkspaceText(path:String(repeating:"💙",count:256),content:String(repeating:"💙",count:16384))

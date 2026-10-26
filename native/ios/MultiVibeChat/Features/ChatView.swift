@@ -3749,9 +3749,211 @@ private struct CloudAgentBrowserView: View {
 }
 
 
+enum CloudWorkspaceBrowserLayout: String, CaseIterable, Identifiable {
+    case grid, list
+    var id: String { rawValue }
+    var title: String { self == .grid ? "Grille" : "Liste" }
+    var symbol: String { self == .grid ? "square.grid.2x2" : "list.bullet" }
+}
+
+enum CloudWorkspaceBrowserFilter: String, CaseIterable, Identifiable {
+    case all, folders, images, text
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .all: "Tous"
+        case .folders: "Dossiers"
+        case .images: "Images"
+        case .text: "Texte"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .all: "sparkles"
+        case .folders: "folder"
+        case .images: "photo"
+        case .text: "doc.text"
+        }
+    }
+}
+
+enum CloudWorkspaceBrowserSort: String, CaseIterable, Identifiable {
+    case name, type, size
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .name: "Nom"
+        case .type: "Type"
+        case .size: "Taille"
+        }
+    }
+}
+
+struct CloudWorkspaceBrowserEntry: Identifiable {
+    enum Kind { case folder, file }
+    let id: String
+    let name: String
+    let path: String
+    let kind: Kind
+    let file: ConversationManager.CloudAgentSummary?
+    let descendantCount: Int
+    let pending: Bool
+
+    var isFolder: Bool { kind == .folder }
+    var isArtifact: Bool { file?.value?.object?["type"]?.string == "hermes_artifact_file" }
+    var isText: Bool { !isFolder && !isArtifact }
+    var conflicted: Bool { file?.conflicted == true }
+    var deleted: Bool { file?.deleted == true }
+    var fileExtension: String { (name as NSString).pathExtension.lowercased() }
+    var isImage: Bool { ["avif", "gif", "heic", "heif", "jpeg", "jpg", "png", "svg", "tif", "tiff", "webp"].contains(fileExtension) }
+    var byteCount: Int? {
+        if let value = file?.value?.object?["byteLength"]?.number, value.isFinite, value >= 0 { return Int(value) }
+        return file?.value?.object?["content"]?.string?.utf8.count
+    }
+    var symbol: String {
+        if isFolder { return "folder.fill" }
+        if isImage { return "photo.fill" }
+        switch fileExtension {
+        case "pdf": return "doc.richtext.fill"
+        case "zip", "gz", "tar", "7z": return "archivebox.fill"
+        case "json", "js", "jsx", "py", "swift", "ts", "tsx": return "chevron.left.forwardslash.chevron.right"
+        case "md", "txt", "rtf": return "doc.text.fill"
+        default: return isArtifact ? "doc.fill" : "doc.text.fill"
+        }
+    }
+    var color: Color {
+        if isFolder { return MultiVibeTheme.accent }
+        if conflicted { return .orange }
+        if isImage { return .pink }
+        switch fileExtension {
+        case "pdf": return .red
+        case "zip", "gz", "tar", "7z": return .purple
+        case "json", "js", "jsx", "py", "swift", "ts", "tsx": return .blue
+        default: return isArtifact ? .indigo : MultiVibeTheme.accent
+        }
+    }
+    var detail: String {
+        if isFolder { return descendantCount == 1 ? "1 élément" : "\(descendantCount) éléments" }
+        if conflicted { return "Conflit à résoudre" }
+        if deleted && pending { return "Suppression en attente" }
+        if pending { return "Synchronisation en attente" }
+        if let byteCount { return ByteCountFormatter.string(fromByteCount:Int64(byteCount),countStyle:.file) }
+        return isArtifact ? "Fichier" : "Document texte"
+    }
+}
+
+struct CloudWorkspaceBrowserIndex {
+    private struct Record {
+        let file: ConversationManager.CloudAgentSummary
+        let path: String
+        let components: [String]
+    }
+    private let records: [Record]
+    private let pendingIDs: Set<String>
+
+    init(files: [ConversationManager.CloudAgentSummary], pendingIDs: Set<String>) {
+        self.pendingIDs = pendingIDs
+        records = files.compactMap { file in
+            let path = file.value?.object?["path"]?.string ?? file.title
+            let components = path.split(separator:"/",omittingEmptySubsequences:true).map(String.init)
+            return components.isEmpty ? nil : Record(file:file,path:path,components:components)
+        }
+    }
+
+    func entries(directory: [String], search: String, filter: CloudWorkspaceBrowserFilter,
+                 sort: CloudWorkspaceBrowserSort, ascending: Bool) -> [CloudWorkspaceBrowserEntry] {
+        let scoped = records.filter { $0.components.count > directory.count && $0.components.starts(with:directory) }
+        let query = search.trimmingCharacters(in:.whitespacesAndNewlines)
+        var result: [CloudWorkspaceBrowserEntry] = []
+
+        if filter == .all && query.isEmpty {
+            result = directEntries(scoped,directory:directory,includeFiles:true)
+        } else if filter == .folders && query.isEmpty {
+            result = directEntries(scoped,directory:directory,includeFiles:false)
+        } else {
+            if filter == .all || filter == .folders {
+                result += folderEntries(scoped,directory:directory,recursive:true).filter { query.isEmpty || matches($0.path,query) }
+            }
+            if filter != .folders {
+                result += scoped.compactMap { record in
+                    let entry=fileEntry(record)
+                    guard query.isEmpty || matches(record.path,query) else { return nil }
+                    switch filter {
+                    case .images: return entry.isImage ? entry : nil
+                    case .text: return entry.isText ? entry : nil
+                    case .all: return entry
+                    case .folders: return nil
+                    }
+                }
+            }
+        }
+        return result.sorted { lhs,rhs in
+            if lhs.isFolder != rhs.isFolder { return lhs.isFolder }
+            let comparison: ComparisonResult
+            switch sort {
+            case .name: comparison=lhs.name.localizedStandardCompare(rhs.name)
+            case .type: comparison=lhs.fileExtension.localizedStandardCompare(rhs.fileExtension)
+            case .size: comparison=(lhs.byteCount ?? 0)==(rhs.byteCount ?? 0) ? lhs.name.localizedStandardCompare(rhs.name) : ((lhs.byteCount ?? 0)<(rhs.byteCount ?? 0) ? .orderedAscending:.orderedDescending)
+            }
+            if comparison == .orderedSame { return lhs.id < rhs.id }
+            return ascending ? comparison == .orderedAscending : comparison == .orderedDescending
+        }
+    }
+
+    private func directEntries(_ scoped:[Record],directory:[String],includeFiles:Bool) -> [CloudWorkspaceBrowserEntry] {
+        var files:[CloudWorkspaceBrowserEntry]=[],folders=Set<String>()
+        for record in scoped {
+            if record.components.count == directory.count+1 {
+                if includeFiles { files.append(fileEntry(record)) }
+            } else {
+                folders.insert((directory+[record.components[directory.count]]).joined(separator:"/"))
+            }
+        }
+        return folderEntries(paths:folders)+files
+    }
+
+    private func folderEntries(_ scoped:[Record],directory:[String],recursive:Bool) -> [CloudWorkspaceBrowserEntry] {
+        var paths=Set<String>()
+        for record in scoped {
+            let last=max(directory.count,record.components.count-1)
+            guard directory.count < last else { continue }
+            let range=recursive ? directory.count..<last : directory.count..<min(directory.count+1,last)
+            for index in range { paths.insert(Array(record.components.prefix(index+1)).joined(separator:"/")) }
+        }
+        return folderEntries(paths:paths)
+    }
+
+    private func folderEntries(paths:Set<String>) -> [CloudWorkspaceBrowserEntry] {
+        paths.map { path in
+            let prefix=path.split(separator:"/").map(String.init)
+            let count=records.filter{$0.components.starts(with:prefix)}.count
+            return .init(id:"folder:"+path,name:prefix.last ?? path,path:path,kind:.folder,file:nil,descendantCount:count,pending:false)
+        }
+    }
+
+    private func fileEntry(_ record:Record) -> CloudWorkspaceBrowserEntry {
+        .init(id:record.file.id,name:record.components.last ?? record.path,path:record.path,kind:.file,file:record.file,
+              descendantCount:0,pending:pendingIDs.contains(record.file.id))
+    }
+
+    private func matches(_ value:String,_ query:String) -> Bool {
+        value.localizedCaseInsensitiveContains(query)
+    }
+}
+
 private struct CloudWorkspaceEditorSelection: Identifiable {
     let id = UUID()
     let draft: ConversationManager.CloudWorkspaceDraft
+    let suggestedPath: String?
+}
+
+private struct CloudWorkspaceArtifactSelection: Identifiable {
+    let entry: CloudWorkspaceBrowserEntry
+    var id: String { entry.id }
+}
+
+private struct CloudWorkspaceConflictSelection: Identifiable, Hashable {
+    let id: String
 }
 
 private struct CloudWorkspaceView: View {
@@ -3760,8 +3962,11 @@ private struct CloudWorkspaceView: View {
     let title: String
     @State private var account: String?
     @State private var editor: CloudWorkspaceEditorSelection?
+    @State private var artifact: CloudWorkspaceArtifactSelection?
+    @State private var conflict: CloudWorkspaceConflictSelection?
     @State private var error: String?
     @State private var importing = false
+    @State private var importDirectory = ""
     @State private var importDraft: ConversationManager.CloudWorkspaceDraft?
     @State private var importBusy = false
     @State private var downloading: Set<String> = []
@@ -3769,78 +3974,350 @@ private struct CloudWorkspaceView: View {
     private var visible: Bool { account != nil && account == manager.session?.accountId }
     private var pending: [ConversationManager.CloudAgentSummary] { manager.cloudWorkspacePendingFiles(projectId:projectId) }
     private var files: [ConversationManager.CloudAgentSummary] { manager.cloudWorkspaceFiles(projectId:projectId) }
-    private func open(_ id:String?) {
-        do { editor = .init(draft:try manager.cloudWorkspaceDraft(projectId:projectId,fileId:id));error=nil }
-        catch { self.error=error.localizedDescription }
+
+    private func open(_ id:String?,directory:String="") {
+        do {
+            let draft=try manager.cloudWorkspaceDraft(projectId:projectId,fileId:id)
+            let suggested=id == nil ? (directory.isEmpty ? "nouveau-fichier.txt" : directory+"/nouveau-fichier.txt") : nil
+            editor = .init(draft:draft,suggestedPath:suggested);error=nil
+        } catch { self.error=error.localizedDescription }
+    }
+    private func beginImport(directory:String) {
+        do {
+            importDraft=try manager.cloudWorkspaceArtifactDraft(projectId:projectId,fileId:nil)
+            importDirectory=directory;importing=true;error=nil
+        } catch { self.error=error.localizedDescription }
+    }
+    private func download(_ entry:CloudWorkspaceBrowserEntry) {
+        guard !entry.pending,!entry.deleted,!entry.conflicted,!downloading.contains(entry.id) else { return }
+        downloading.insert(entry.id);error=nil
+        Task {
+            do { downloaded[entry.id]=try await manager.downloadCloudWorkspaceArtifact(projectId:projectId,fileId:entry.id) }
+            catch { self.error=error.localizedDescription }
+            downloading.remove(entry.id)
+        }
     }
     var body: some View {
-        List {
+        Group {
             if visible {
-                Section {
-                    Text("Fichiers partagés avec votre environnement Hermes. Les modifications enregistrées hors ligne seront synchronisées au retour du réseau.")
-                    Text("Texte UTF-8 : 64 Ko par fichier et 512 Ko par projet. Autres fichiers : 64 Mio chacun et 256 Mio par projet, avec 200 fichiers au total.").font(.caption).foregroundStyle(.secondary)
-                    Button("Nouveau fichier texte") { open(nil) }.accessibilityIdentifier("hermesWorkspaceNewFile")
-                    Button("Importer un fichier") {
-                        do { importDraft=try manager.cloudWorkspaceArtifactDraft(projectId:projectId,fileId:nil);importing=true;error=nil }
-                        catch { self.error=error.localizedDescription }
-                    }.disabled(importBusy).accessibilityIdentifier("hermesWorkspaceImportFile")
-                    Button(manager.cloudAgentSyncing ? "Synchronisation…" : "Actualiser") { Task { await manager.synchronizeCloudAgentState() } }.disabled(manager.cloudAgentSyncing)
-                    if let issue=manager.cloudAgentSyncError { Text(issue).foregroundStyle(.orange) }
-                    if let error { Text(error).foregroundStyle(.red) }
-                }
-                Section(title) {
-                    if files.isEmpty { Text("Aucun fichier.").foregroundStyle(.secondary) }
-                    ForEach(files) { file in
-                        VStack(alignment:.leading,spacing:6) {
-                            let waiting=pending.contains(where:{$0.id == file.id})
-                            let isArtifact=file.value?.object?["type"]?.string=="hermes_artifact_file"
-                            if isArtifact {
-                                Text(file.value?.object?["path"]?.string ?? file.title).font(.headline)
-                                if let bytes=file.value?.object?["byteLength"]?.number { Text("Fichier binaire · \(Int(bytes)) octets").font(.caption).foregroundStyle(.secondary) }
-                                if waiting { Text("Copié sur cet appareil · transfert ou publication en attente").font(.caption).foregroundStyle(.secondary) }
-                                if let url=downloaded[file.id] {
-                                    ShareLink(item:url) { Label("Partager le fichier vérifié",systemImage:"square.and.arrow.up") }
-                                } else {
-                                    Button(downloading.contains(file.id) ? "Téléchargement…" : "Télécharger et vérifier") {
-                                        downloading.insert(file.id);error=nil
-                                        Task { do { downloaded[file.id]=try await manager.downloadCloudWorkspaceArtifact(projectId:projectId,fileId:file.id) }
-                                            catch { self.error=error.localizedDescription };downloading.remove(file.id) }
-                                    }.disabled(waiting || file.deleted || file.conflicted || downloading.contains(file.id))
-                                }
-                            } else {
-                                Button(file.value?.object?["path"]?.string ?? file.title) { open(file.id) }
-                                    .disabled(waiting || file.deleted || file.conflicted)
-                                if waiting { Text(file.deleted ? "Suppression en attente de synchronisation" : "Enregistré sur cet appareil · synchronisation en attente").font(.caption).foregroundStyle(.secondary) }
-                                if waiting, !file.deleted, let content=file.value?.object?["content"]?.string {
-                                    DisclosureGroup("Voir le contenu enregistré") { Text(content).font(.system(.caption,design:.monospaced)).textSelection(.enabled) }
-                                }
-                            }
-                            if file.conflicted { NavigationLink("Examiner les versions en conflit") { CloudConflictReviewView(objectId:file.id) } }
-                        }
-                    }
-                }
-            } else { Text("Reconnectez-vous au compte de ce projet.") }
-        }.navigationTitle("Fichiers Hermes")
-            .onAppear { if account == nil { account=manager.session?.accountId } }
-            .onChange(of:manager.session?.accountId) { _,_ in
-                let old=Array(downloaded.values);downloaded=[:];downloading=[];account=nil;editor=nil;importDraft=nil;importing=false;error=nil
-                Task { for url in old { await manager.releaseCloudWorkspaceArtifactDownload(url) } }
+                CloudWorkspaceBrowserScreen(title:title,files:files,pendingIDs:Set(pending.map(\.id)),syncing:manager.cloudAgentSyncing,importing:importBusy,
+                    syncError:manager.cloudAgentSyncError,error:error,downloaded:downloaded,downloading:downloading,
+                    openText:{open($0)},openArtifact:{artifact = .init(entry:$0)},openConflict:{conflict = .init(id:$0)},
+                    refresh:{Task { await manager.synchronizeCloudAgentState() }},createText:{open(nil,directory:$0)},importFile:beginImport,download:download)
+            } else {
+                ContentUnavailableView("Projet indisponible",systemImage:"person.crop.circle.badge.exclamationmark",
+                    description:Text("Reconnectez-vous au compte de ce projet pour afficher ses fichiers."))
             }
-            .onDisappear { let old=Array(downloaded.values);downloaded=[:];Task { for url in old { await manager.releaseCloudWorkspaceArtifactDownload(url) } } }
-            .fileImporter(isPresented:$importing,allowedContentTypes:[.data]) { result in
-                guard let draft=importDraft else { return };importBusy=true;error=nil
-                Task {
-                    do {
-                        let source=try result.get(),granted=source.startAccessingSecurityScopedResource()
-                        defer { if granted { source.stopAccessingSecurityScopedResource() } }
-                        _=try await manager.beginCloudWorkspaceArtifactImport(draft,path:source.lastPathComponent,sourceURL:source)
-                    } catch { if manager.cloudWorkspaceDraftVisible(draft) { self.error=error.localizedDescription } }
-                    importBusy=false;importDraft=nil
-                }
+        }
+        .onAppear { if account == nil { account=manager.session?.accountId } }
+        .onChange(of:manager.session?.accountId) { _,_ in resetForAccountChange() }
+        .onDisappear { releaseDownloads() }
+        .fileImporter(isPresented:$importing,allowedContentTypes:[.data]) { result in
+            guard let draft=importDraft else { return };importBusy=true;error=nil
+            Task {
+                do {
+                    let source=try result.get(),granted=source.startAccessingSecurityScopedResource()
+                    defer { if granted { source.stopAccessingSecurityScopedResource() } }
+                    let path=importDirectory.isEmpty ? source.lastPathComponent : importDirectory+"/"+source.lastPathComponent
+                    _=try await manager.beginCloudWorkspaceArtifactImport(draft,path:path,sourceURL:source)
+                } catch { if manager.cloudWorkspaceDraftVisible(draft) { self.error=error.localizedDescription } }
+                importBusy=false;importDraft=nil;importDirectory=""
             }
-            .sheet(item:$editor) { selection in CloudWorkspaceEditorView(draft:selection.draft) }
+        }
+        .sheet(item:$editor) { selection in CloudWorkspaceEditorView(draft:selection.draft,suggestedPath:selection.suggestedPath) }
+        .sheet(item:$artifact) { selection in
+            CloudWorkspaceArtifactDetailView(entry:selection.entry,url:downloaded[selection.id],downloading:downloading.contains(selection.id),
+                download:{download(selection.entry)})
+        }
+        .navigationDestination(item:$conflict) { selection in CloudConflictReviewView(objectId:selection.id) }
+    }
+    private func releaseDownloads() {
+        let old=Array(downloaded.values);downloaded=[:]
+        Task { for url in old { await manager.releaseCloudWorkspaceArtifactDownload(url) } }
+    }
+    private func resetForAccountChange() {
+        releaseDownloads();downloading=[];account=nil;editor=nil;artifact=nil;conflict=nil;importDraft=nil;importing=false;importDirectory="";error=nil
     }
 }
+
+struct CloudWorkspaceBrowserScreen: View {
+    let title: String
+    let files: [ConversationManager.CloudAgentSummary]
+    let pendingIDs: Set<String>
+    let syncing: Bool
+    let importing: Bool
+    let syncError: String?
+    let error: String?
+    let downloaded: [String:URL]
+    let downloading: Set<String>
+    let openText: (String) -> Void
+    let openArtifact: (CloudWorkspaceBrowserEntry) -> Void
+    let openConflict: (String) -> Void
+    let refresh: () -> Void
+    let createText: (String) -> Void
+    let importFile: (String) -> Void
+    let download: (CloudWorkspaceBrowserEntry) -> Void
+    @State private var directory: [String] = []
+    @State private var search = ""
+    @State private var filter: CloudWorkspaceBrowserFilter = .all
+    @State private var layout: CloudWorkspaceBrowserLayout = .grid
+    @State private var sort: CloudWorkspaceBrowserSort = .name
+    @State private var ascending = true
+    @State private var information = false
+
+    private var currentPath: String { directory.joined(separator:"/") }
+    private var entries: [CloudWorkspaceBrowserEntry] {
+        CloudWorkspaceBrowserIndex(files:files,pendingIDs:pendingIDs).entries(directory:directory,search:search,filter:filter,sort:sort,ascending:ascending)
+    }
+    private var itemSummary: String {
+        let folders=entries.filter(\.isFolder).count,documents=entries.count-folders
+        if folders>0 && documents>0 { return "\(folders) dossier\(folders == 1 ? "" : "s") · \(documents) fichier\(documents == 1 ? "" : "s")" }
+        if folders>0 { return "\(folders) dossier\(folders == 1 ? "" : "s")" }
+        return "\(documents) fichier\(documents == 1 ? "" : "s")"
+    }
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment:.leading,spacing:18) {
+                header
+                filters
+                if !directory.isEmpty { breadcrumbs }
+                if syncing { ProgressView("Synchronisation…").frame(maxWidth:.infinity,alignment:.leading) }
+                if let syncError { MultiVibeStatusMessage(message:syncError,kind:.warning,actionTitle:"Réessayer",action:refresh) }
+                if let error { MultiVibeStatusMessage(message:error) }
+                if entries.isEmpty { emptyState.padding(.top,36) }
+                else if layout == .grid { grid }
+                else { list }
+            }.padding(.horizontal,16).padding(.top,10).padding(.bottom,18)
+        }
+        .background(MultiVibeTheme.background.ignoresSafeArea())
+        .navigationTitle(directory.last ?? title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar { ToolbarItem(placement:.primaryAction) { optionsMenu } }
+        .safeAreaInset(edge:.bottom) { bottomBar }
+        .refreshable { refresh() }
+        .sheet(isPresented:$information) { CloudWorkspaceInformationView(fileCount:files.count) }
+        .onChange(of:files.map(\.id)) { _,_ in
+            guard !directory.isEmpty else { return }
+            let prefix=currentPath+"/"
+            if !files.contains(where:{ ($0.value?.object?["path"]?.string ?? $0.title).hasPrefix(prefix) }) { directory=[] }
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing:14) {
+            ZStack {
+                RoundedRectangle(cornerRadius:18,style:.continuous).fill(MultiVibeTheme.accent.opacity(0.13)).frame(width:64,height:64)
+                Image(systemName:directory.isEmpty ? "externaldrive.fill" : "folder.fill").font(.system(size:29,weight:.semibold)).foregroundStyle(MultiVibeTheme.accent)
+            }
+            VStack(alignment:.leading,spacing:4) {
+                Text(directory.isEmpty ? title : directory.last ?? title).font(.title2.bold()).lineLimit(1)
+                Text(itemSummary).font(.subheadline).foregroundStyle(.secondary)
+                Label(pendingIDs.isEmpty ? "À jour" : "\(pendingIDs.count) en attente",systemImage:pendingIDs.isEmpty ? "checkmark.circle.fill" : "arrow.triangle.2.circlepath")
+                    .font(.caption.weight(.semibold)).foregroundStyle(pendingIDs.isEmpty ? MultiVibeTheme.accent : .orange)
+            }
+            Spacer(minLength:0)
+        }
+        .padding(16).background(MultiVibeTheme.softAccent,in:RoundedRectangle(cornerRadius:24,style:.continuous))
+        .overlay(RoundedRectangle(cornerRadius:24,style:.continuous).stroke(.primary.opacity(0.06)))
+    }
+
+    private var filters: some View {
+        ScrollView(.horizontal,showsIndicators:false) {
+            HStack(spacing:10) {
+                ForEach(CloudWorkspaceBrowserFilter.allCases) { item in
+                    Button { withAnimation(.snappy) { filter=item } } label: {
+                        Label(item.title,systemImage:item.symbol).font(.subheadline.weight(.semibold)).padding(.horizontal,15).frame(height:42)
+                            .foregroundStyle(filter == item ? Color.white : Color.primary)
+                            .background(filter == item ? MultiVibeTheme.accent : Color(uiColor:.secondarySystemBackground),in:Capsule())
+                    }.buttonStyle(.plain).accessibilityIdentifier("workspaceFilter-"+item.rawValue)
+                }
+            }
+        }
+    }
+
+    private var breadcrumbs: some View {
+        ScrollView(.horizontal,showsIndicators:false) {
+            HStack(spacing:7) {
+                Button { directory=[] } label: { Label(title,systemImage:"house").labelStyle(.titleAndIcon) }.buttonStyle(.plain)
+                ForEach(Array(directory.indices),id:\.self) { index in
+                    Image(systemName:"chevron.right").font(.caption2).foregroundStyle(.tertiary)
+                    Button(directory[index]) { directory=Array(directory.prefix(index+1)) }.buttonStyle(.plain).fontWeight(index == directory.count-1 ? .semibold:.regular)
+                }
+            }.font(.subheadline).foregroundStyle(.secondary)
+        }.accessibilityIdentifier("workspaceBreadcrumbs")
+    }
+
+    private var grid: some View {
+        LazyVGrid(columns:[GridItem(.adaptive(minimum:145,maximum:230),spacing:14)],spacing:18) {
+            ForEach(entries) { entry in gridCell(entry) }
+        }.accessibilityIdentifier("workspaceGrid")
+    }
+
+    private var list: some View {
+        LazyVStack(spacing:10) { ForEach(entries) { entry in listRow(entry) } }.accessibilityIdentifier("workspaceList")
+    }
+
+    private func gridCell(_ entry:CloudWorkspaceBrowserEntry) -> some View {
+        Button { activate(entry) } label: {
+            VStack(alignment:.leading,spacing:9) {
+                ZStack(alignment:.topTrailing) {
+                    RoundedRectangle(cornerRadius:21,style:.continuous).fill(entry.color.opacity(0.11))
+                    Image(systemName:entry.symbol).font(.system(size:43,weight:.medium)).foregroundStyle(entry.color).frame(maxWidth:.infinity,maxHeight:.infinity)
+                    statusBadge(entry).padding(10)
+                }.aspectRatio(1.28,contentMode:.fit).overlay(RoundedRectangle(cornerRadius:21,style:.continuous).stroke(entry.color.opacity(0.16)))
+                Text(entry.name).font(.headline).foregroundStyle(.primary).lineLimit(2).multilineTextAlignment(.leading)
+                Text(entry.detail).font(.caption).foregroundStyle(entry.conflicted ? .orange:.secondary).lineLimit(1)
+            }.frame(maxWidth:.infinity,alignment:.leading)
+        }.buttonStyle(.plain).contextMenu { entryActions(entry) }
+            .accessibilityElement(children:.combine).accessibilityLabel(entry.name+", "+entry.detail)
+            .accessibilityHint(entry.isFolder ? "Ouvre le dossier" : entry.conflicted ? "Ouvre les versions en conflit" : entry.isArtifact ? "Affiche les détails du fichier" : "Modifie le document texte")
+    }
+
+    private func listRow(_ entry:CloudWorkspaceBrowserEntry) -> some View {
+        Button { activate(entry) } label: {
+            HStack(spacing:13) {
+                ZStack {
+                    RoundedRectangle(cornerRadius:13,style:.continuous).fill(entry.color.opacity(0.12)).frame(width:48,height:48)
+                    Image(systemName:entry.symbol).font(.title3.weight(.semibold)).foregroundStyle(entry.color)
+                }
+                VStack(alignment:.leading,spacing:3) {
+                    Text(entry.name).font(.body.weight(.semibold)).foregroundStyle(.primary).lineLimit(1)
+                    Text(entry.path == entry.name ? entry.detail : entry.path+" · "+entry.detail).font(.caption).foregroundStyle(entry.conflicted ? .orange:.secondary).lineLimit(1)
+                }
+                Spacer(minLength:4);statusBadge(entry)
+                Image(systemName:"chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+            }.padding(12).background(MultiVibeTheme.card,in:RoundedRectangle(cornerRadius:18,style:.continuous))
+                .overlay(RoundedRectangle(cornerRadius:18,style:.continuous).stroke(.primary.opacity(0.06)))
+        }.buttonStyle(.plain).contextMenu { entryActions(entry) }
+    }
+
+    @ViewBuilder private func statusBadge(_ entry:CloudWorkspaceBrowserEntry) -> some View {
+        if entry.conflicted { Image(systemName:"exclamationmark.triangle.fill").foregroundStyle(.orange).accessibilityLabel("Conflit") }
+        else if entry.pending { Image(systemName:entry.deleted ? "trash.circle.fill":"arrow.triangle.2.circlepath.circle.fill").foregroundStyle(.orange).accessibilityLabel(entry.detail) }
+        else if downloaded[entry.id] != nil { Image(systemName:"checkmark.circle.fill").foregroundStyle(MultiVibeTheme.accent).accessibilityLabel("Téléchargé et vérifié") }
+        else if downloading.contains(entry.id) { ProgressView().controlSize(.small).accessibilityLabel("Téléchargement") }
+    }
+
+    @ViewBuilder private func entryActions(_ entry:CloudWorkspaceBrowserEntry) -> some View {
+        if entry.isFolder { Button("Ouvrir",systemImage:"folder") { openFolder(entry.path) } }
+        else if entry.conflicted { Button("Examiner le conflit",systemImage:"exclamationmark.triangle") { openConflict(entry.id) } }
+        else if entry.isArtifact {
+            Button("Informations",systemImage:"info.circle") { openArtifact(entry) }
+            if let url=downloaded[entry.id] { ShareLink(item:url) { Label("Partager",systemImage:"square.and.arrow.up") } }
+            else { Button("Télécharger et vérifier",systemImage:"arrow.down.circle") { download(entry) }.disabled(entry.pending || entry.deleted) }
+        } else {
+            Button("Modifier",systemImage:"square.and.pencil") { openText(entry.id) }.disabled(entry.pending || entry.deleted)
+        }
+    }
+
+    private func activate(_ entry:CloudWorkspaceBrowserEntry) {
+        if entry.isFolder { openFolder(entry.path) }
+        else if entry.conflicted { openConflict(entry.id) }
+        else if entry.isArtifact { openArtifact(entry) }
+        else if !entry.pending && !entry.deleted { openText(entry.id) }
+    }
+    private func openFolder(_ path:String) { withAnimation(.snappy) { directory=path.split(separator:"/").map(String.init);search="";filter = .all } }
+
+    private var emptyState: some View {
+        ContentUnavailableView(search.isEmpty ? (filter == .all ? "Dossier vide" : "Aucun élément") : "Aucun résultat",
+            systemImage:search.isEmpty ? (filter == .folders ? "folder":"doc") : "magnifyingglass",
+            description:Text(search.isEmpty ? "Créez un document texte ou importez un fichier dans cet emplacement." : "Essayez un autre nom ou un autre filtre."))
+            .frame(maxWidth:.infinity).accessibilityIdentifier("workspaceEmptyState")
+    }
+
+    private var optionsMenu: some View {
+        Menu {
+            Picker("Présentation",selection:$layout) { ForEach(CloudWorkspaceBrowserLayout.allCases) { Label($0.title,systemImage:$0.symbol).tag($0) } }
+            Menu("Trier par") { Picker("Tri",selection:$sort) { ForEach(CloudWorkspaceBrowserSort.allCases) { Text($0.title).tag($0) } } }
+            Button(ascending ? "Ordre décroissant":"Ordre croissant",systemImage:ascending ? "arrow.down":"arrow.up") { ascending.toggle() }
+            Divider()
+            Button("Actualiser",systemImage:"arrow.clockwise",action:refresh).disabled(syncing)
+            Button("Informations",systemImage:"info.circle") { information=true }
+        } label: { Image(systemName:"ellipsis.circle").font(.title3) }
+        .accessibilityLabel("Options d’affichage").accessibilityIdentifier("workspaceOptions")
+    }
+
+    private var bottomBar: some View {
+        HStack(spacing:12) {
+            HStack(spacing:9) {
+                Image(systemName:"magnifyingglass").foregroundStyle(.secondary)
+                TextField("Rechercher",text:$search).textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("workspaceSearch")
+                if !search.isEmpty { Button("Effacer",systemImage:"xmark.circle.fill") { search="" }.labelStyle(.iconOnly).foregroundStyle(.secondary) }
+            }.padding(.horizontal,15).frame(height:50).background(.regularMaterial,in:Capsule()).overlay(Capsule().stroke(.primary.opacity(0.08)))
+            Menu {
+                Button("Nouveau fichier texte",systemImage:"doc.badge.plus") { createText(currentPath) }
+                Button(importing ? "Importation…":"Importer un fichier",systemImage:"square.and.arrow.down") { importFile(currentPath) }.disabled(importing)
+            } label: {
+                Image(systemName:"plus").font(.title2.weight(.medium)).frame(width:50,height:50).background(.regularMaterial,in:Circle()).overlay(Circle().stroke(.primary.opacity(0.08)))
+            }.accessibilityLabel("Ajouter").accessibilityIdentifier("workspaceAdd")
+        }.padding(.horizontal,16).padding(.vertical,9).background(.bar)
+    }
+}
+
+private struct CloudWorkspaceArtifactDetailView: View {
+    @Environment(\.dismiss) private var dismiss
+    let entry: CloudWorkspaceBrowserEntry
+    let url: URL?
+    let downloading: Bool
+    let download: () -> Void
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing:22) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius:28,style:.continuous).fill(entry.color.opacity(0.12)).frame(width:132,height:132)
+                        Image(systemName:entry.symbol).font(.system(size:58,weight:.medium)).foregroundStyle(entry.color)
+                    }
+                    VStack(spacing:7) {
+                        Text(entry.name).font(.title2.bold()).multilineTextAlignment(.center)
+                        Text(entry.path).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                        Text(entry.detail).font(.subheadline.weight(.semibold)).foregroundStyle(entry.pending ? .orange:.secondary)
+                    }
+                    if let url { ShareLink(item:url) { Label("Partager le fichier vérifié",systemImage:"square.and.arrow.up").frame(maxWidth:.infinity) }.buttonStyle(.borderedProminent) }
+                    else { Button(action:download) { Label(downloading ? "Téléchargement…":"Télécharger et vérifier",systemImage:"arrow.down.circle").frame(maxWidth:.infinity) }.buttonStyle(.borderedProminent).disabled(downloading || entry.pending || entry.deleted || entry.conflicted) }
+                    Text("Le téléchargement vérifie l’intégrité du fichier avant de le rendre disponible au partage.").font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                }.padding(24)
+            }.background(MultiVibeTheme.background)
+                .navigationTitle("Informations").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement:.confirmationAction) { Button("Fermer") { dismiss() } } }
+        }.presentationDetents([.medium,.large])
+    }
+}
+
+private struct CloudWorkspaceInformationView: View {
+    @Environment(\.dismiss) private var dismiss
+    let fileCount: Int
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Espace Hermes") { Label("\(fileCount) fichier\(fileCount == 1 ? "":"s")",systemImage:"doc.on.doc");Label("Synchronisé entre vos clients autorisés",systemImage:"arrow.triangle.2.circlepath") }
+                Section("Limites") { LabeledContent("Documents texte","64 Ko par fichier · 512 Ko par projet");LabeledContent("Autres fichiers","64 Mio par fichier · 256 Mio par projet");LabeledContent("Nombre maximal","200 fichiers") }
+                Section { Text("Les dossiers sont construits à partir des chemins des fichiers. Les modifications enregistrées hors ligne sont synchronisées au retour du réseau.") }
+            }.navigationTitle("À propos de cet espace").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement:.confirmationAction) { Button("Fermer") { dismiss() } } }
+        }.presentationDetents([.medium,.large])
+    }
+}
+
+#if DEBUG
+struct CloudWorkspaceFixtureView: View {
+    private let files:[ConversationManager.CloudAgentSummary] = [
+        .init(id:"fixture-1",kind:"file",title:"Documents/Brief produit.md",conflicted:false,deleted:false,value:.object(["type":.string("hermes_workspace_file"),"path":.string("Documents/Brief produit.md"),"content":.string("# Brief produit\nUne interface claire et directe.")])),
+        .init(id:"fixture-2",kind:"file",title:"Documents/Notes/Compte-rendu.txt",conflicted:false,deleted:false,value:.object(["type":.string("hermes_workspace_file"),"path":.string("Documents/Notes/Compte-rendu.txt"),"content":.string("Décisions et prochaines étapes")])),
+        .init(id:"fixture-3",kind:"file",title:"Images/observatoire.jpg",conflicted:false,deleted:false,value:.object(["type":.string("hermes_artifact_file"),"path":.string("Images/observatoire.jpg"),"byteLength":.number(2_480_312)])),
+        .init(id:"fixture-4",kind:"file",title:"Sources/App.swift",conflicted:false,deleted:false,value:.object(["type":.string("hermes_workspace_file"),"path":.string("Sources/App.swift"),"content":.string("import SwiftUI")])),
+        .init(id:"fixture-5",kind:"file",title:"roadmap.pdf",conflicted:false,deleted:false,value:.object(["type":.string("hermes_artifact_file"),"path":.string("roadmap.pdf"),"byteLength":.number(824_120)])),
+        .init(id:"fixture-6",kind:"file",title:"synchronisation.txt",conflicted:false,deleted:false,value:.object(["type":.string("hermes_workspace_file"),"path":.string("synchronisation.txt"),"content":.string("Modification locale")])),
+        .init(id:"fixture-7",kind:"file",title:"Versions concurrentes",conflicted:true,deleted:false,value:nil)
+    ]
+    var body: some View {
+        NavigationStack {
+            CloudWorkspaceBrowserScreen(title:"Espace design",files:files,pendingIDs:["fixture-6"],syncing:false,importing:false,syncError:nil,error:nil,downloaded:[:],downloading:[],
+                openText:{_ in},openArtifact:{_ in},openConflict:{_ in},refresh:{},createText:{_ in},importFile:{_ in},download:{_ in})
+        }.tint(MultiVibeTheme.accent)
+    }
+}
+#endif
 
 private struct CloudWorkspaceEditorView: View {
     @Environment(ConversationManager.self) private var manager
@@ -3853,9 +4330,9 @@ private struct CloudWorkspaceEditorView: View {
     @State private var error: String?
     @State private var discard=false
     @State private var deleting=false
-    init(draft:ConversationManager.CloudWorkspaceDraft) {
+    init(draft:ConversationManager.CloudWorkspaceDraft,suggestedPath:String?=nil) {
         self.draft=draft
-        _path=State(initialValue:draft.path);_content=State(initialValue:draft.content)
+        _path=State(initialValue:suggestedPath ?? draft.path);_content=State(initialValue:draft.content)
     }
     private var dirty: Bool { version == nil && (path != draft.path || content != draft.content) }
     private var visible: Bool { manager.cloudWorkspaceDraftVisible(draft) }
