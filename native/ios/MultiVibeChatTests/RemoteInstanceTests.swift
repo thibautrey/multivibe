@@ -22,6 +22,18 @@ final class RemoteInstanceTests: XCTestCase {
         XCTAssertThrowsError(try RemoteInstanceAPI.voiceEndpoint("../completions", operation: "realtime"))
         XCTAssertThrowsError(try RemoteInstanceAPI.voiceEndpoint(machine, operation: "https://evil.invalid"))
     }
+    func testVoiceCapabilitiesDecodeLegacyAndExplicitAudioModels() throws {
+        let legacy = try JSONDecoder().decode(RemoteVoiceCapabilities.self, from: Data(#"{"enabled":true,"voices":[{"id":"kokoro:ff_siwis","name":"Kokoro"}],"llmModel":"gpt","transcriptionModel":"whisper","backgroundAudio":false}"#.utf8))
+        XCTAssertNil(legacy.transcriptionModels)
+        XCTAssertNil(legacy.synthesisModels)
+        XCTAssertNil(legacy.voices[0].model)
+
+        let current = try JSONDecoder().decode(RemoteVoiceCapabilities.self, from: Data(#"{"enabled":true,"voices":[{"id":"qwen:serena","name":"Serena","model":"qwen-tts","voice":"serena"}],"llmModel":"gpt","transcriptionModel":"whisper","transcriptionModels":[{"id":"whisper","name":"Whisper"}],"synthesisModels":[{"id":"qwen-tts","name":"Qwen TTS"}],"backgroundAudio":false}"#.utf8))
+        XCTAssertEqual(current.transcriptionModels?.map(\.id), ["whisper"])
+        XCTAssertEqual(current.synthesisModels?.map(\.id), ["qwen-tts"])
+        XCTAssertEqual(current.voices[0].model, "qwen-tts")
+        XCTAssertEqual(current.voices[0].voice, "serena")
+    }
     func testPairingAcceptsOnlyExactFirstPartyShapeAndNeverAnEndpoint() {
         let machine = UUID().uuidString.lowercased()
         XCTAssertNotNil(RemotePairing.parse(URL(string: "multivibe-chat://instance/pair?machine=\(machine)&handoff=SYNTHETIC123")!))

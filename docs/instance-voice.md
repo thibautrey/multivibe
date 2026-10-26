@@ -23,6 +23,13 @@ compiled companion modules and a credential-free, independently supervised
 LaunchAgent. Stopping or updating that LaunchAgent does not signal MultiVibe
 Host or oMLX. The LaunchAgent retries while either dependency is unavailable.
 
+The capability response separates transcription models, synthesis models and
+their compatible voices. iOS presents these choices before the first voice
+session for each account and instance, then keeps the same configuration
+available from the voice settings menu. Selecting a voice also selects its
+advertised synthesis model; the Host still validates the voice against its live
+speech-runtime catalogue when the session opens.
+
 The Cloud duplex relay runs separately under `/relay/voice/v1`. It reserves the
 next Personal Relay message before accepting audio, commits on each spoken or
 typed turn, and releases an unused reservation when the session closes. Exhaustion

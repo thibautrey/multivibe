@@ -28,6 +28,27 @@ test('speech and voice edge destinations are loopback origins',()=>{
   for(const value of ['http://0.0.0.0:8000','http://192.168.1.2:8000','https://example.org','http://user:pass@127.0.0.1','http://127.0.0.1/route','http://127.0.0.1/?token=secret'])assert.throws(()=>loopbackOrigin(value));
 });
 
+test('voice capabilities publish transcription and synthesis models separately',async t=>{
+  const server=http.createServer((request,response)=>{
+    response.setHeader('content-type','application/json');
+    if(request.url==='/v1/models'){
+      response.end(JSON.stringify({data:[{id:SPEECH_MODELS.stt},{id:SPEECH_MODELS.kokoro},{id:SPEECH_MODELS.qwen}]}));return;
+    }
+    const model=new URL(request.url??'/', 'http://speech.local').searchParams.get('model');
+    response.end(JSON.stringify({voices:model===SPEECH_MODELS.kokoro?['ff_siwis']:['serena']}));
+  });
+  server.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>server.close());
+  const address=server.address();assert(address&&typeof address!=='string');const origin='http://127.0.0.1:'+address.port;
+  const bridge=new InstanceVoiceBridge({stateFile:'/unused',edgeOrigin:origin,edgeKey:'synthetic',speechOrigin:origin,llmModel:'selected',relayOrigin:origin});t.after(()=>bridge.stop());
+  const capabilities=await bridge.capabilities();
+  assert.deepEqual(capabilities.transcriptionModels,[{id:SPEECH_MODELS.stt,name:'Whisper large v3 turbo'}]);
+  assert.deepEqual(capabilities.synthesisModels,[{id:SPEECH_MODELS.kokoro,name:'Kokoro'},{id:SPEECH_MODELS.qwen,name:'Qwen3 TTS'}]);
+  assert.deepEqual(capabilities.voices,[
+    {id:'kokoro:ff_siwis',name:'Kokoro · ff_siwis',model:SPEECH_MODELS.kokoro,voice:'ff_siwis'},
+    {id:'qwen:serena',name:'Qwen3 TTS · serena',model:SPEECH_MODELS.qwen,voice:'serena'}
+  ]);
+});
+
 test('a refused native WebSocket handshake ends cleanly without recursive error dispatch',async t=>{
   const before=process.env.NODE_ENV;process.env.NODE_ENV='test';t.after(()=>{if(before===undefined)delete process.env.NODE_ENV;else process.env.NODE_ENV=before;});
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'instance-voice-reconnect-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));

@@ -1,6 +1,89 @@
 import AVFoundation
 import SwiftUI
 
+struct VoiceAudioConfiguration: Codable, Equatable, Sendable {
+    var transcriptionModel: String
+    var synthesisModel: String
+    var voice: String
+}
+
+enum VoiceAudioConfigurationStore {
+    private static func key(_ scope: String) -> String { scope + ".audio-configuration.v1" }
+    static func load(scope: String, defaults: UserDefaults = .standard) -> VoiceAudioConfiguration? {
+        guard let data = defaults.data(forKey: key(scope)) else { return nil }
+        return try? JSONDecoder().decode(VoiceAudioConfiguration.self, from: data)
+    }
+    static func save(_ value: VoiceAudioConfiguration, scope: String, defaults: UserDefaults = .standard) {
+        guard let data = try? JSONEncoder().encode(value) else { return }
+        defaults.set(data, forKey: key(scope))
+    }
+}
+
+struct VoiceAudioCatalog: Equatable, Sendable {
+    static let automaticModel = VoiceModelOption(id: "automatic", name: "Gestion automatique")
+    let transcriptionModels: [VoiceModelOption]
+    let synthesisModels: [VoiceModelOption]
+    let voices: [VoiceOption]
+
+    init(voices: [VoiceOption], transcriptionModels: [VoiceModelOption] = [],
+         synthesisModels: [VoiceModelOption] = [], legacyTranscriptionModel: String? = nil) {
+        self.voices = voices
+        if transcriptionModels.isEmpty {
+            self.transcriptionModels = legacyTranscriptionModel.map {
+                [VoiceModelOption(id: $0, name: Self.modelName($0))]
+            } ?? [Self.automaticModel]
+        } else {
+            self.transcriptionModels = transcriptionModels
+        }
+        if synthesisModels.isEmpty {
+            let inferred = voices.map(Self.synthesisModel).reduce(into: [VoiceModelOption]()) { result, option in
+                if !result.contains(where: { $0.id == option.id }) { result.append(option) }
+            }
+            self.synthesisModels = inferred.isEmpty ? [Self.automaticModel] : inferred
+        } else {
+            self.synthesisModels = synthesisModels
+        }
+    }
+
+    func voices(for synthesisModel: String) -> [VoiceOption] {
+        let matching = voices.filter { Self.synthesisModel($0).id == synthesisModel }
+        return matching.isEmpty && synthesisModels.count == 1 ? voices : matching
+    }
+
+    func normalized(_ stored: VoiceAudioConfiguration?, preferredVoice: String? = nil) -> VoiceAudioConfiguration {
+        let transcription = stored.flatMap { value in
+            transcriptionModels.contains(where: { $0.id == value.transcriptionModel }) ? value.transcriptionModel : nil
+        } ?? transcriptionModels[0].id
+        let voiceCandidate = stored?.voice ?? preferredVoice
+        let inferredSynthesis = voiceCandidate.flatMap { id in voices.first(where: { $0.id == id }) }.map(Self.synthesisModel)
+        let synthesis = stored.flatMap { value in
+            synthesisModels.contains(where: { $0.id == value.synthesisModel }) ? value.synthesisModel : nil
+        } ?? inferredSynthesis.flatMap { inferred in
+            synthesisModels.contains(where: { $0.id == inferred.id }) ? inferred.id : nil
+        } ?? synthesisModels[0].id
+        let compatible = voices(for: synthesis)
+        let voice = voiceCandidate.flatMap { id in compatible.contains(where: { $0.id == id }) ? id : nil }
+            ?? compatible.first?.id ?? voices.first?.id ?? ""
+        return VoiceAudioConfiguration(transcriptionModel: transcription, synthesisModel: synthesis, voice: voice)
+    }
+
+    static func synthesisModel(_ voice: VoiceOption) -> VoiceModelOption {
+        if let model = voice.model, !model.isEmpty { return .init(id: model, name: modelName(model)) }
+        if voice.id.hasPrefix("kokoro:") { return .init(id: "Kokoro-82M-bf16", name: "Kokoro 82M") }
+        if voice.id.hasPrefix("qwen:") { return .init(id: "Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16", name: "Qwen3 TTS 0.6B") }
+        return automaticModel
+    }
+
+    static func modelName(_ id: String) -> String {
+        switch id {
+        case "whisper-large-v3-turbo-asr-4bit": "Whisper large v3 turbo"
+        case "Kokoro-82M-bf16": "Kokoro 82M"
+        case "Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16": "Qwen3 TTS 0.6B"
+        default: id
+        }
+    }
+}
+
 struct RealtimeVoiceView: View {
     var remoteChatID: UUID? = nil
     @Environment(ConversationManager.self) private var manager
@@ -8,11 +91,20 @@ struct RealtimeVoiceView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var controller = RealtimeVoiceController()
     @State private var voices: [VoiceOption] = []
+    @State private var transcriptionModels: [VoiceModelOption] = []
+    @State private var synthesisModels: [VoiceModelOption] = []
+    @State private var selectedTranscriptionModel = ""
+    @State private var selectedSynthesisModel = ""
     @State private var selectedVoice = "coral"
     @State private var typed = ""
     @State private var settings = false
     @State private var closing = false
     @State private var instanceModel = ""
+    @State private var preparedModel = ""
+    @State private var preparedBackgroundAudio = false
+    @State private var configurationRequired = false
+    @State private var configurationReady = false
+    @State private var sessionStarted = false
     private var instances: RemoteInstances { .shared }
     private var messages: [ChatMessage] {
         if let remoteChatID { return instances.chats.first(where: { $0.id == remoteChatID })?.messages ?? [] }
@@ -22,6 +114,9 @@ struct RealtimeVoiceView: View {
         let machine = remoteChatID.flatMap { id in instances.chats.first(where: { $0.id == id })?.machine }
         let key = "cloud.multivibe.voice.\(manager.session?.accountId ?? "")"
         return machine.map { key + "." + $0 } ?? key
+    }
+    private var audioCatalog: VoiceAudioCatalog {
+        VoiceAudioCatalog(voices: voices, transcriptionModels: transcriptionModels, synthesisModels: synthesisModels)
     }
 
     var body: some View {
@@ -41,7 +136,7 @@ struct RealtimeVoiceView: View {
                     audioLevel: controller.orbAudioLevel,
                     typed: $typed,
                     reduceMotion: reduceMotion,
-                    openSettings: { settings = true },
+                    openSettings: openSettings,
                     focusComposer: {},
                     toggleMute: { controller.setMuted(!controller.muted) },
                     submit: sendText,
@@ -53,24 +148,18 @@ struct RealtimeVoiceView: View {
         .task { await begin() }
         .onDisappear { controller.end() }
         .sheet(isPresented: $settings) {
-            NavigationStack {
-                List {
-                    Section("Conversation") {
-                        Picker(remoteChatID == nil ? "Voix" : "Modèle et voix", selection: $selectedVoice) {
-                            ForEach(voices) { Text($0.name).tag($0.id) }
-                        }
-                        if !instanceModel.isEmpty { LabeledContent("Modèle de réponse", value: instanceModel) }
-                        if !controller.route.isEmpty {
-                            LabeledContent("Connexion", value: controller.route == "instance" ? "Instance distante · Relay WAN" : controller.route == "cascaded" ? "Mode compatible" : "Temps réel")
-                        }
-                    }
-                    Text("La nouvelle voix sera utilisée à la prochaine conversation.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .navigationTitle("Voix")
-                .toolbar { Button("Terminé") { saveVoice(); settings = false } }
-            }
+            VoiceAudioConfigurationView(
+                catalog: audioCatalog,
+                selectedTranscriptionModel: $selectedTranscriptionModel,
+                selectedSynthesisModel: $selectedSynthesisModel,
+                selectedVoice: $selectedVoice,
+                responseModel: instanceModel.isEmpty ? preparedModel : instanceModel,
+                route: controller.route,
+                required: configurationRequired,
+                cancel: cancelConfiguration,
+                confirm: confirmConfiguration
+            )
+            .interactiveDismissDisabled(configurationRequired)
         }
     }
 
@@ -110,26 +199,12 @@ struct RealtimeVoiceView: View {
 
     private func begin() async {
         guard let account = manager.session else { return }
-        if let remoteChatID { await beginRemote(remoteChatID, account: account); return }
-        manager.newConversation()
-        guard let conversation = manager.current else {
-            controller.error = "Impossible de démarrer maintenant. Réessayez dans un instant."
-            return
-        }
-        selectedVoice = UserDefaults.standard.string(forKey: preferenceKey) ?? "coral"
         do {
-            guard await AVAudioApplication.requestRecordPermission() else {
-                controller.error = "Autorisez le microphone dans les réglages de l’iPhone."
-                return
-            }
+            if let remoteChatID { try await prepareRemote(remoteChatID); return }
             let capabilities = try await ChatAPI.shared.voiceCapabilities(token: account.accessToken)
             guard capabilities.enabled else {
                 controller.error = "Le mode vocal n’est pas encore disponible pour ce compte."
                 return
-            }
-            voices = capabilities.voices
-            if !voices.contains(where: { $0.id == selectedVoice }) {
-                selectedVoice = voices.first?.id ?? "coral"
             }
             var model = manager.selectedModel
             if model.isEmpty || model == LocalModel.id {
@@ -142,10 +217,82 @@ struct RealtimeVoiceView: View {
                 controller.error = "La conversation vocale est temporairement indisponible. Réessayez dans un instant."
                 return
             }
-            manager.selectedModel = model
+            preparedModel = model
+            preparedBackgroundAudio = capabilities.backgroundAudio
+            await configure(
+                VoiceAudioCatalog(
+                    voices: capabilities.voices,
+                    transcriptionModels: capabilities.transcriptionModels ?? [],
+                    synthesisModels: capabilities.synthesisModels ?? []
+                ),
+                preferredVoice: "coral"
+            )
+        } catch {
+            controller.error = error.localizedDescription
+        }
+    }
+
+    private func prepareRemote(_ id: UUID) async throws {
+        guard let chat = instances.chats.first(where: { $0.id == id }), chat.command == nil, chat.pendingConfiguration == nil else {
+            controller.error = "Terminez le tour ou vérifiez sa configuration avant de parler à cette instance."
+            return
+        }
+        let capabilities = try await instances.voiceCapabilities(chat.machine)
+        guard capabilities.enabled, !capabilities.voices.isEmpty else { throw APIError.noModel }
+        instanceModel = capabilities.llmModel
+        preparedModel = capabilities.llmModel
+        preparedBackgroundAudio = capabilities.backgroundAudio
+        await configure(
+            VoiceAudioCatalog(
+                voices: capabilities.voices,
+                transcriptionModels: capabilities.transcriptionModels ?? [],
+                synthesisModels: capabilities.synthesisModels ?? [],
+                legacyTranscriptionModel: capabilities.transcriptionModel
+            ),
+            preferredVoice: "kokoro:ff_siwis"
+        )
+    }
+
+    private func configure(_ catalog: VoiceAudioCatalog, preferredVoice: String) async {
+        voices = catalog.voices
+        transcriptionModels = catalog.transcriptionModels
+        synthesisModels = catalog.synthesisModels
+        let stored = VoiceAudioConfigurationStore.load(scope: preferenceKey)
+        let legacyVoice = UserDefaults.standard.string(forKey: preferenceKey) ?? preferredVoice
+        let value = catalog.normalized(stored, preferredVoice: legacyVoice)
+        selectedTranscriptionModel = value.transcriptionModel
+        selectedSynthesisModel = value.synthesisModel
+        selectedVoice = value.voice
+        configurationReady = true
+        configurationRequired = stored == nil
+        if configurationRequired { settings = true }
+        else { await startPrepared() }
+    }
+
+    private func startPrepared() async {
+        guard configurationReady, !sessionStarted, let account = manager.session, !selectedVoice.isEmpty else { return }
+        sessionStarted = true
+        guard await AVAudioApplication.requestRecordPermission() else {
+            sessionStarted = false
+            controller.error = "Autorisez le microphone dans les réglages de l’iPhone."
+            return
+        }
+        do {
+            if let id = remoteChatID {
+                guard let chat = instances.chats.first(where: { $0.id == id }) else { throw APIError.invalidResponse }
+                let connection = try await instances.voiceConnection(chat.machine, voice: selectedVoice)
+                await controller.start(session: connection.session, history: chat.messages, accountToken: "", backgroundAudio: preparedBackgroundAudio,
+                                       headers: connection.headers) { role, text, turnID in
+                    instances.appendVoiceTurn(chatID: id, accountID: account.accountId, model: preparedModel, role: role, text: text, turnID: turnID)
+                }
+                return
+            }
+            manager.selectedModel = preparedModel
+            manager.newConversation()
+            guard let conversation = manager.current else { throw APIError.invalidResponse }
             let session = try await ChatAPI.shared.createVoiceSession(
                 conversation: conversation,
-                model: model,
+                model: preparedModel,
                 voice: selectedVoice,
                 language: Locale.current.identifier,
                 token: account.accessToken
@@ -154,46 +301,73 @@ struct RealtimeVoiceView: View {
                 session: session,
                 history: conversation.messages,
                 accountToken: account.accessToken,
-                backgroundAudio: capabilities.backgroundAudio
+                backgroundAudio: preparedBackgroundAudio
             ) { role, text, id in
                 manager.appendVoiceTurn(
                     conversationID: conversation.id,
                     accountID: account.accountId,
-                    model: model,
+                    model: preparedModel,
                     role: role,
                     text: text,
                     turnID: id
                 )
             }
         } catch {
-            controller.error = error.localizedDescription
+            sessionStarted = false
+            controller.error = remoteChatID == nil ? error.localizedDescription :
+                "Le vocal est indisponible sur cette instance. Vérifiez que sa passerelle et ses modèles vocaux sont démarrés."
         }
     }
 
-    private func beginRemote(_ id: UUID, account: NativeSession) async {
-        guard let chat = instances.chats.first(where: { $0.id == id }), chat.command == nil, chat.pendingConfiguration == nil else {
-            controller.error = "Terminez le tour ou vérifiez sa configuration avant de parler à cette instance."; return
-        }
-        do {
-            guard await AVAudioApplication.requestRecordPermission() else {
-                controller.error = "Autorisez le microphone dans les réglages de l’iPhone."; return
-            }
-            let capabilities = try await instances.voiceCapabilities(chat.machine)
-            guard capabilities.enabled, !capabilities.voices.isEmpty else { throw APIError.noModel }
-            voices = capabilities.voices; instanceModel = capabilities.llmModel
-            selectedVoice = UserDefaults.standard.string(forKey: preferenceKey) ?? "kokoro:ff_siwis"
-            if !voices.contains(where: { $0.id == selectedVoice }) { selectedVoice = voices[0].id }
-            let connection = try await instances.voiceConnection(chat.machine, voice: selectedVoice)
-            await controller.start(session: connection.session, history: chat.messages, accountToken: "", backgroundAudio: false,
-                                   headers: connection.headers) { role, text, turnID in
-                instances.appendVoiceTurn(chatID: id, accountID: account.accountId, model: capabilities.llmModel, role: role, text: text, turnID: turnID)
-            }
-        } catch { controller.error = "Le vocal est indisponible sur cette instance. Vérifiez que sa passerelle et ses modèles vocaux sont démarrés." }
-    }
-
-    private func saveVoice() {
-        guard manager.session != nil else { return }
+    private func saveConfiguration() {
+        guard configurationReady, manager.session != nil, !selectedVoice.isEmpty else { return }
+        let value = VoiceAudioConfiguration(
+            transcriptionModel: selectedTranscriptionModel,
+            synthesisModel: selectedSynthesisModel,
+            voice: selectedVoice
+        )
+        VoiceAudioConfigurationStore.save(value, scope: preferenceKey)
         UserDefaults.standard.set(selectedVoice, forKey: preferenceKey)
+    }
+
+    private func confirmConfiguration() {
+        saveConfiguration()
+        let shouldStart = configurationRequired && !sessionStarted
+        configurationRequired = false
+        settings = false
+        if shouldStart {
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(250))
+                await startPrepared()
+            }
+        }
+    }
+
+    private func cancelConfiguration() {
+        let shouldClose = configurationRequired && !sessionStarted
+        if !configurationRequired, let stored = VoiceAudioConfigurationStore.load(scope: preferenceKey) {
+            let restored = audioCatalog.normalized(stored)
+            selectedTranscriptionModel = restored.transcriptionModel
+            selectedSynthesisModel = restored.synthesisModel
+            selectedVoice = restored.voice
+        }
+        settings = false
+        if shouldClose {
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(200))
+                dismiss()
+            }
+        }
+    }
+
+    private func openSettings() {
+        if let stored = VoiceAudioConfigurationStore.load(scope: preferenceKey) {
+            let restored = audioCatalog.normalized(stored)
+            selectedTranscriptionModel = restored.transcriptionModel
+            selectedSynthesisModel = restored.synthesisModel
+            selectedVoice = restored.voice
+        }
+        settings = true
     }
 
     private func sendText() {
@@ -214,6 +388,87 @@ struct RealtimeVoiceView: View {
         guard !closing else { return }
         closing = true
         Task { await controller.endWithCue(); dismiss() }
+    }
+}
+
+struct VoiceAudioConfigurationView: View {
+    let catalog: VoiceAudioCatalog
+    @Binding var selectedTranscriptionModel: String
+    @Binding var selectedSynthesisModel: String
+    @Binding var selectedVoice: String
+    let responseModel: String
+    let route: String
+    let required: Bool
+    let cancel: () -> Void
+    let confirm: () -> Void
+
+    private var compatibleVoices: [VoiceOption] { catalog.voices(for: selectedSynthesisModel) }
+    private var valid: Bool {
+        catalog.transcriptionModels.contains { $0.id == selectedTranscriptionModel } &&
+            catalog.synthesisModels.contains { $0.id == selectedSynthesisModel } &&
+            compatibleVoices.contains { $0.id == selectedVoice }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if required {
+                    Section {
+                        Label("Choisissez comment votre voix est comprise et comment l’agent vous répond.", systemImage: "waveform.circle")
+                    }
+                }
+                Section {
+                    Picker("Modèle de transcription", selection: $selectedTranscriptionModel) {
+                        ForEach(catalog.transcriptionModels) { Text($0.name).tag($0.id) }
+                    }
+                    .accessibilityIdentifier("voiceTranscriptionModel")
+                } header: {
+                    Text("Votre voix")
+                } footer: {
+                    Text("Ce modèle transforme votre parole en texte.")
+                }
+                Section {
+                    Picker("Modèle vocal", selection: $selectedSynthesisModel) {
+                        ForEach(catalog.synthesisModels) { Text($0.name).tag($0.id) }
+                    }
+                    .accessibilityIdentifier("voiceSynthesisModel")
+                    Picker("Voix", selection: $selectedVoice) {
+                        ForEach(compatibleVoices) { Text($0.name).tag($0.id) }
+                    }
+                    .accessibilityIdentifier("voiceOutputVoice")
+                } header: {
+                    Text("Voix de l’agent")
+                } footer: {
+                    Text("Le modèle vocal synthétise la réponse. La voix choisie est utilisée à partir de la prochaine conversation.")
+                }
+                if !responseModel.isEmpty || !route.isEmpty {
+                    Section("Conversation") {
+                        if !responseModel.isEmpty { LabeledContent("Modèle de réponse", value: responseModel) }
+                        if !route.isEmpty { LabeledContent("Connexion", value: routeLabel) }
+                    }
+                }
+            }
+            .accessibilityIdentifier("voiceAudioConfiguration")
+            .navigationTitle(required ? "Configurer le vocal" : "Réglages vocaux")
+            .onChange(of: selectedSynthesisModel) { _, value in
+                let choices = catalog.voices(for: value)
+                if !choices.contains(where: { $0.id == selectedVoice }) { selectedVoice = choices.first?.id ?? "" }
+            }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(required ? "Annuler" : "Fermer", action: cancel)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(required ? "Démarrer" : "Terminé", action: confirm)
+                        .disabled(!valid)
+                        .accessibilityIdentifier("voiceConfigurationConfirm")
+                }
+            }
+        }
+    }
+
+    private var routeLabel: String {
+        route == "instance" ? "Instance distante · Relay WAN" : route == "cascaded" ? "Mode compatible" : "Temps réel"
     }
 }
 
@@ -637,6 +892,43 @@ private struct VoiceOrb: View {
 }
 
 #if DEBUG
+struct VoiceAudioConfigurationFixtureView: View {
+    @State private var transcription = "whisper-large-v3-turbo-asr-4bit"
+    @State private var synthesis = "Kokoro-82M-bf16"
+    @State private var voice = "kokoro:ff_siwis"
+    @State private var started = false
+    private let catalog = VoiceAudioCatalog(
+        voices: [
+            VoiceOption(id: "kokoro:ff_siwis", name: "Kokoro · Siwis", model: "Kokoro-82M-bf16", voice: "ff_siwis"),
+            VoiceOption(id: "qwen:serena", name: "Qwen3 TTS · Serena", model: "Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16", voice: "serena")
+        ],
+        transcriptionModels: [.init(id: "whisper-large-v3-turbo-asr-4bit", name: "Whisper large v3 turbo")],
+        synthesisModels: [
+            .init(id: "Kokoro-82M-bf16", name: "Kokoro 82M"),
+            .init(id: "Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16", name: "Qwen3 TTS 0.6B")
+        ]
+    )
+
+    var body: some View {
+        if started {
+            ContentUnavailableView("Configuration enregistrée", systemImage: "checkmark.circle.fill")
+                .accessibilityIdentifier("voiceConfigurationSaved")
+        } else {
+            VoiceAudioConfigurationView(
+                catalog: catalog,
+                selectedTranscriptionModel: $transcription,
+                selectedSynthesisModel: $synthesis,
+                selectedVoice: $voice,
+                responseModel: "gpt-6.1-sol",
+                route: "instance",
+                required: true,
+                cancel: {},
+                confirm: { started = true }
+            )
+        }
+    }
+}
+
 struct RealtimeVoiceFixtureView: View {
     @State private var typed = ""
     private let hero = ProcessInfo.processInfo.arguments.contains("-realtime-voice-ui-fixture-hero")

@@ -424,6 +424,29 @@ final class LocalInternetUITests: XCTestCase {
         return app
     }
 
+    func testFirstVoiceCallConfiguresAudioModelsBeforeStarting() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-voice-audio-configuration-ui-fixture", "-AppleLanguages", "(fr)", "-AppleLocale", "fr_FR"]
+        app.launch()
+        XCTAssertTrue(app.descendants(matching: .any)["voiceAudioConfiguration"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.navigationBars["Configurer le vocal"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["voiceTranscriptionModel"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["voiceSynthesisModel"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["voiceOutputVoice"].exists)
+        XCTAssertTrue(app.staticTexts["Whisper large v3 turbo"].exists)
+        XCTAssertTrue(app.staticTexts["Kokoro 82M"].exists)
+        XCTAssertTrue(app.staticTexts["gpt-6.1-sol"].exists)
+
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "voice-audio-first-configuration"
+        capture.lifetime = .keepAlways
+        add(capture)
+
+        app.descendants(matching: .any)["voiceConfigurationConfirm"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["voiceConfigurationSaved"].waitForExistence(timeout: 5))
+    }
+
     func testListeningStartsWithLargeOrbAndCompactControls() {
         let app = launch("-realtime-voice-ui-fixture-hero")
         let orb = app.descendants(matching: .any)["voiceOrb"].firstMatch
