@@ -12,10 +12,11 @@ const messageParts=(value:any):string|undefined=>Array.isArray(value?.message?.c
 
 function toolActivity(event:HarnessEvent,p:any):InstanceActivity[] {
  const calls=Array.isArray(p.tool_calls)?p.tool_calls:[];
- if(calls.length)return calls.slice(0,32).map((call:any,index:number)=>({
-  id:call.id??`${event.itemId??'tool'}-${call.index??index}`,kind:'tool',title:text(call.function?.name??call.name,160)??'Outil',status:'running',
-  ...(call.function?.arguments!==undefined?{input:text(String(call.function.arguments))}:{}),append:true,
- }));
+ if(calls.length)return calls.slice(0,32).map((call:any,index:number)=>{
+  const title=text(call.function?.name??call.name,160);
+  return {id:call.id??`${event.itemId??'tool'}-${call.index??index}`,kind:'tool',...(title?{title}:{}),status:'running',
+   ...(call.function?.arguments!==undefined?{input:text(String(call.function.arguments))}:{}),append:true};
+ });
  const item=p.item??{},state=p.state??{},type=p.type??item.type;
  const rawStatus=p.status??state.status??state.type;
  const resolved=status(rawStatus)??phaseStatus(p.phase)
