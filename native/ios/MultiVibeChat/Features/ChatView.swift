@@ -911,8 +911,6 @@ struct ChatView: View {
                 .font(.caption.weight(.medium)).buttonStyle(.bordered).controlSize(.small)
                 .padding(.horizontal, 12)
             }
-            Text(instances.transportLabel + " · Le projet est attaché à cette conversation")
-                .font(.caption2).foregroundStyle(.secondary).padding(.horizontal, 12)
             if chat.pendingConfiguration != nil {
                 Button("Vérifier le changement de configuration", systemImage: "arrow.clockwise") {
                     Task { do { try await instances.configure(chat.id); remoteConfigurationError = nil } catch { remoteConfigurationError = "La configuration reste à vérifier sur cette instance." } }
