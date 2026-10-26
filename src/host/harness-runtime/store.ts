@@ -53,6 +53,10 @@ export class HarnessRuntimeStore {
     }
     return events;
   }
+  eventCursor(sessionId: string): number {
+    this.session(sessionId);
+    return Number(this.db.prepare("SELECT coalesce(max(seq),0) AS seq FROM events WHERE session_id=?").get(sessionId).seq);
+  }
   commands(sessionId: string): HarnessCommandReceipt[] {
     return this.db.prepare("SELECT value FROM commands WHERE session_id=?").all(sessionId).map((r: any)=>JSON.parse(r.value)).sort((a: HarnessCommandReceipt,b: HarnessCommandReceipt)=>a.ordinal-b.ordinal);
   }

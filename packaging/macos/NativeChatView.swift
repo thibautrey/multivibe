@@ -159,6 +159,7 @@ private struct NativeChatSuggestionEditor: View {
     @ObservedObject private var browser: ChromiumBrowser
     @StateObject private var agent: NativeChatAgentCoordinator
     @State private var cloudConsent = false
+    @State private var instancePairing = false
     @State private var cloudMode = false
     @State private var cloudSelection: UUID?
     @State private var cloudModel = ""
@@ -431,6 +432,7 @@ private struct NativeChatSuggestionEditor: View {
         .task(id: store.current?.executionTargetID ?? "local") { await store.runRemoteSynchronization() }
         .task(id: projectCatalogKey) { await loadProjects() }
         .sheet(isPresented: $cloudConsent) { consentSheet }
+        .sheet(isPresented: $instancePairing) { NativeInstancePairingView(agent: agent) }
         .sheet(isPresented: Binding(get: { configuringRemoteHarness != nil }, set: { if !$0 { configuringRemoteHarness = nil } })) {
             let remoteID = configuringRemoteHarness ?? "librechat"
             RemoteHarnessConnectionSheet(harnessID: remoteID, target: store.current?.executionTargetID ?? "local") {
@@ -703,6 +705,7 @@ private struct NativeChatSuggestionEditor: View {
                     Button("Gérer le Cloud") { selectedImports = []; cloudConsent = true }.buttonStyle(.borderless)
                     Spacer()
                     Menu("Actions") {
+                        Button("Connecter un iPhone à ce Mac…") { instancePairing = true }
                         Button("Synchroniser l’espace Cloud") {
                             Task { do { try await agent.synchronize(); try await agent.recoverRuns() } catch { agent.error = error.localizedDescription } }
                         }.disabled(agent.consent?.cloudEnabled != true)
