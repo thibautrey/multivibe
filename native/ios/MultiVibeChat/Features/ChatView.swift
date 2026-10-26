@@ -33,7 +33,7 @@ private struct SidebarConversationSection: Identifiable {
 }
 
 private struct WelcomeExecutionAnchorKey: PreferenceKey {
-    static let defaultValue: Anchor<CGRect>? = nil
+    nonisolated(unsafe) static let defaultValue: Anchor<CGRect>? = nil
     static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
         value = nextValue() ?? value
     }
