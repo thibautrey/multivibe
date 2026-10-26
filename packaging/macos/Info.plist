@@ -30,7 +30,7 @@
       <key>CFBundleTypeRole</key>
       <string>Viewer</string>
       <key>CFBundleURLName</key>
-      <string>cloud.multivibe.host.worker-handoff</string>
+      <string>cloud.multivibe.host.url</string>
       <key>CFBundleURLSchemes</key>
       <array>
         <string>multivibe</string>

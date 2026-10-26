@@ -3,8 +3,6 @@ import { useDashboardApi, useDashboardRuntime } from "./adapter";
 import { InvoicesTab } from "./components/tabs/InvoicesTab";
 import { configuredInvoiceProviders, type InvoiceOverview } from "./domain/provider-invoices";
 import { canManageWorkspace, workspaceLabel, type TeamWorkspace } from "./lib/teamWorkspace";
-import { TeamMachineConsent } from "./components/TeamMachineConsent";
-import { TeamMachineCard } from "./components/TeamMachineCard";
 import { getRangeBounds } from "./lib/trace-range";
 import { ModelsTab } from "./components/tabs/ModelsTab";
 import type { ModelRoute } from "./lib/modelCatalog";
@@ -43,7 +41,7 @@ import type {
   TraceRange,
   TraceStats,
 } from "./types";
-import { AccountsTab, type LocalWorkerProvider, type MultivibeCloudProvider } from "./components/tabs/AccountsTab";
+import { AccountsTab, type MultivibeCloudProvider } from "./components/tabs/AccountsTab";
 import { DocsTab } from "./components/tabs/DocsTab";
 import { OverviewTab } from "./components/tabs/OverviewTab";
 import { TracingTab } from "./components/tabs/TracingTab";
@@ -181,7 +179,6 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   const [activityView, setActivityView] = useState<ActivityView>(initialActivityView);
   const [locationSearch, setLocationSearch] = useState(window.location.search);
   const [accounts, setAccounts] = useState<Account[]>([]);
-  const [localWorker, setLocalWorker] = useState<LocalWorkerProvider | null>(null);
   const [multivibeCloud, setMultivibeCloud] = useState<MultivibeCloudProvider>({
     status: "unavailable",
     topupUrl: "https://app.multivibe.cloud/billing",
@@ -246,9 +243,6 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   const [traceExportInProgress, setTraceExportInProgress] = useState(false);
   const tracePageRef = useRef(tracePagination.page);
   const traceRangeRef = useRef(traceRange);
-  const localRuntimeDiscoveryInFlightRef = useRef<Promise<void> | null>(null);
-  const localRuntimeDiscoveryAbortRef = useRef<AbortController | null>(null);
-  const localRuntimeDiscoveryGenerationRef = useRef(0);
   const mobileNavigationRef = useRef<HTMLDialogElement>(null);
   const mobileNavigationTriggerRef = useRef<HTMLButtonElement>(null);
   const [invoiceData, setInvoiceData] = useState<InvoiceOverview>({ providers: [], cloudUnavailable: false });
@@ -411,10 +405,6 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   }, [themeMode]);
 
   const invalidateLocalRuntimeDiscovery = () => {
-    localRuntimeDiscoveryGenerationRef.current += 1;
-    localRuntimeDiscoveryAbortRef.current?.abort();
-    localRuntimeDiscoveryAbortRef.current = null;
-    localRuntimeDiscoveryInFlightRef.current = null;
   };
 
   const handleError = (e: any) => {
@@ -525,9 +515,8 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
     });
     if (capabilities.host) void workspace.catch(() => setTeamWorkspace({ state: "personal", role: null }));
     else await workspace;
-    const [acc, localWorkerRes, cloudRes, cfg, mdl, aliasRes, settingsRes, apiKeysRes, policiesRes, modulesRes] = await Promise.all([
+    const [acc, cloudRes, cfg, mdl, aliasRes, settingsRes, apiKeysRes, policiesRes, modulesRes] = await Promise.all([
       api("accounts"),
-      capabilities.localRuntimes ? api("provider-agent/local-worker").catch(() => ({ localWorker: null })) : Promise.resolve({ localWorker: null }),
       api("cloud").catch(() => ({ status: "unavailable", topupUrl: "https://app.multivibe.cloud/billing" })),
       api("config"),
       fetch(modelsUrl).then((r) => r.json()),
@@ -538,7 +527,6 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
       capabilities.plugins ? api("modules") : Promise.resolve({modules: [], marketplace: []}),
     ]);
     setAccounts((acc.accounts ?? []) as Account[]);
-    setLocalWorker((localWorkerRes.localWorker ?? null) as LocalWorkerProvider | null);
     setMultivibeCloud(cloudRes as MultivibeCloudProvider);
     setHostApplication(capabilities.host && Boolean(cfg.hostApplication));
     if (Number.isFinite(Number(cfg.usageCacheTtlMs)) && Number(cfg.usageCacheTtlMs) > 0) {
@@ -571,43 +559,6 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
       }
       return next;
     });
-  };
-
-  const discoverLocalRuntimesInBackground = () => {
-    if (!capabilities.localRuntimes || localRuntimeDiscoveryInFlightRef.current) return;
-    const generation = localRuntimeDiscoveryGenerationRef.current;
-    const controller = new AbortController();
-    localRuntimeDiscoveryAbortRef.current = controller;
-    const cancellableRequest = api("local-runtimes/discover", {
-      method: "POST",
-      signal: controller.signal,
-    })
-      .then(async (result) => {
-        if (generation !== localRuntimeDiscoveryGenerationRef.current) return;
-        const discovered = Array.isArray(result.accounts)
-          ? (result.accounts as Account[])
-          : [];
-        mergeDiscoveredAccounts(discovered);
-        if (discovered.length) {
-          await refreshModels({
-            signal: controller.signal,
-            isCurrent: () => generation === localRuntimeDiscoveryGenerationRef.current,
-          });
-        }
-      })
-      .catch(() => {
-        // Local runtimes are optional; an unavailable probe must not interrupt
-        // the authenticated dashboard or make the provider list unusable.
-      })
-      .finally(() => {
-        if (localRuntimeDiscoveryInFlightRef.current === cancellableRequest) {
-          localRuntimeDiscoveryInFlightRef.current = null;
-        }
-        if (localRuntimeDiscoveryAbortRef.current === controller) {
-          localRuntimeDiscoveryAbortRef.current = null;
-        }
-      });
-    localRuntimeDiscoveryInFlightRef.current = cancellableRequest;
   };
 
   const finishHostOnboarding = () => {
@@ -789,7 +740,6 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
       setLoginToken("");
       setAuthenticated(true);
       await Promise.all([loadBase(), loadTraceStats(traceRangeRef.current)]);
-      discoverLocalRuntimesInBackground();
     } catch (err: any) {
       setError(err instanceof ApiError && err.status === 401 ? "Invalid admin token." : err?.message ?? String(err));
       setAuthenticated(false);
@@ -807,7 +757,6 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
     }
     setAuthenticated(false);
     setAccounts([]);
-    setLocalWorker(null);
     setTraces([]);
     setAliases([]);
     setError("");
@@ -856,7 +805,6 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
         setLocationSearch(u.search);
         sessionStorage.removeItem("multivibe-oauth-pending");
         await Promise.all([loadBase(), loadTraceStats(traceRangeRef.current)]);
-        discoverLocalRuntimesInBackground();
         setAuthenticated(true);
         setTab("accounts");
       } catch (e: any) {
@@ -882,7 +830,6 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
         }
         setAuthenticated(true);
         await Promise.all([loadBase(), loadTraceStats(traceRangeRef.current)]);
-        discoverLocalRuntimesInBackground();
       } catch (e: any) {
         handleError(e);
       }
@@ -1542,7 +1489,6 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
               {teamWorkspace.role === "billing" && <a className="btn secondary" href="https://app.multivibe.cloud/billing">Team billing</a>}
               {teamWorkspace.role === null && <button className="btn secondary" onClick={() => void loadBase().catch(() => setError("Could not refresh workspace access."))}>Retry connection</button>}
             </div>
-            {capabilities.teamMachine && teamWorkspace.state === "team" && <><TeamMachineConsent /><TeamMachineCard /></>}
           </section>
         )}
 
@@ -1585,7 +1531,6 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
           <AccountsTab
             traceStats={filteredTraceStats}
             accounts={accounts}
-            localWorker={localWorker}
             multivibeCloud={multivibeCloud}
             usageCacheTtlMs={usageCacheTtlMs}
             settings={settings}

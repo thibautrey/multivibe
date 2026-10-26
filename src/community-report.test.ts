@@ -8,8 +8,6 @@ import {
   COMMUNITY_SPEED_UPPER_BOUNDS,
   buildCommunityReportModels,
   contextBucketFor,
-  readSyntheticBenchmarkResults,
-  runtimeFamilyFromRuntimeId,
   type CommunityReportTrace,
 } from "./community-report.js";
 
@@ -86,51 +84,16 @@ test("context buckets follow the published boundaries", () => {
   assert.equal(COMMUNITY_CONTEXT_BUCKETS.length, 6);
 });
 
-test("synthetic benchmark results are bounded, deduplicated by digest and mapped to canonical models", () => {
-  const digest = (character: string) => `sha256:${character.repeat(64)}`;
-  const document = {
-    schema_version: "provider-runtime-benchmark-store-v1",
-    results: [
-      {
-        result_digest: digest("a"), model_id: "hf:public/model", runtime_id: "ollama-managed",
-        passed: true, successful_runs: 3, completed_at: "2026-09-01T21:01:25.032Z",
-        time_to_first_token_milliseconds: { samples: 3, minimum: 100, p50: 120, p95: 180, maximum: 200 },
-        prefill_milliseconds: { samples: 3, minimum: 10, p50: 20, p95: 25, maximum: 30 },
-        tokens_per_second_milli: { samples: 3, minimum: 1_000, p50: 42_500, p95: 50_000, maximum: 52_000 },
-        memory: { sampled_peak_bytes: { samples: 3, minimum: 1, p50: 8_589_934_592, p95: 8_600_000_000, maximum: 8_700_000_000 } },
-      },
-      { result_digest: digest("b"), model_id: "hf:public/model", runtime_id: "ollama-managed", passed: false, successful_runs: 0, completed_at: "2026-09-01T21:01:25.032Z" },
-      { result_digest: digest("c"), model_id: "hf:not-in-allowlist", runtime_id: "ollama-managed", passed: true, successful_runs: 3, completed_at: "2026-09-01T21:01:25.032Z",
-        time_to_first_token_milliseconds: { samples: 3, minimum: 1, p50: 1, p95: 2, maximum: 3 } },
-    ],
-  };
-  const entries = readSyntheticBenchmarkResults(document, allowlist, new Set());
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0]?.modelId, "hf:public/model");
-  assert.equal(entries[0]?.runtimeFamily, "ollama");
-  assert.equal(entries[0]?.ttftP50Ms, 120);
-  assert.equal(entries[0]?.outputTokensPerSecond, 42.5);
-  assert.equal(entries[0]?.peakMemoryBytes, 8_589_934_592);
-  assert.equal(readSyntheticBenchmarkResults(document, allowlist, new Set([digest("a")])).length, 0);
-  assert.equal(readSyntheticBenchmarkResults({ schema_version: "other" }, allowlist, new Set()).length, 0);
-  assert.equal(runtimeFamilyFromRuntimeId("llama-cpp-adapter-v1"), "llama-cpp");
-  assert.equal(runtimeFamilyFromRuntimeId("vLLM"), "vllm");
-});
-
 test("the outbound payload keeps the exact wire shape Cloud validates", () => {
   const models = buildCommunityReportModels([trace()], allowlist);
   const digest = `sha256:${"d".repeat(64)}`;
-  const syntheticBenchmarks = readSyntheticBenchmarkResults({
-    schema_version: "provider-runtime-benchmark-store-v1",
-    results: [{
-      result_digest: digest, model_id: "hf:public/model", runtime_id: "ollama-managed",
-      passed: true, successful_runs: 3, completed_at: "2026-09-01T21:01:25.032Z",
-      time_to_first_token_milliseconds: { samples: 3, minimum: 100, p50: 120, p95: 180, maximum: 200 },
-      prefill_milliseconds: { samples: 3, minimum: 10, p50: 20, p95: 25, maximum: 30 },
-      tokens_per_second_milli: { samples: 3, minimum: 1_000, p50: 42_500, p95: 50_000, maximum: 52_000 },
-      memory: { sampled_peak_bytes: { samples: 3, minimum: 1, p50: 8_589_934_592, p95: 8_600_000_000, maximum: 8_700_000_000 } },
-    }],
-  }, allowlist, new Set());
+  // Pending reports from an older installation still use this Cloud wire contract.
+  const syntheticBenchmarks = [{
+    modelId: "hf:public/model", runtimeFamily: "legacy", samples: 3,
+    ttftP50Ms: 120, ttftP95Ms: 180, prefillP50Ms: 20,
+    outputTokensPerSecond: 42.5, peakMemoryBytes: 8_589_934_592,
+    completedAt: "2026-09-01T21:01:25.032Z", resultDigest: digest,
+  }];
   const payload = {
     schemaVersion: 2 as const,
     eventId: "6f1c0f0e-8f4a-4a1e-9f6b-1f2c3d4e5f60",

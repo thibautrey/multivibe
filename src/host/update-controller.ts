@@ -2,7 +2,6 @@ import { spawn } from "node:child_process";
 import type express from "express";
 import { access } from "node:fs/promises";
 import path from "node:path";
-import type { ProviderAgentControl } from "../provider-agent-supervisor.js";
 
 const MAXIMUM_UPDATER_OUTPUT_BYTES = 256 * 1024;
 
@@ -67,7 +66,6 @@ export class HostUpdateController {
 
   constructor(
     private readonly binaryPath: string | undefined,
-    private readonly providerAgent: ProviderAgentControl | undefined,
     private readonly nativeEdge?: NativeEdgeControl,
     private readonly clock = () => performance.now(),
   ) {
@@ -167,33 +165,28 @@ export class HostUpdateController {
   }
 
   async readiness() {
-    let providerOperation: string | null = null;
-    if (this.providerAgent?.enabled) {
-      const status = await this.providerAgent.getManagedOllamaStatus();
-      providerOperation = status.operation?.trim() || null;
-    }
     const native = await this.nativeDrain("status");
     const activeJobs = this.jobRunner?.activeCount() ?? 0;
-    if (providerOperation || activeJobs || this.activeRequests || this.activeWebsocketTurns) this.lastActivity = this.clock();
-    const quiet = !providerOperation && activeJobs === 0 && this.activeRequests === 0 && this.activeWebsocketTurns === 0 &&
+    if (activeJobs || this.activeRequests || this.activeWebsocketTurns) this.lastActivity = this.clock();
+    const quiet = activeJobs === 0 && this.activeRequests === 0 && this.activeWebsocketTurns === 0 &&
       this.clock() - this.lastActivity >= 30 * 60_000 &&
       (!this.jobRunner || (this.jobRunner.idleForMs?.() ?? 0) >= 30 * 60_000);
     if (native) {
       return {
         ...native,
-        ready: native.ready && !providerOperation && this.activeRequests === 0 && this.activeWebsocketTurns === 0 && activeJobs === 0,
+        ready: native.ready && this.activeRequests === 0 && this.activeWebsocketTurns === 0 && activeJobs === 0,
         quiet: quiet && native.quiet === true,
-        provider_operation: providerOperation,
+        provider_operation: null,
       };
     }
     return {
       quiet,
       draining: this.draining,
-      ready: this.draining && this.activeRequests === 0 && this.activeWebsocketTurns === 0 && activeJobs === 0 && !providerOperation,
+      ready: this.draining && this.activeRequests === 0 && this.activeWebsocketTurns === 0 && activeJobs === 0,
       active_requests: this.activeRequests,
       active_websocket_turns: this.activeWebsocketTurns,
       active_jobs: activeJobs,
-      provider_operation: providerOperation,
+      provider_operation: null,
     };
   }
 

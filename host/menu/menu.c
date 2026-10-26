@@ -7,7 +7,6 @@
 #include <string.h>
 
 extern void goMenuAction(int action);
-extern void goEnrollmentDecision(int accepted);
 
 static GtkWidget *window;
 static GtkWidget *header_title;
@@ -403,11 +402,6 @@ typedef struct {
     int warning;
 } message_payload;
 
-static void on_enrollment_response(GtkDialog *dialog, gint response_id, gpointer data) {
-    (void)data;
-    goEnrollmentDecision(response_id == GTK_RESPONSE_ACCEPT ? 1 : 0);
-    gtk_widget_destroy(GTK_WIDGET(dialog));
-}
 
 static GtkWidget *message_dialog(const char *title, const char *message, int warning) {
     GtkWidget *dialog = gtk_message_dialog_new(
@@ -435,29 +429,6 @@ static gboolean show_message_idle(gpointer data) {
     return G_SOURCE_REMOVE;
 }
 
-static gboolean request_enrollment_idle(gpointer data) {
-    GtkWidget *dialog;
-    (void)data;
-    if (!window) return G_SOURCE_REMOVE;
-    dialog = gtk_message_dialog_new(
-        GTK_WINDOW(window),
-        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
-        GTK_MESSAGE_QUESTION,
-        GTK_BUTTONS_NONE,
-        "%s",
-        "Add this worker to MultiVibe Cloud?"
-    );
-    gtk_message_dialog_format_secondary_text(
-        GTK_MESSAGE_DIALOG(dialog),
-        "%s",
-        "MultiVibe Host will register this worker's public device identity. Cloud jobs use only MultiVibe's managed Ollama runtime and still require saved capacity consent. Your private key and local runtime settings stay on this worker."
-    );
-    gtk_dialog_add_button(GTK_DIALOG(dialog), "Add this worker", GTK_RESPONSE_ACCEPT);
-    gtk_dialog_add_button(GTK_DIALOG(dialog), "Cancel", GTK_RESPONSE_CANCEL);
-    g_signal_connect(dialog, "response", G_CALLBACK(on_enrollment_response), NULL);
-    gtk_window_present(GTK_WINDOW(dialog));
-    return G_SOURCE_REMOVE;
-}
 
 static void toggle_window(void) {
     if (gtk_widget_get_visible(window)) gtk_widget_hide(window);
@@ -599,10 +570,6 @@ void multivibe_menu_set_model(const char *model) {
     if (window && model) g_idle_add(apply_model_idle, g_strdup(model));
 }
 
-void multivibe_menu_request_enrollment(void) {
-    if (!window) return;
-    g_idle_add(request_enrollment_idle, NULL);
-}
 
 void multivibe_menu_show_message(const char *title, const char *message, int warning) {
     message_payload *payload = g_new0(message_payload, 1);

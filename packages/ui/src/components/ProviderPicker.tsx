@@ -4,7 +4,7 @@ import type { ProviderId } from "../types";
 import "./ProviderSetup.css";
 import { providerAccess, matchesAccessFilter, type AccessFilter } from "../lib/providerAccess";
 
-export type SetupProvider = ProviderId | "nvidia-pair";
+export type SetupProvider = ProviderId;
 export const SETUP_PROVIDERS: { id: SetupProvider; name: string; description: string; method: string; icon?: string }[] = [
   { id: "openai", name: "OpenAI", description: "Connect a ChatGPT subscription or use an OpenAI API key.", method: "Sign-in or API key", icon: "openai" },
   { id: "github-copilot", name: "GitHub Copilot", description: "Connect your GitHub account to use Copilot models.", method: "Device sign-in" },
@@ -12,7 +12,6 @@ export const SETUP_PROVIDERS: { id: SetupProvider; name: string; description: st
   { id: "opencode", name: "OpenCode Zen / Go", description: "Connect with an API key or your Console account.", method: "API key or sign-in", icon: "opencode" },
   { id: "mistral", name: "Mistral", description: "Access Mistral models with your API key.", method: "API key", icon: "mistral" },
   { id: "zai", name: "Z.AI GLM Coding Plan", description: "Use your GLM Coding Plan key with subscription quota tracking.", method: "API key", icon: "zai" },
-  { id: "nvidia-pair", name: "NVIDIA PAIR", description: "Connect your Personal AI Router endpoint.", method: "Local endpoint", icon: "nvidia" },
   { id: "openai-compatible", name: "OpenAI-compatible", description: "Connect a local server or another hosted API.", method: "Custom endpoint" },
 ];
 
@@ -46,7 +45,7 @@ export const ProviderPicker = memo(function ProviderPicker({ value, sdkProvider,
   const [query, setQuery] = useState("");
   const [accessFilter, setAccessFilter] = useState<AccessFilter | null>(null);
   const providers = [
-    ...SETUP_PROVIDERS.filter(provider => (!providerIds || providerIds.includes(provider.id)) && (capabilities.localRuntimes || provider.id !== "nvidia-pair")),
+    ...SETUP_PROVIDERS.filter(provider => (!providerIds || providerIds.includes(provider.id))),
     ...cloudProviders.filter((item) => item.id !== "openai").map((item) => ({ id: "ai-sdk" as const, sdkProvider: item.id, name: item.name,
       description: `Connect ${item.name} with your ${item.credentialLabel ?? "API key"}.`, method: item.credentialLabel ?? "API key" })),
   ];

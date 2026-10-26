@@ -31,7 +31,6 @@ const (
 	wmTray          = wmApp + 1
 	wmApplyModel    = wmApp + 2
 	wmShowMessage   = wmApp + 3
-	wmEnrollment    = wmApp + 4
 	wmStop          = wmApp + 5
 
 	windowStyle = 0x00C80000 | 0x00080000 | 0x00020000 // WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX
@@ -155,7 +154,6 @@ type windowsMenu struct {
 	tray      windowsNotifyIconData
 	trayAdded bool
 	actions   chan int
-	decisions chan bool
 
 	title   syscall.Handle
 	status  syscall.Handle
@@ -167,12 +165,11 @@ type windowsMenu struct {
 	login   syscall.Handle
 	quit    syscall.Handle
 
-	mu                sync.Mutex
-	pendingModel      string
-	pendingMessage    *windowsMessagePayload
-	pendingEnrollment bool
-	operational       bool
-	updateAvailable   bool
+	mu              sync.Mutex
+	pendingModel    string
+	pendingMessage  *windowsMessagePayload
+	operational     bool
+	updateAvailable bool
 }
 
 var (
@@ -212,7 +209,7 @@ var (
 
 var activeWindowsMenu *windowsMenu
 
-func newWindowsMenu(iconPath string, actions chan int, decisions chan bool) (*windowsMenu, error) {
+func newWindowsMenu(iconPath string, actions chan int) (*windowsMenu, error) {
 	instanceValue, _, _ := getModuleHandleWindows.Call(0)
 	if instanceValue == 0 {
 		return nil, errors.New("the Windows menu module handle is unavailable")
@@ -239,7 +236,7 @@ func newWindowsMenu(iconPath string, actions chan int, decisions chan bool) (*wi
 		return nil, errors.New("the Windows menu window class could not be registered")
 	}
 
-	menu := &windowsMenu{instance: instance, icon: icon, actions: actions, decisions: decisions}
+	menu := &windowsMenu{instance: instance, icon: icon, actions: actions}
 	activeWindowsMenu = menu
 	title, _ := syscall.UTF16PtrFromString("MultiVibe Host")
 	hwnd, _, _ := createWindowExWindows.Call(
@@ -405,13 +402,6 @@ func (menu *windowsMenu) showMessage(title, message string, warning bool) {
 	menu.pendingMessage = &windowsMessagePayload{title: title, message: message, warning: warning}
 	menu.mu.Unlock()
 	menu.post(wmShowMessage)
-}
-
-func (menu *windowsMenu) requestEnrollment() {
-	menu.mu.Lock()
-	menu.pendingEnrollment = true
-	menu.mu.Unlock()
-	menu.post(wmEnrollment)
 }
 
 func (menu *windowsMenu) stop() {
@@ -671,24 +661,6 @@ func (menu *windowsMenu) bodyMessage() {
 	messageBoxWindows.Call(uintptr(menu.hwnd), uintptr(unsafe.Pointer(message)), uintptr(unsafe.Pointer(caption)), uintptr(flags))
 }
 
-func (menu *windowsMenu) enrollmentMessage() {
-	menu.mu.Lock()
-	pending := menu.pendingEnrollment
-	menu.pendingEnrollment = false
-	menu.mu.Unlock()
-	if !pending {
-		return
-	}
-	caption, _ := syscall.UTF16PtrFromString("MultiVibe Host")
-	message, _ := syscall.UTF16PtrFromString("Add this worker to MultiVibe Cloud?\r\n\r\nMultiVibe Host will register this worker's public device identity. Cloud jobs use only MultiVibe's managed Ollama runtime and still require saved capacity consent. Your private key and local runtime settings stay on this worker.")
-	flags := uint32(mbYesNo | mbIconQuestion | mbDefButton2)
-	result, _, _ := messageBoxWindows.Call(uintptr(menu.hwnd), uintptr(unsafe.Pointer(message)), uintptr(unsafe.Pointer(caption)), uintptr(flags))
-	select {
-	case menu.decisions <- result == idYes:
-	default:
-	}
-}
-
 func windowsMenuWindowProc(hwnd syscall.Handle, message uint32, wParam, lParam uintptr) uintptr {
 	menu := activeWindowsMenu
 	if menu == nil || menu.hwnd != hwnd {
@@ -701,9 +673,6 @@ func windowsMenuWindowProc(hwnd syscall.Handle, message uint32, wParam, lParam u
 		return 0
 	case wmShowMessage:
 		menu.bodyMessage()
-		return 0
-	case wmEnrollment:
-		menu.enrollmentMessage()
 		return 0
 	case wmStop:
 		menu.removeTrayIcon()

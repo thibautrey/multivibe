@@ -25,18 +25,6 @@ COPY rust/ ./rust/
 RUN cargo build --release -p multivibe-proxy-core
 RUN cargo build --release -p multivibe-v1-edge
 
-FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS provider-agent-build
-WORKDIR /src/provider-agent
-ARG TARGETOS
-ARG TARGETARCH
-COPY docs/runtime-community-gpu-benchmark-e690aa1.result.json /src/docs/runtime-community-gpu-benchmark-e690aa1.result.json
-COPY provider-agent/ ./
-COPY packaging/ /src/packaging/
-RUN go test ./...
-RUN CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
-  go build -trimpath -buildvcs=false -ldflags="-s -w" \
-  -o /out/multivibe-provider-agent .
-
 FROM node:22-bookworm-slim
 WORKDIR /app
 RUN chmod 1777 /tmp \
@@ -63,9 +51,6 @@ COPY --from=build \
   /app/scripts/install-codex-project-hook.mjs \
   /app/scripts/install-codex-project-hook.sh \
   ./scripts/
-COPY --from=provider-agent-build --chmod=0555 \
-  /out/multivibe-provider-agent \
-  /opt/multivibe/bin/multivibe-provider-agent
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./
 EXPOSE 1455 1456

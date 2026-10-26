@@ -11,7 +11,7 @@ test("macOS menu bar retries dashboard sessions on the canonical edge port", () 
 });
 
 test("macOS menu bar closes only after the dashboard URL opens", () => {
-  const handler = source.slice(source.indexOf("popoverController.openDashboard ="), source.indexOf("popoverController.configureWorker ="));
+  const handler = source.slice(source.indexOf("popoverController.openDashboard ="), source.indexOf("popoverController.checkForUpdates ="));
   assert.doesNotMatch(handler, /performClose/);
   assert.match(source, /if NSWorkspace\.shared\.open\(dashboard\) \{\s*self\.popover\.performClose\(nil\)/);
 });

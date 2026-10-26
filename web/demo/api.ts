@@ -14,7 +14,6 @@ export function createDemoApi(now = Date.now(), workspace: "personal" | "owner" 
     const url = new URL(input, "http://demo.invalid");
     const path = url.pathname;
     // These POSTs normally run automatically. In the demo they only return fixtures.
-    if (method === "POST" && path === "/admin/local-runtimes/discover") return json({ accounts: [] });
     if (method === "POST" && path === "/admin/usage/refresh-stale") return json({ accounts: fixtures.accounts });
     if (method !== "GET" && method !== "HEAD") return json({ error: DEMO_READ_ONLY }, 403);
     if (path === "/admin/invoices" && workspace === "member") return json({ error: "Billing access is unavailable for this workspace." }, 403);
@@ -45,7 +44,6 @@ export function createDemoApi(now = Date.now(), workspace: "personal" | "owner" 
       "/admin/provider-catalog": sdkProviderCatalog(),
       "/admin/accounts": { accounts: fixtures.accounts },
       "/admin/invoices": { providers: workspace === "member" ? [] : configuredInvoiceProviders(fixtures.accounts), cloudUnavailable: false },
-      "/admin/provider-agent/local-worker": { localWorker: null },
       "/admin/cloud/models": { models: [{ id: "hf:demo/cloud-model", name: "Demo Cloud model", aliases: [], availability: "unknown", network: false }] },
       "/admin/cloud": { status: "disconnected", topupUrl: "https://app.multivibe.cloud/billing" },
       "/admin/config": { hostApplication, usageCacheTtlMs: 86400000, oauthRedirectUri: "http://localhost:4173/auth/callback" },

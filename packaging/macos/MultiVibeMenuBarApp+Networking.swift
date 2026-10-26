@@ -75,8 +75,6 @@ extension MultiVibeMenuBarApp {
         }
         guard let request = authorizedRequest(path: summaryPath) else {
             refreshing = false
-            workerConfigurationState = nil
-            workerSetupURL = nil
             updateState(operational: false, status: "Starting…")
             if ownedService?.isRunning != true { ensureServiceIsRunning() }
             return
@@ -87,14 +85,13 @@ extension MultiVibeMenuBarApp {
                   let summary = try? JSONDecoder().decode(MenuBarSummary.self, from: data) else {
                 DispatchQueue.main.async {
                     self?.refreshing = false
-                    self?.workerConfigurationState = nil
-                    self?.workerSetupURL = nil
                     self?.updateState(operational: false, status: "Unavailable")
                     if self?.ownedService?.isRunning != true { self?.launchService(avoidingOccupiedPort: http != nil) }
                 }
                 return
             }
             DispatchQueue.main.async {
+                self?.refreshing = false
                 self?.summary = summary
                 self?.ingestNotifications(summary)
                 let forecastCrossingIsPending = summary.notifications?.contains {
@@ -106,39 +103,11 @@ extension MultiVibeMenuBarApp {
                 }
                 self?.updateState(operational: summary.operational, status: summary.operational ? "Operational" : "Unavailable")
                 if summary.operational, self?.pendingDashboardOpen == true { self?.requestDashboardSession() }
-                if summary.operational, self?.pendingEnrollmentToken != nil { self?.submitPendingEnrollment() }
                 self?.refreshUpdateStatus()
-                self?.refreshLocalWorkerStatus()
             }
         }.resume()
     }
 
-    func refreshLocalWorkerStatus() {
-        guard let request = authorizedRequest(path: "/admin/provider-agent/local-worker") else {
-            workerConfigurationState = nil
-            workerSetupURL = nil
-            refreshing = false
-            render()
-            return
-        }
-        URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
-            let worker = data
-                .flatMap { try? JSONDecoder().decode(LocalWorkerStatusResponse.self, from: $0) }
-            let isSuccessful = (response as? HTTPURLResponse)?.statusCode == 200
-            DispatchQueue.main.async {
-                guard let self else { return }
-                if isSuccessful, let localWorker = worker?.localWorker {
-                    self.workerConfigurationState = localWorker.configurationState
-                    self.workerSetupURL = localWorker.configurationState == "unconfigured" ? localWorker.connectURL : nil
-                } else {
-                    self.workerConfigurationState = nil
-                    self.workerSetupURL = nil
-                }
-                self.refreshing = false
-                self.render()
-            }
-        }.resume()
-    }
 
     func refreshUpdateStatus() {
         guard let request = authorizedRequest(path: "/admin/host-update") else { return }

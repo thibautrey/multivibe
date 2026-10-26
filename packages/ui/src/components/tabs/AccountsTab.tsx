@@ -1,8 +1,6 @@
 import { providerMutationFields } from "../../capabilities";
 import { useDashboardApi, useDashboardRuntime } from "../../adapter";
 import { ChatGPTDeviceGuide } from "../ChatGPTDeviceGuide";
-import { TeamMachineConsent } from "../TeamMachineConsent";
-import { TeamMachineCard } from "../TeamMachineCard";
 import type { ModelRoute } from "../../lib/modelCatalog";
 import { findAvailableCount } from "../../lib/resetCredits";
 import ModalPortal from "../ModalPortal";
@@ -19,7 +17,6 @@ import {
 } from "../../lib/floatingMenu";
 import {
   runtimeIdentityForAccount,
-  runtimeIdentityForAdapter,
 } from "../../lib/runtimeCatalog";
 import { tracksSubscriptionQuota } from "../../lib/accountQuota";
 import { providerAccess } from "../../lib/providerAccess";
@@ -36,7 +33,6 @@ const CODEX_QUOTA_RESET_FORECAST_URL = "https://www.willcodexquotareset.com/";
 type Props = {
   traceStats: TraceStats;
   accounts: Account[];
-  localWorker: LocalWorkerProvider | null;
   multivibeCloud: MultivibeCloudProvider;
   usageCacheTtlMs: number;
   settings: StoreSettings;
@@ -70,36 +66,6 @@ type Props = {
   onSkipOnboarding?: () => void;
 };
 
-export type LocalWorkerProvider = {
-  id: "multivibe-worker-local";
-  kind: "system-local-worker";
-  name: "MultiVibe Worker";
-  location: "local";
-  enrollment_state: "not_enrolled" | "enrolled";
-  capacity_state: "not_configured" | "disabled" | "paused" | "enabled";
-  cloud_runtime: "managed-ollama";
-  trust_tier: "community";
-  removable: false;
-  routing_eligible: false;
-  compensation_eligible: false;
-  capability: {
-    profile: "apple-silicon" | "intel-mac" | "linux-nvidia" | "linux-cpu" | "windows-nvidia";
-    accelerator: "metal" | "cuda" | "cpu";
-    hardware: string;
-    accelerator_memory_bytes: number;
-  };
-  estimated_monthly_earnings: {
-    currency: "USD";
-    period: "month";
-    amount: string;
-    basis: "same_chip" | "fleet_median" | "no_observations" | "catalog_unavailable";
-    sample_count: number;
-    as_of_date?: string;
-    disclaimer: string;
-  };
-  connect_url: string;
-};
-
 export type MultivibeCloudProvider = {
   status: "disconnected" | "connected" | "unavailable";
   dollarCreditsUsd?: string;
@@ -108,7 +74,7 @@ export type MultivibeCloudProvider = {
   topupUrl: string;
 };
 
-type AccountProvider = ProviderId | "nvidia-pair";
+type AccountProvider = ProviderId;
 type OAuthMethod = "browser" | "device";
 
 type QuotaResetForecast = {
@@ -176,218 +142,6 @@ type OAuthDialogState = {
   pendingEnabled?: boolean;
   provider: "openai" | "opencode" | "xai" | "github-copilot";
 };
-
-type ProviderAgentSelection = {
-  schema_version: "provider-selection-v1";
-  revision: number;
-  state: "detected" | "selected";
-  selected_models: string[];
-};
-
-type ProviderAgentDetectedModels = {
-  schema_version: "provider-detected-models-v2";
-  observed_at: string;
-  runtimes: Array<{ adapter_id: string; models: string[] }>;
-  diagnostics: Array<{ adapter_id: string; status: "available" | "unavailable" | "degraded"; code: string }>;
-};
-
-type ProviderAgentAdapterRegistry = {
-  schema_version: "provider-runtime-registry-v2";
-  adapters: Array<{
-    id: string;
-    display_name: string;
-    authentication: "none" | "optional-bearer" | "required-bearer";
-    automatic_loopback_candidates: Array<{ endpoint: string }>;
-  }>;
-};
-
-type ProviderAgentRuntimeEndpoints = {
-  schema_version: "provider-runtime-endpoints-v1";
-  revision: number;
-  endpoints: Array<{
-    adapter_id: string;
-    endpoint: string;
-    authentication: "none" | "bearer";
-  }>;
-};
-
-type ProviderRuntimeEndpointDraft = {
-  adapterId: string;
-  endpoint: string;
-  bearerToken: string;
-  existingAuthentication: "none" | "bearer";
-  clearBearer: boolean;
-};
-
-type ProviderCapacityPolicyState = {
-  schema_version: "provider-capacity-policy-state-v1";
-  revision: number;
-  paused: boolean;
-  automatic_downloads: boolean;
-  allow_cloud_workloads: boolean;
-  policy: {
-    schema_version: "provider-capacity-policy-v1";
-    gpu_utilization_percent: number;
-    gpu_vram_percent: number;
-    max_disk_bytes: number;
-    model_storage_path: string;
-    max_download_bytes_per_day: number;
-    minimum_model_residency_seconds: number;
-    max_model_changes_per_day: number;
-    reserve_free_disk_bytes: number;
-  };
-};
-
-type ProviderCapacityPolicyDraft = {
-  paused: boolean;
-  automaticDownloads: boolean;
-  allowCloudWorkloads: boolean;
-  gpuUtilizationPercent: string;
-  gpuVramPercent: string;
-  maxDiskGiB: string;
-  modelStoragePath: string;
-  maxDownloadGiBPerDay: string;
-  minimumModelResidencySeconds: string;
-  maxModelChangesPerDay: string;
-  reserveFreeDiskGiB: string;
-};
-
-type ProviderPreviewStatus =
-  | "idle"
-  | "loading"
-  | "ready"
-  | "saving"
-  | "unavailable"
-  | "error";
-
-type ProviderCapacityStatus =
-  | "idle"
-  | "loading"
-  | "ready"
-  | "saving"
-  | "unavailable"
-  | "error";
-
-const BYTES_PER_GIB = 1024 ** 3;
-
-function defaultProviderCapacityPolicyDraft(): ProviderCapacityPolicyDraft {
-  return {
-    paused: true,
-    automaticDownloads: false,
-    allowCloudWorkloads: false,
-    gpuUtilizationPercent: "80",
-    gpuVramPercent: "75",
-    maxDiskGiB: "30",
-    modelStoragePath: "/var/lib/multivibe/models",
-    maxDownloadGiBPerDay: "20",
-    minimumModelResidencySeconds: "21600",
-    maxModelChangesPerDay: "4",
-    reserveFreeDiskGiB: "5",
-  };
-}
-
-function capacityPolicyDraftFromState(
-  state: ProviderCapacityPolicyState,
-): ProviderCapacityPolicyDraft {
-  return {
-    paused: state.paused,
-    automaticDownloads: state.automatic_downloads,
-    allowCloudWorkloads: state.allow_cloud_workloads,
-    gpuUtilizationPercent: String(state.policy.gpu_utilization_percent),
-    gpuVramPercent: String(state.policy.gpu_vram_percent),
-    maxDiskGiB: String(state.policy.max_disk_bytes / BYTES_PER_GIB),
-    modelStoragePath: state.policy.model_storage_path,
-    maxDownloadGiBPerDay: String(
-      state.policy.max_download_bytes_per_day / BYTES_PER_GIB,
-    ),
-    minimumModelResidencySeconds: String(
-      state.policy.minimum_model_residency_seconds,
-    ),
-    maxModelChangesPerDay: String(state.policy.max_model_changes_per_day),
-    reserveFreeDiskGiB: String(
-      state.policy.reserve_free_disk_bytes / BYTES_PER_GIB,
-    ),
-  };
-}
-
-function boundedIntegerInput(
-  input: string,
-  minimum: number,
-  maximum = Number.MAX_SAFE_INTEGER,
-) {
-  const value = Number(input);
-  return /^\d+$/.test(input.trim()) && Number.isSafeInteger(value) &&
-    value >= minimum && value <= maximum
-    ? value
-    : null;
-}
-
-function gibInputToBytes(input: string, minimum: number) {
-  const gib = Number(input);
-  if (input.trim() === "" || !Number.isFinite(gib) || gib < 0) return null;
-  const bytes = Math.round(gib * BYTES_PER_GIB);
-  return Number.isSafeInteger(bytes) && bytes >= minimum ? bytes : null;
-}
-
-function capacityPolicyStateFromDraft(
-  draft: ProviderCapacityPolicyDraft,
-  revision: number,
-): ProviderCapacityPolicyState | null {
-  const gpuUtilizationPercent = boundedIntegerInput(
-    draft.gpuUtilizationPercent,
-    1,
-    100,
-  );
-  const gpuVramPercent = boundedIntegerInput(draft.gpuVramPercent, 1, 100);
-  const maxDiskBytes = gibInputToBytes(draft.maxDiskGiB, 1);
-  const maxDownloadBytesPerDay = gibInputToBytes(
-    draft.maxDownloadGiBPerDay,
-    0,
-  );
-  const minimumModelResidencySeconds = boundedIntegerInput(
-    draft.minimumModelResidencySeconds,
-    1,
-  );
-  const maxModelChangesPerDay = boundedIntegerInput(
-    draft.maxModelChangesPerDay,
-    0,
-    4_294_967_295,
-  );
-  const reserveFreeDiskBytes = gibInputToBytes(draft.reserveFreeDiskGiB, 1);
-  const modelStoragePath = draft.modelStoragePath.trim();
-  if (
-    gpuUtilizationPercent === null ||
-    gpuVramPercent === null ||
-    maxDiskBytes === null ||
-    maxDownloadBytesPerDay === null ||
-    minimumModelResidencySeconds === null ||
-    maxModelChangesPerDay === null ||
-    reserveFreeDiskBytes === null ||
-    !modelStoragePath.startsWith("/") ||
-    modelStoragePath === "/" ||
-    /[\0\r\n]/u.test(modelStoragePath)
-  ) {
-    return null;
-  }
-  return {
-    schema_version: "provider-capacity-policy-state-v1",
-    revision,
-    paused: draft.paused,
-    automatic_downloads: draft.automaticDownloads,
-    allow_cloud_workloads: draft.allowCloudWorkloads,
-    policy: {
-      schema_version: "provider-capacity-policy-v1",
-      gpu_utilization_percent: gpuUtilizationPercent,
-      gpu_vram_percent: gpuVramPercent,
-      max_disk_bytes: maxDiskBytes,
-      model_storage_path: modelStoragePath,
-      max_download_bytes_per_day: maxDownloadBytesPerDay,
-      minimum_model_residency_seconds: minimumModelResidencySeconds,
-      max_model_changes_per_day: maxModelChangesPerDay,
-      reserve_free_disk_bytes: reserveFreeDiskBytes,
-    },
-  };
-}
 
 function isOAuthProvider(provider: AccountProvider) {
   return provider === "openai" || provider === "xai" || provider === "github-copilot";
@@ -479,7 +233,6 @@ export function AccountsTab(props: Props) {
   const {
     traceStats,
     accounts,
-    localWorker,
     multivibeCloud,
     usageCacheTtlMs,
     settings,
@@ -614,34 +367,6 @@ export function AccountsTab(props: Props) {
   const [openMenu, setOpenMenu] = useState<OpenAccountMenu | null>(null);
   const accountActionMenuRef = useRef<HTMLDivElement | null>(null);
   const accountActionTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const [workerSetupOpen, setWorkerSetupOpen] = useState(false);
-  const [providerPreviewStatus, setProviderPreviewStatus] =
-    useState<ProviderPreviewStatus>("idle");
-  const [providerSelection, setProviderSelection] =
-    useState<ProviderAgentSelection | null>(null);
-  const [providerSelectionDraft, setProviderSelectionDraft] = useState<string[]>([]);
-  const [providerDetectedModels, setProviderDetectedModels] =
-    useState<ProviderAgentDetectedModels | null>(null);
-  const [providerAdapterRegistry, setProviderAdapterRegistry] =
-    useState<ProviderAgentAdapterRegistry | null>(null);
-  const [providerRuntimeEndpoints, setProviderRuntimeEndpoints] =
-    useState<ProviderAgentRuntimeEndpoints | null>(null);
-  const [providerRuntimeDrafts, setProviderRuntimeDrafts] =
-    useState<ProviderRuntimeEndpointDraft[]>([]);
-  const [providerRuntimeAdapterToAdd, setProviderRuntimeAdapterToAdd] = useState("");
-  const [providerRuntimeSaving, setProviderRuntimeSaving] = useState(false);
-  const [providerRuntimeMessage, setProviderRuntimeMessage] = useState("");
-  const [providerPreviewMessage, setProviderPreviewMessage] = useState("");
-  const [providerCapacityPolicy, setProviderCapacityPolicy] =
-    useState<ProviderCapacityPolicyState | null>(null);
-  const [providerCapacityDraft, setProviderCapacityDraft] =
-    useState<ProviderCapacityPolicyDraft>(defaultProviderCapacityPolicyDraft);
-  const [providerCapacityStatus, setProviderCapacityStatus] =
-    useState<ProviderCapacityStatus>("idle");
-  const [providerCapacityMessage, setProviderCapacityMessage] = useState("");
-  const workerSetupDialogRef = useRef<HTMLDivElement | null>(null);
-  const workerSetupTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const workerSetupCloseRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     if (!providerSetupRequest) return;
@@ -749,333 +474,6 @@ export function AccountsTab(props: Props) {
       document.removeEventListener("keydown", onKeyDown);
     };
   }, [openMenu?.accountId]);
-
-  useEffect(() => {
-    if (!capabilities.localRuntimes || !workerSetupOpen) return;
-
-    let cancelled = false;
-    setProviderPreviewStatus("loading");
-    setProviderPreviewMessage("");
-    setProviderSelection(null);
-    setProviderDetectedModels(null);
-    setProviderAdapterRegistry(null);
-    setProviderRuntimeEndpoints(null);
-    setProviderRuntimeDrafts([]);
-    setProviderRuntimeMessage("");
-    setProviderCapacityPolicy(null);
-    setProviderCapacityDraft(defaultProviderCapacityPolicyDraft());
-    setProviderCapacityStatus("loading");
-    setProviderCapacityMessage("");
-
-    void Promise.all([
-      api("provider-agent/selection"),
-      api("provider-agent/detected-models"),
-      api("provider-agent/adapters"),
-      api("provider-agent/runtime-endpoints"),
-    ]).then(([selection, detected, adapters, runtimeEndpoints]) => {
-      if (cancelled) return;
-      const nextSelection = selection as ProviderAgentSelection;
-      const nextRuntimeEndpoints = runtimeEndpoints as ProviderAgentRuntimeEndpoints;
-      setProviderSelection(nextSelection);
-      setProviderSelectionDraft([...nextSelection.selected_models].sort());
-      setProviderDetectedModels(detected as ProviderAgentDetectedModels);
-      setProviderAdapterRegistry(adapters as ProviderAgentAdapterRegistry);
-      setProviderRuntimeEndpoints(nextRuntimeEndpoints);
-      setProviderRuntimeDrafts(nextRuntimeEndpoints.endpoints.map((endpoint) => ({
-        adapterId: endpoint.adapter_id,
-        endpoint: endpoint.endpoint,
-        bearerToken: "",
-        existingAuthentication: endpoint.authentication,
-        clearBearer: false,
-      })));
-      setProviderPreviewStatus("ready");
-    }).catch((error: unknown) => {
-      if (cancelled) return;
-      setProviderPreviewStatus(error instanceof ApiError && error.status === 503 ? "unavailable" : "error");
-      setProviderPreviewMessage(
-        error instanceof ApiError && error.status === 503
-          ? "The embedded provider agent is not available in this Core installation."
-          : "The bounded local inventory could not be loaded.",
-      );
-    });
-
-    void api("provider-agent/capacity-policy").then((policy) => {
-      if (cancelled) return;
-      const nextPolicy = policy as ProviderCapacityPolicyState;
-      setProviderCapacityPolicy(nextPolicy);
-      setProviderCapacityDraft(capacityPolicyDraftFromState(nextPolicy));
-      setProviderCapacityStatus("ready");
-    }).catch((error: unknown) => {
-      if (cancelled) return;
-      if (error instanceof ApiError && error.status === 404) {
-        setProviderCapacityPolicy(null);
-        setProviderCapacityDraft(defaultProviderCapacityPolicyDraft());
-        setProviderCapacityStatus("ready");
-        setProviderCapacityMessage(
-          "Defaults are ready. Save them or customize Advanced settings.",
-        );
-        return;
-      }
-      setProviderCapacityStatus(
-        error instanceof ApiError && error.status === 503
-          ? "unavailable"
-          : "error",
-      );
-      setProviderCapacityMessage(
-        error instanceof ApiError && error.status === 503
-          ? "The local capacity policy service is unavailable."
-          : "The local capacity policy could not be loaded.",
-      );
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [workerSetupOpen]);
-
-  useEffect(() => {
-    if (!capabilities.localRuntimes || !workerSetupOpen) return;
-
-    const previouslyFocused =
-      document.activeElement instanceof HTMLElement
-        ? document.activeElement
-        : null;
-    const previousBodyOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    const focusFrame = window.requestAnimationFrame(() => {
-      workerSetupCloseRef.current?.focus();
-    });
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setWorkerSetupOpen(false);
-        return;
-      }
-      if (event.key !== "Tab") return;
-
-      const dialog = workerSetupDialogRef.current;
-      if (!dialog) return;
-      const focusable = Array.from(
-        dialog.querySelectorAll<HTMLElement>(dialogFocusableSelector),
-      );
-      if (!focusable.length) {
-        event.preventDefault();
-        dialog.focus();
-        return;
-      }
-
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (
-        !event.shiftKey &&
-        (document.activeElement === last || !dialog.contains(document.activeElement))
-      ) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.cancelAnimationFrame(focusFrame);
-      document.removeEventListener("keydown", onKeyDown);
-      document.body.style.overflow = previousBodyOverflow;
-      window.requestAnimationFrame(() => {
-        const focusTarget = workerSetupTriggerRef.current ?? previouslyFocused;
-        if (focusTarget?.isConnected) focusTarget.focus();
-      });
-    };
-  }, [workerSetupOpen]);
-
-  const toggleProviderSelection = (model: string) => {
-    setProviderSelectionDraft((current) =>
-      current.includes(model)
-        ? current.filter((value) => value !== model)
-        : [...current, model].sort(),
-    );
-    setProviderPreviewMessage("");
-  };
-
-  const updateProviderCapacityDraft = <
-    Key extends keyof ProviderCapacityPolicyDraft,
-  >(
-    key: Key,
-    value: ProviderCapacityPolicyDraft[Key],
-  ) => {
-    setProviderCapacityDraft((current) => ({ ...current, [key]: value }));
-    setProviderCapacityMessage("");
-  };
-
-  const saveProviderSelection = async () => {
-    if (!providerSelection || providerPreviewStatus === "saving") return;
-    setProviderPreviewStatus("saving");
-    setProviderPreviewMessage("");
-    try {
-      const next = await api("provider-agent/selection", {
-        method: "PUT",
-        body: JSON.stringify({
-          revision: providerSelection.revision,
-          selected_models: providerSelectionDraft,
-        }),
-      }) as ProviderAgentSelection;
-      setProviderSelection(next);
-      setProviderSelectionDraft([...next.selected_models].sort());
-      setProviderPreviewStatus("ready");
-      setProviderPreviewMessage(
-        next.selected_models.length
-          ? "Local selection saved. Nothing was submitted to MultiVibe Cloud."
-          : "Local selection cleared. Nothing was submitted to MultiVibe Cloud.",
-      );
-    } catch (error: unknown) {
-      if (error instanceof ApiError && error.status === 409) {
-        try {
-          const latest = await api("provider-agent/selection") as ProviderAgentSelection;
-          setProviderSelection(latest);
-          setProviderSelectionDraft([...latest.selected_models].sort());
-          setProviderPreviewStatus("ready");
-          setProviderPreviewMessage("The selection changed in another session. The latest local revision is shown; review it before saving again.");
-          return;
-        } catch {
-          // Fall through to the bounded unavailable state below.
-        }
-      }
-      setProviderPreviewStatus(error instanceof ApiError && error.status === 503 ? "unavailable" : "error");
-      setProviderPreviewMessage(
-        error instanceof ApiError && error.status === 400
-          ? "The local selection contains an invalid model identifier."
-          : "The local selection could not be saved.",
-      );
-    }
-  };
-
-  const saveProviderRuntimeEndpoints = async () => {
-    if (!providerRuntimeEndpoints || providerRuntimeSaving) return;
-    setProviderRuntimeSaving(true);
-    setProviderRuntimeMessage("");
-    try {
-      const next = await api("provider-agent/runtime-endpoints", {
-        method: "PUT",
-        body: JSON.stringify({
-          revision: providerRuntimeEndpoints.revision,
-          endpoints: providerRuntimeDrafts.map((draft) => ({
-            adapter_id: draft.adapterId,
-            endpoint: draft.endpoint,
-            ...(draft.clearBearer
-              ? { bearer_token: "" }
-              : draft.bearerToken
-                ? { bearer_token: draft.bearerToken }
-                : {}),
-          })),
-        }),
-      }) as ProviderAgentRuntimeEndpoints;
-      const detected = await api("provider-agent/detected-models") as ProviderAgentDetectedModels;
-      setProviderRuntimeEndpoints(next);
-      setProviderRuntimeDrafts(next.endpoints.map((endpoint) => ({
-        adapterId: endpoint.adapter_id,
-        endpoint: endpoint.endpoint,
-        bearerToken: "",
-        existingAuthentication: endpoint.authentication,
-        clearBearer: false,
-      })));
-      setProviderDetectedModels(detected);
-      setProviderRuntimeMessage(
-        "Local runtime endpoints saved and detection refreshed. Nothing was submitted to MultiVibe Cloud.",
-      );
-    } catch (error: unknown) {
-      if (error instanceof ApiError && error.status === 409) {
-        try {
-          const latest = await api("provider-agent/runtime-endpoints") as ProviderAgentRuntimeEndpoints;
-          setProviderRuntimeEndpoints(latest);
-          setProviderRuntimeDrafts(latest.endpoints.map((endpoint) => ({
-            adapterId: endpoint.adapter_id,
-            endpoint: endpoint.endpoint,
-            bearerToken: "",
-            existingAuthentication: endpoint.authentication,
-            clearBearer: false,
-          })));
-          setProviderRuntimeMessage(
-            "Runtime endpoints changed in another session. The latest local revision is shown; review it before saving again.",
-          );
-          return;
-        } catch {
-          // Fall through to the local error state below.
-        }
-      }
-      setProviderRuntimeMessage(
-        error instanceof ApiError && error.status === 400
-          ? "Use one unique adapter per entry and a literal http://127.0.0.1:port or http://[::1]:port endpoint."
-          : "The local runtime endpoints could not be saved.",
-      );
-    } finally {
-      setProviderRuntimeSaving(false);
-    }
-  };
-
-  const saveProviderCapacityPolicy = async () => {
-    if (providerCapacityStatus === "saving") return;
-    const input = capacityPolicyStateFromDraft(
-      providerCapacityDraft,
-      providerCapacityPolicy?.revision ?? 0,
-    );
-    if (!input) {
-      setProviderCapacityMessage(
-        "Fill in every limit with valid values and an absolute model folder.",
-      );
-      return;
-    }
-
-    setProviderCapacityStatus("saving");
-    setProviderCapacityMessage("");
-    try {
-      const next = await api("provider-agent/capacity-policy", {
-        method: "PUT",
-        body: JSON.stringify(input),
-      }) as ProviderCapacityPolicyState;
-      setProviderCapacityPolicy(next);
-      setProviderCapacityDraft(capacityPolicyDraftFromState(next));
-      setProviderCapacityStatus("ready");
-      setProviderCapacityMessage(
-        next.paused
-          ? "Limits saved. Sharing is paused."
-          : next.allow_cloud_workloads
-            ? "Limits saved. Cloud jobs are allowed."
-            : "Limits saved. Cloud jobs are off.",
-      );
-    } catch (error: unknown) {
-      if (error instanceof ApiError && error.status === 409) {
-        try {
-          const latest = await api(
-            "provider-agent/capacity-policy",
-          ) as ProviderCapacityPolicyState;
-          setProviderCapacityPolicy(latest);
-          setProviderCapacityDraft(capacityPolicyDraftFromState(latest));
-          setProviderCapacityStatus("ready");
-          setProviderCapacityMessage(
-            "These limits changed elsewhere. Review and save again.",
-          );
-          return;
-        } catch {
-          // Fall through to the local unavailable state below.
-        }
-      }
-      setProviderCapacityStatus(
-        error instanceof ApiError && error.status === 400
-          ? "ready"
-          : error instanceof ApiError && error.status === 503
-            ? "unavailable"
-            : "error",
-      );
-      setProviderCapacityMessage(
-        error instanceof ApiError && error.status === 400
-          ? "The agent rejected this policy. Check the percentages, integer limits and absolute storage path."
-          : "The local capacity policy could not be saved.",
-      );
-    }
-  };
 
   useEffect(() => {
     if (!oauthDialog) return;
@@ -1249,8 +647,8 @@ export function AccountsTab(props: Props) {
   const usesOAuthConnection = isOAuthProvider(provider) && !usesOpenAIAPIKey;
   const providerConnectionReady = usesOAuthConnection
     ? provider !== "openai" || Boolean(manualEmail.trim())
-    : (provider === "nvidia-pair" || provider === "opencode" || Boolean(manualAccessToken.trim())) &&
-      (!(provider === "openai-compatible" || provider === "nvidia-pair") || Boolean(manualBaseUrl.trim())) &&
+    : (provider === "opencode" || Boolean(manualAccessToken.trim())) &&
+      (!(provider === "openai-compatible") || Boolean(manualBaseUrl.trim())) &&
       (provider !== "ai-sdk" || Boolean(selectedSdkProvider) &&
         (!selectedSdkProvider?.endpointRequired || Boolean(manualBaseUrl.trim())) &&
         (!selectedSdkProvider?.requiresModelSelection || sdkModels.split(/[\n,]+/).some((id) => id.trim())));
@@ -1400,8 +798,8 @@ export function AccountsTab(props: Props) {
       return;
     }
 
-    if (provider !== "nvidia-pair" && !manualAccessToken.trim()) return;
-    if ((provider === "openai-compatible" || provider === "nvidia-pair") && !manualBaseUrl.trim()) return;
+    if (!manualAccessToken.trim()) return;
+    if ((provider === "openai-compatible") && !manualBaseUrl.trim()) return;
     setIsSubmitting(true);
     try {
       const accountTarget = providerAccountTarget(provider, sdkProvider, openAIConnectionMode);
@@ -1410,10 +808,10 @@ export function AccountsTab(props: Props) {
         sdkProvider: accountTarget.sdkProvider,
         sdkModels: accountTarget.provider === "ai-sdk" && !usesOpenAIAPIKey ? sdkModels.split(/[\n,]+/).map((id) => id.trim()).filter(Boolean) : undefined,
         email: manualEmail.trim() || undefined,
-        accessToken: provider === "nvidia-pair" ? undefined : manualAccessToken.trim(),
+        accessToken: manualAccessToken.trim(),
         refreshToken: manualRefreshToken.trim() || undefined,
         baseUrl:
-          provider === "openai-compatible" || provider === "nvidia-pair" || provider === "ai-sdk" && selectedSdkProvider?.endpointPlaceholder ? manualBaseUrl.trim() || undefined : undefined,
+          provider === "openai-compatible" || provider === "ai-sdk" && selectedSdkProvider?.endpointPlaceholder ? manualBaseUrl.trim() || undefined : undefined,
         upstreamMode: manualUpstreamMode || undefined,
         priority: Number(manualPriority) || 0,
         enabled: manualEnabled,
@@ -1706,16 +1104,6 @@ export function AccountsTab(props: Props) {
   const openAiCompatibleCount = accounts.filter(
     (account) => account.provider === "openai-compatible" && !account.localRuntime,
   ).length;
-  const detectedRuntimeCounts = Array.from(
-    accounts.reduce((counts, account) => {
-      if (!account.localRuntime?.adapter) return counts;
-      counts.set(
-        account.localRuntime.adapter,
-        (counts.get(account.localRuntime.adapter) ?? 0) + 1,
-      );
-      return counts;
-    }, new Map<string, number>()),
-  );
   const openCodeCount = accounts.filter(
     (account) => account.provider === "opencode",
   ).length;
@@ -1743,7 +1131,7 @@ export function AccountsTab(props: Props) {
       typeof account.usage?.fetchedAt === "number" &&
       Date.now() - account.usage.fetchedAt >= usageCacheTtlMs,
   ).length;
-  const hasAnyProvider = accounts.length > 0 || localWorker !== null;
+  const hasAnyProvider = accounts.length > 0;
 
   const renderUsageCell = (
     value?: number,
@@ -1772,46 +1160,6 @@ export function AccountsTab(props: Props) {
     );
   };
 
-  const detectedProviderModelIds = new Set(
-    providerDetectedModels?.runtimes.flatMap((runtime) => runtime.models) ?? [],
-  );
-  const selectedButNotDetected = providerSelectionDraft.filter(
-    (model) => !detectedProviderModelIds.has(model),
-  );
-  const providerSelectionChanged = Boolean(
-    providerSelection &&
-    (providerSelection.selected_models.length !== providerSelectionDraft.length ||
-      providerSelection.selected_models.some((model, index) => model !== providerSelectionDraft[index])),
-  );
-  const manuallyConfigurableProviderAdapters =
-    providerAdapterRegistry?.adapters.filter(
-      (adapter) => adapter.automatic_loopback_candidates.length === 0,
-    ) ?? [];
-  const availableProviderRuntimeAdapters = manuallyConfigurableProviderAdapters.filter(
-    (adapter) => !providerRuntimeDrafts.some((draft) => draft.adapterId === adapter.id),
-  );
-  const providerRuntimeChanged = Boolean(
-    providerRuntimeEndpoints && (
-      providerRuntimeEndpoints.endpoints.length !== providerRuntimeDrafts.length ||
-      providerRuntimeDrafts.some((draft) => {
-        const current = providerRuntimeEndpoints.endpoints.find(
-          (endpoint) => endpoint.adapter_id === draft.adapterId,
-        );
-        return !current || current.endpoint !== draft.endpoint || draft.bearerToken !== "" || draft.clearBearer;
-      })
-    ),
-  );
-  const providerCapacityInput = capacityPolicyStateFromDraft(
-    providerCapacityDraft,
-    providerCapacityPolicy?.revision ?? 0,
-  );
-  const providerCapacityChanged = Boolean(
-    providerCapacityInput &&
-    (!providerCapacityPolicy ||
-      JSON.stringify(providerCapacityInput) !==
-        JSON.stringify(providerCapacityPolicy)),
-  );
-
   return (
     <>
       {hasAnyProvider && (
@@ -1819,8 +1167,8 @@ export function AccountsTab(props: Props) {
       <WidgetGrid storageKey="providers" label="Provider metrics">
         <Metric widgetId="providers"
           title="Providers"
-          value={`${accounts.length + (localWorker ? 1 : 0)}`}
-          detail={localWorker ? "Configured accounts and local Host worker" : "Total configured providers"}
+          value={`${accounts.length}`}
+          detail={"Total configured providers"}
         />
         <Metric widgetId="enabled"
           title="Enabled"
@@ -1868,11 +1216,6 @@ export function AccountsTab(props: Props) {
                 {openAiCompatibleCount} OpenAI-compatible
               </span>
             )}
-            {detectedRuntimeCounts.map(([adapter, count]) => (
-              <span className="badge" key={adapter}>
-                {count} {runtimeIdentityForAdapter(adapter).label}
-              </span>
-            ))}
             {openCodeCount > 0 && (
               <span className="badge">{openCodeCount} OpenCode</span>
             )}
@@ -1885,7 +1228,7 @@ export function AccountsTab(props: Props) {
             {xaiCount > 0 && (
               <span className="badge">{xaiCount} Grok Build</span>
             )}
-            {localWorker && <span className="badge">1 MultiVibe Worker</span>}
+
             {quotaTrackedAccounts.length > 0 && (
               <span className="badge">
                 {usageCheckedCount}/{quotaTrackedAccounts.length} usage checked
@@ -1922,56 +1265,8 @@ export function AccountsTab(props: Props) {
             </div>
           </article>
         )}
-        {capabilities.teamMachine && <><TeamMachineConsent /><TeamMachineCard /></>}
-        {capabilities.localRuntimes && localWorker && (
-          <article className="local-worker-provider" aria-labelledby="local-worker-provider-title">
-            <div className="local-worker-provider-identity">
-              <img
-                className="local-worker-provider-icon"
-                src="/assets/brand/multivibe-app-icon.svg"
-                alt=""
-              />
-              <div>
-                <div className="inline wrap">
-                  <h3 id="local-worker-provider-title">{localWorker.name}</h3>
-                  <span className={localWorker.enrollment_state === "enrolled" ? "badge badge-live" : "badge badge-warn"}>
-                    {localWorker.enrollment_state === "enrolled" ? "Enrolled" : "Not enrolled"}
-                  </span>
-                  <span className={localWorker.capacity_state === "enabled" ? "badge badge-live" : "badge"}>
-                    {localWorker.capacity_state === "enabled"
-                      ? "Capacity enabled"
-                      : localWorker.capacity_state === "paused"
-                        ? "Capacity paused"
-                        : localWorker.capacity_state === "disabled"
-                          ? "Cloud work disabled"
-                          : "Capacity not configured"}
-                  </span>
-                </div>
-                <p className="muted">
-                  {localWorker.capability.hardware} · {localWorker.capability.accelerator.toUpperCase()} · {Math.round(localWorker.capability.accelerator_memory_bytes / (1024 ** 3))} GiB usable capacity
-                </p>
-              </div>
-            </div>
-            <div className="local-worker-provider-actions">
-              <button
-                ref={workerSetupTriggerRef}
-                type="button"
-                className="btn secondary"
-                aria-haspopup="dialog"
-                aria-controls="make-money-preview-dialog"
-                onClick={() => setWorkerSetupOpen(true)}
-              >
-                Configure this worker
-              </button>
-              <a className="btn" href={localWorker.connect_url} target="_blank" rel="noreferrer">
-                {localWorker.enrollment_state === "enrolled"
-                  ? "Open worker in MultiVibe Cloud"
-                  : "Connect this worker to MultiVibe Cloud"}
-              </a>
-            </div>
-          </article>
-        )}
-        {!accounts.length && !localWorker ? (
+
+        {!accounts.length ? (
           <div className="empty-state-content">
             <span className="empty-state-icon" aria-hidden="true">+</span>
             <h3>Connect your first provider</h3>
@@ -2391,597 +1686,7 @@ export function AccountsTab(props: Props) {
         ) : null}
       </section>
 
-      {capabilities.localRuntimes && workerSetupOpen && localWorker &&
-        createPortal(
-          <div
-          className="modal-backdrop make-money-preview-backdrop"
-          role="presentation"
-          onClick={(event) => {
-            if (event.target === event.currentTarget) {
-              setWorkerSetupOpen(false);
-            }
-          }}
-        >
-          <div
-            id="make-money-preview-dialog"
-            ref={workerSetupDialogRef}
-            className="modal panel make-money-preview-modal worker-setup-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="make-money-preview-title"
-            aria-describedby="make-money-preview-summary make-money-preview-status"
-            tabIndex={-1}
-          >
-            <div className="modal-title-row make-money-preview-header">
-              <div>
-                <h2 id="make-money-preview-title">Worker settings</h2>
-                <p id="make-money-preview-summary" className="muted">
-                  Let MultiVibe Cloud use this computer for AI jobs.
-                </p>
-              </div>
-              <button
-                ref={workerSetupCloseRef}
-                type="button"
-                className="btn ghost modal-close-button"
-                aria-label="Close worker setup"
-                onClick={() => setWorkerSetupOpen(false)}
-              >
-                Close
-              </button>
-            </div>
 
-            <div id="make-money-preview-status" className="make-money-preview-status">
-              <strong>Preview only.</strong> Nothing is shared or paid yet.
-            </div>
-
-            <section className="provider-selection-panel provider-capacity-panel" aria-labelledby="provider-capacity-title">
-              {providerCapacityStatus === "loading" && (
-                <div className="provider-selection-empty" role="status">
-                  Loading settings…
-                </div>
-              )}
-
-              {(providerCapacityStatus === "unavailable" || providerCapacityStatus === "error") && (
-                <div className="provider-selection-empty provider-selection-error" role="status">
-                  <strong>{providerCapacityMessage}</strong>
-                  <span>No local policy was changed.</span>
-                </div>
-              )}
-
-              {(providerCapacityStatus === "ready" || providerCapacityStatus === "saving") && (
-                <>
-                  <label className="worker-sharing-control">
-                    <span>
-                      <strong id="provider-capacity-title">Allow Cloud jobs</strong>
-                      <small>You can turn this off anytime.</small>
-                    </span>
-                    <input
-                      type="checkbox"
-                      role="switch"
-                      aria-labelledby="provider-capacity-title"
-                      checked={providerCapacityDraft.allowCloudWorkloads && !providerCapacityDraft.paused}
-                      disabled={providerCapacityStatus === "saving"}
-                      onChange={(event) => {
-                        const enabled = event.target.checked;
-                        setProviderCapacityDraft((current) => ({
-                          ...current,
-                          allowCloudWorkloads: enabled,
-                          paused: !enabled,
-                        }));
-                        setProviderCapacityMessage("");
-                      }}
-                    />
-                  </label>
-
-                  <details className="make-money-preview-advanced provider-capacity-advanced">
-                    <summary>
-                      <span className="make-money-preview-advanced-copy">
-                        <strong>Resource limits</strong>
-                      </span>
-                    </summary>
-                    <div className="provider-capacity-grid">
-                    <label>
-                      Compute allocation (%)
-                      <input
-                        type="number"
-                        min="1"
-                        max="100"
-                        step="1"
-                        inputMode="numeric"
-                        value={providerCapacityDraft.gpuUtilizationPercent}
-                        disabled={providerCapacityStatus === "saving"}
-                        placeholder="80"
-                        onChange={(event) => updateProviderCapacityDraft(
-                          "gpuUtilizationPercent",
-                          event.target.value,
-                        )}
-                      />
-                      <small>Requested runtime workload allocation.</small>
-                    </label>
-
-                    <label>
-                      Runtime memory limit (%)
-                      <input
-                        type="number"
-                        min="1"
-                        max="100"
-                        step="1"
-                        inputMode="numeric"
-                        value={providerCapacityDraft.gpuVramPercent}
-                        disabled={providerCapacityStatus === "saving"}
-                        placeholder="75"
-                        onChange={(event) => updateProviderCapacityDraft(
-                          "gpuVramPercent",
-                          event.target.value,
-                        )}
-                      />
-                      <small>Percentage of usable runtime memory. CPU hosting reserves half of system memory first.</small>
-                    </label>
-
-                    <label className="provider-capacity-wide">
-                      Model folder
-                      <input
-                        type="text"
-                        value={providerCapacityDraft.modelStoragePath}
-                        disabled={providerCapacityStatus === "saving"}
-                        placeholder="/var/lib/multivibe/models"
-                        spellCheck={false}
-                        autoComplete="off"
-                        onChange={(event) => updateProviderCapacityDraft(
-                          "modelStoragePath",
-                          event.target.value,
-                        )}
-                      />
-                      <small>Where downloaded models are stored.</small>
-                    </label>
-
-                    <label>
-                      Model storage limit (GiB)
-                      <input
-                        type="number"
-                        min="0"
-                        step="any"
-                        inputMode="decimal"
-                        value={providerCapacityDraft.maxDiskGiB}
-                        disabled={providerCapacityStatus === "saving"}
-                        placeholder="30"
-                        onChange={(event) => updateProviderCapacityDraft(
-                          "maxDiskGiB",
-                          event.target.value,
-                        )}
-                      />
-                      <small>Maximum space for models.</small>
-                    </label>
-
-                    <label>
-                      Keep free (GiB)
-                      <input
-                        type="number"
-                        min="0"
-                        step="any"
-                        inputMode="decimal"
-                        value={providerCapacityDraft.reserveFreeDiskGiB}
-                        disabled={providerCapacityStatus === "saving"}
-                        placeholder="5"
-                        onChange={(event) => updateProviderCapacityDraft(
-                          "reserveFreeDiskGiB",
-                          event.target.value,
-                        )}
-                      />
-                      <small>Space always kept free.</small>
-                    </label>
-
-                    <label>
-                      Daily download limit (GiB)
-                      <input
-                        type="number"
-                        min="0"
-                        step="any"
-                        inputMode="decimal"
-                        value={providerCapacityDraft.maxDownloadGiBPerDay}
-                        disabled={providerCapacityStatus === "saving"}
-                        placeholder="20"
-                        onChange={(event) => updateProviderCapacityDraft(
-                          "maxDownloadGiBPerDay",
-                          event.target.value,
-                        )}
-                      />
-                      <small>Set to 0 to block downloads.</small>
-                    </label>
-
-                    <label>
-                      Keep models for (seconds)
-                      <input
-                        type="number"
-                        min="1"
-                        step="1"
-                        inputMode="numeric"
-                        value={providerCapacityDraft.minimumModelResidencySeconds}
-                        disabled={providerCapacityStatus === "saving"}
-                        placeholder="21600"
-                        onChange={(event) => updateProviderCapacityDraft(
-                          "minimumModelResidencySeconds",
-                          event.target.value,
-                        )}
-                      />
-                      <small>How long models stay ready.</small>
-                    </label>
-
-                    <label>
-                      Model changes per day
-                      <input
-                        type="number"
-                        min="0"
-                        step="1"
-                        inputMode="numeric"
-                        value={providerCapacityDraft.maxModelChangesPerDay}
-                        disabled={providerCapacityStatus === "saving"}
-                        placeholder="4"
-                        onChange={(event) => updateProviderCapacityDraft(
-                          "maxModelChangesPerDay",
-                          event.target.value,
-                        )}
-                      />
-                      <small>Set to 0 to keep current models.</small>
-                    </label>
-
-                    <label className="provider-capacity-toggle provider-capacity-wide">
-                      <input
-                        type="checkbox"
-                        checked={providerCapacityDraft.automaticDownloads}
-                        disabled={providerCapacityStatus === "saving"}
-                        onChange={(event) => updateProviderCapacityDraft(
-                          "automaticDownloads",
-                          event.target.checked,
-                        )}
-                      />
-                      <span>
-                        <strong>Download models automatically</strong>
-                        <small>
-                          Still limited by the settings above.
-                        </small>
-                      </span>
-                    </label>
-                    </div>
-                  </details>
-
-
-
-                  {!providerCapacityInput && (
-                    <p className="provider-capacity-validation">
-                      Check Resource limits: complete every limit and use an absolute model folder.
-                    </p>
-                  )}
-
-                  {providerCapacityMessage && (
-                    <p className="provider-selection-message" role="status">
-                      {providerCapacityMessage}
-                    </p>
-                  )}
-
-                  <div className="provider-selection-actions">
-                    <span className="muted">
-                      {!providerCapacityPolicy
-                        ? "Not saved yet"
-                        : providerCapacityChanged
-                          ? "Unsaved changes"
-                          : "Saved locally"}
-                    </span>
-                    <button
-                      type="button"
-                      className="btn"
-                      disabled={
-                        !providerCapacityInput ||
-                        !providerCapacityChanged ||
-                        providerCapacityStatus === "saving"
-                      }
-                      onClick={() => void saveProviderCapacityPolicy()}
-                    >
-                      {providerCapacityStatus === "saving"
-                        ? "Saving…"
-                        : "Save changes"}
-                    </button>
-                  </div>
-                </>
-              )}
-            </section>
-
-            <details className="make-money-preview-advanced">
-              <summary>
-                <span className="make-money-preview-advanced-copy">
-                  <strong>Local AI servers</strong>
-                </span>
-              </summary>
-
-            <section className="provider-selection-panel" aria-labelledby="provider-runtime-endpoints-title">
-              <div className="provider-selection-heading">
-                <div>
-                  <h3 id="provider-runtime-endpoints-title">Connect a local server</h3>
-                  <p>
-                    For local use only. Cloud jobs use MultiVibe&apos;s managed Ollama runtime.
-                    Use an HTTP address with <span className="mono">127.0.0.1</span> or <span className="mono">::1</span> and a port.
-                  </p>
-                </div>
-                {providerRuntimeEndpoints && (
-                  <span className="badge">
-                    {providerRuntimeDrafts.length} configured · revision {providerRuntimeEndpoints.revision}
-                  </span>
-                )}
-              </div>
-
-              {(providerPreviewStatus === "ready" || providerPreviewStatus === "saving") && providerAdapterRegistry && (
-                <>
-                  <div className="provider-runtime-editor-list">
-                    {providerRuntimeDrafts.map((draft, index) => {
-                      const adapter = manuallyConfigurableProviderAdapters.find(
-                        (candidate) => candidate.id === draft.adapterId,
-                      );
-                      const runtimeIdentity = runtimeIdentityForAdapter(
-                        draft.adapterId,
-                        adapter?.display_name,
-                      );
-                      return (
-                        <fieldset className="provider-runtime-editor" key={draft.adapterId}>
-                          <legend>
-                            <img
-                              className="runtime-icon"
-                              src={runtimeIdentity.iconUrl}
-                              alt=""
-                              loading="lazy"
-                            />
-                            {runtimeIdentity.label}
-                          </legend>
-                          <label>
-                            Loopback endpoint
-                            <input
-                              type="url"
-                              value={draft.endpoint}
-                              disabled={providerRuntimeSaving}
-                              placeholder="http://127.0.0.1:8000"
-                              spellCheck={false}
-                              onChange={(event) => setProviderRuntimeDrafts((current) => current.map(
-                                (entry, entryIndex) => entryIndex === index
-                                  ? { ...entry, endpoint: event.target.value }
-                                  : entry,
-                              ))}
-                            />
-                          </label>
-                          {adapter?.authentication !== "none" && (
-                            <label>
-                              Optional local bearer
-                              <input
-                                type="password"
-                                value={draft.bearerToken}
-                                disabled={providerRuntimeSaving || draft.clearBearer}
-                                placeholder={draft.existingAuthentication === "bearer"
-                                  ? "Stored locally — leave blank to keep"
-                                  : "Leave blank when authentication is disabled"}
-                                autoComplete="new-password"
-                                onChange={(event) => setProviderRuntimeDrafts((current) => current.map(
-                                  (entry, entryIndex) => entryIndex === index
-                                    ? { ...entry, bearerToken: event.target.value, clearBearer: false }
-                                    : entry,
-                                ))}
-                              />
-                            </label>
-                          )}
-                          <div className="provider-runtime-editor-actions">
-                            {draft.existingAuthentication === "bearer" && adapter?.authentication !== "none" && (
-                              <label className="provider-model-choice">
-                                <input
-                                  type="checkbox"
-                                  checked={draft.clearBearer}
-                                  disabled={providerRuntimeSaving}
-                                  onChange={(event) => setProviderRuntimeDrafts((current) => current.map(
-                                    (entry, entryIndex) => entryIndex === index
-                                      ? { ...entry, clearBearer: event.target.checked, bearerToken: "" }
-                                      : entry,
-                                  ))}
-                                />
-                                <span>Remove stored bearer</span>
-                              </label>
-                            )}
-                            <button
-                              type="button"
-                              className="btn ghost"
-                              disabled={providerRuntimeSaving}
-                              onClick={() => setProviderRuntimeDrafts((current) => current.filter(
-                                (_, entryIndex) => entryIndex !== index,
-                              ))}
-                            >
-                              Remove endpoint
-                            </button>
-                          </div>
-                        </fieldset>
-                      );
-                    })}
-                  </div>
-
-                  <div className="provider-runtime-add-row">
-                    <label className="compact-field">
-                      Runtime adapter
-                      <select
-                        value={providerRuntimeAdapterToAdd}
-                        disabled={providerRuntimeSaving || !availableProviderRuntimeAdapters.length}
-                        onChange={(event) => setProviderRuntimeAdapterToAdd(event.target.value)}
-                      >
-                        <option value="">
-                          {availableProviderRuntimeAdapters.length ? "Choose a manual adapter" : "All manual adapters are configured"}
-                        </option>
-                        {availableProviderRuntimeAdapters.map((adapter) => (
-                          <option key={adapter.id} value={adapter.id}>{adapter.display_name}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <button
-                      type="button"
-                      className="btn ghost"
-                      disabled={!providerRuntimeAdapterToAdd || providerRuntimeSaving}
-                      onClick={() => {
-                        const adapterId = providerRuntimeAdapterToAdd;
-                        if (!adapterId) return;
-                        setProviderRuntimeDrafts((current) => [...current, {
-                          adapterId,
-                          endpoint: adapterId === "nvidia-pair"
-                            ? "http://127.0.0.1:11434"
-                            : "http://127.0.0.1:8000",
-                          bearerToken: "",
-                          existingAuthentication: "none",
-                          clearBearer: false,
-                        }]);
-                        setProviderRuntimeAdapterToAdd("");
-                        setProviderRuntimeMessage("");
-                      }}
-                    >
-                      Add local endpoint
-                    </button>
-                  </div>
-
-                  {providerRuntimeAdapterToAdd === "nvidia-pair" && (
-                    <p className="muted">
-                      Copy the loopback API endpoint shown by PAIR. Its default ports overlap with Ollama and LM Studio, so MultiVibe cannot identify it safely by port alone.
-                    </p>
-                  )}
-
-                  {providerRuntimeMessage && (
-                    <p className="provider-selection-message" role="status">{providerRuntimeMessage}</p>
-                  )}
-                  <div className="provider-selection-actions">
-                    <span className="muted">
-                      Saving changes only the protected local runtime file and reruns bounded loopback detection.
-                    </span>
-                    <button
-                      type="button"
-                      className="btn"
-                      disabled={!providerRuntimeChanged || providerRuntimeSaving}
-                      onClick={() => void saveProviderRuntimeEndpoints()}
-                    >
-                      {providerRuntimeSaving ? "Saving locally…" : "Save endpoints locally"}
-                    </button>
-                  </div>
-                </>
-              )}
-            </section>
-
-            <section className="provider-selection-panel" aria-labelledby="provider-selection-title">
-              <div className="provider-selection-heading">
-                <div>
-                  <span className="eyebrow">Local inference preferences</span>
-                  <h3 id="provider-selection-title">Choose locally approved models</h3>
-                  <p>
-                    Detection and selection stay on this machine. Saving only
-                    updates Core&apos;s protected local selection file. These models
-                    are never submitted to or selected for MultiVibe Cloud work.
-                  </p>
-                </div>
-                {providerSelection && (
-                  <span className={providerSelectionDraft.length ? "badge badge-live" : "badge"}>
-                    {providerSelectionDraft.length} selected · revision {providerSelection.revision}
-                  </span>
-                )}
-              </div>
-
-              {providerPreviewStatus === "loading" && (
-                <div className="provider-selection-empty" role="status">
-                  Checking reviewed local runtime endpoints…
-                </div>
-              )}
-
-              {(providerPreviewStatus === "unavailable" || providerPreviewStatus === "error") && (
-                <div className="provider-selection-empty provider-selection-error" role="status">
-                  <strong>{providerPreviewMessage}</strong>
-                  {providerPreviewStatus === "unavailable" && (
-                    <span>Enable the packaged embedded agent to use local detection and selection.</span>
-                  )}
-                </div>
-              )}
-
-              {(providerPreviewStatus === "ready" || providerPreviewStatus === "saving") && providerDetectedModels && (
-                <div className="provider-runtime-list">
-                  {providerDetectedModels.runtimes.map((runtime) => {
-                    const runtimeIdentity = runtimeIdentityForAdapter(runtime.adapter_id);
-                    return (
-                      <fieldset className="provider-runtime-group" key={runtime.adapter_id}>
-                        <legend>
-                          <img
-                            className="runtime-icon"
-                            src={runtimeIdentity.iconUrl}
-                            alt=""
-                            loading="lazy"
-                          />
-                          {runtimeIdentity.label}
-                        </legend>
-                        {runtime.models.map((model) => (
-                          <label className="provider-model-choice" key={`${runtime.adapter_id}:${model}`}>
-                            <input
-                              type="checkbox"
-                              checked={providerSelectionDraft.includes(model)}
-                              disabled={providerPreviewStatus === "saving"}
-                              onChange={() => toggleProviderSelection(model)}
-                            />
-                            <span className="mono">{model}</span>
-                          </label>
-                        ))}
-                      </fieldset>
-                    );
-                  })}
-
-                  {selectedButNotDetected.length > 0 && (
-                    <fieldset className="provider-runtime-group provider-runtime-offline">
-                      <legend>Selected but not currently detected</legend>
-                      {selectedButNotDetected.map((model) => (
-                        <label className="provider-model-choice" key={`offline:${model}`}>
-                          <input
-                            type="checkbox"
-                            checked
-                            disabled={providerPreviewStatus === "saving"}
-                            onChange={() => toggleProviderSelection(model)}
-                          />
-                          <span className="mono">{model}</span>
-                        </label>
-                      ))}
-                    </fieldset>
-                  )}
-
-                  {!providerDetectedModels.runtimes.length && !selectedButNotDetected.length && (
-                    <div className="provider-selection-empty">
-                      No model was returned by the reviewed loopback candidates.
-                      Start a supported local runtime, then reopen this preview.
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {providerPreviewMessage && providerPreviewStatus === "ready" && (
-                <p className="provider-selection-message" role="status">{providerPreviewMessage}</p>
-              )}
-
-              {(providerPreviewStatus === "ready" || providerPreviewStatus === "saving") && (
-                <div className="provider-selection-actions">
-                  <span className="muted">
-                    {providerSelectionChanged
-                      ? "Unsaved local changes"
-                      : "Local selection is up to date"}
-                  </span>
-                  <button
-                    type="button"
-                    className="btn"
-                    disabled={!providerSelectionChanged || providerPreviewStatus === "saving"}
-                    onClick={() => void saveProviderSelection()}
-                  >
-                    {providerPreviewStatus === "saving" ? "Saving locally…" : "Save local selection"}
-                  </button>
-                </div>
-              )}
-            </section>
-
-            </details>
-
-
-          </div>
-          </div>,
-          document.body,
-        )}
 
       {showAddAccount && !oauthDialog && (
         <ModalPortal><div className="modal-backdrop" onClick={() => { if (!isSubmitting) closeModal(); }}>
@@ -3055,13 +1760,13 @@ export function AccountsTab(props: Props) {
                 </label>
               )}
               {provider === "openai" && openAIConnectionMode === "subscription" && manualOAuthMethod === "device" && <ChatGPTDeviceGuide />}
-              {(provider === "openai-compatible" || provider === "nvidia-pair") && (
+              {(provider === "openai-compatible") && (
                 <label>
                   Base URL
                   <input
                     value={manualBaseUrl}
                     onChange={(e) => setManualBaseUrl(e.target.value)}
-                    placeholder={provider === "nvidia-pair" ? "http://127.0.0.1:11434" : "https://your-api.example.com"}
+                    placeholder={"https://your-api.example.com"}
                   />
                 </label>
               )}
@@ -3097,29 +1802,6 @@ export function AccountsTab(props: Props) {
                   </label>
                   <p className="provider-setup-note">Requests use <strong>https://api.openai.com/v1</strong>. API usage is billed separately from ChatGPT and Codex subscriptions.</p>
                 </>
-              ) : provider === "nvidia-pair" ? (
-                <div className="muted">PAIR is probed without a token and is isolated as personal-cluster capacity.</div>
-              ) : isManualTokenProvider(provider) ? (
-                <>
-                  <label>
-                    {provider === "ai-sdk" ? selectedSdkProvider?.credentialLabel ?? "API key" : "API key"}
-                    <input
-                      type="password" autoComplete="off"
-                      value={manualAccessToken}
-                      onChange={(e) => setManualAccessToken(e.target.value)}
-                      placeholder={provider === "opencode" ? "Optional for device sign-in" : "Required"}
-                    />
-                  </label>
-                  {!onboardingProviderSetup && capabilities.providerCredentialEditing && <label>
-                    Refresh token (optional)
-                    <input
-                      type="password" autoComplete="off"
-                      value={manualRefreshToken}
-                      onChange={(e) => setManualRefreshToken(e.target.value)}
-                      placeholder="Optional"
-                    />
-                  </label>}
-                </>
               ) : (
                 <div className="muted">
                   {provider === "github-copilot"
@@ -3139,8 +1821,8 @@ export function AccountsTab(props: Props) {
               <dl className="provider-setup-summary">
                 <div><dt>Provider</dt><dd>{provider === "ai-sdk" ? sdkProviders.find((item) => item.id === sdkProvider)?.name : SETUP_PROVIDERS.find((item) => item.id === provider)?.name}</dd></div>
                 <div><dt>Account</dt><dd>{manualEmail.trim() || "No email label"}</dd></div>
-                <div><dt>Connection</dt><dd>{usesOAuthConnection ? manualOAuthMethod === "device" ? "Device sign-in" : "Browser sign-in" : provider === "opencode" && !manualAccessToken.trim() ? "OpenCode device sign-in" : provider === "nvidia-pair" ? "Token-free endpoint" : "API key provided"}</dd></div>
-                {(usesOpenAIAPIKey || provider === "openai-compatible" || provider === "nvidia-pair" || provider === "ai-sdk" && selectedSdkProvider?.endpointPlaceholder) && <div><dt>Endpoint</dt><dd>{usesOpenAIAPIKey ? "https://api.openai.com/v1" : manualBaseUrl || selectedSdkProvider?.endpointPlaceholder}</dd></div>}
+                <div><dt>Connection</dt><dd>{usesOAuthConnection ? manualOAuthMethod === "device" ? "Device sign-in" : "Browser sign-in" : provider === "opencode" && !manualAccessToken.trim() ? "OpenCode device sign-in" : "API key provided"}</dd></div>
+                {(usesOpenAIAPIKey || provider === "openai-compatible" || provider === "ai-sdk" && selectedSdkProvider?.endpointPlaceholder) && <div><dt>Endpoint</dt><dd>{usesOpenAIAPIKey ? "https://api.openai.com/v1" : manualBaseUrl || selectedSdkProvider?.endpointPlaceholder}</dd></div>}
               </dl>
               {usesOAuthConnection && <p className="provider-setup-note">Next, approve the connection with your provider to finish setup.</p>}
               {!onboardingProviderSetup && <details className="provider-setup-advanced"><summary>Advanced settings <span>{capabilities.providerCapacity ? "Routing, priority & capacity" : "Connection status"}</span></summary><div className="grid modal-grid">

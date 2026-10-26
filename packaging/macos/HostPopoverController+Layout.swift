@@ -508,32 +508,6 @@ extension HostPopoverController {
         return container
     }
 
-    func workerSetupCard() -> NSView {
-        let container = card()
-        let title = label("Set up your local worker", size: 13, weight: .semibold, color: MenuBarPalette.text)
-        let detail = label("Connect this worker to MultiVibe Cloud to start earning.", size: 11, color: MenuBarPalette.muted)
-        detail.maximumNumberOfLines = 2
-        let copy = NSStackView(views: [title, detail])
-        copy.orientation = .vertical
-        copy.alignment = .leading
-        copy.spacing = 5
-        copy.translatesAutoresizingMaskIntoConstraints = false
-        let configureButton = NSButton(title: "Configure", target: self, action: #selector(didConfigureWorker))
-        styleButton(configureButton, kind: .primary)
-        let body = NSStackView(views: [copy, NSView(), configureButton])
-        body.orientation = .horizontal
-        body.alignment = .centerY
-        body.spacing = 12
-        body.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(body)
-        NSLayoutConstraint.activate([
-            body.topAnchor.constraint(equalTo: container.topAnchor, constant: 15),
-            body.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 15),
-            body.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -15),
-            body.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -15),
-        ])
-        return container
-    }
 
     func updateCard(_ update: HostUpdateStatus?, busy: Bool) -> NSView {
         let container = card()

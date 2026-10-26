@@ -3,8 +3,6 @@ package main
 import (
 	"fmt"
 	"math"
-	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -254,22 +252,4 @@ func accountCountText(count int) string {
 
 func sanitize(value string) string {
 	return strings.NewReplacer("\t", " ", "\n", " ", "\r", " ").Replace(value)
-}
-
-var enrollmentTokenPattern = regexp.MustCompile(`^mve_[A-Za-z0-9_-]{43}$`)
-
-func parseEnrollmentLink(raw string) (string, bool) {
-	if len(raw) > 256 {
-		return "", true
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil || strings.ToLower(parsed.Scheme) != "multivibe" || strings.ToLower(parsed.Host) != "add-worker" ||
-		parsed.Path != "" || parsed.Port() != "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment == "" {
-		return "", true
-	}
-	items, err := url.ParseQuery(parsed.Fragment)
-	if err != nil || len(items) != 1 || len(items["enrollment_token"]) != 1 || !enrollmentTokenPattern.MatchString(items.Get("enrollment_token")) {
-		return "", true
-	}
-	return items.Get("enrollment_token"), false
 }

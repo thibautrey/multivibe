@@ -3,12 +3,8 @@ import test from "node:test";
 import { EventEmitter } from "node:events";
 import { HostUpdateController } from "./update-controller.js";
 
-test("Host update drain waits for HTTP, websocket, job and provider operations", async () => {
-  let providerOperation = "install";
-  const controller = new HostUpdateController("/tmp/multivibe-host-updater", {
-    enabled: true,
-    getManagedOllamaStatus: async () => ({ operation: providerOperation }),
-  } as any);
+test("Host update drain waits for HTTP, websocket and job operations", async () => {
+  const controller = new HostUpdateController("/tmp/multivibe-host-updater");
   let activeJobs = 1;
   let stopped = false;
   controller.attachJobRunner({
@@ -22,7 +18,6 @@ test("Host update drain waits for HTTP, websocket, job and provider operations",
   assert.equal((await controller.readiness()).ready, false);
   controller.websocketTurnFinished();
   activeJobs = 0;
-  providerOperation = "";
   assert.deepEqual(await controller.readiness(), {
     draining: true,
     ready: true,
@@ -37,7 +32,7 @@ test("Host update drain waits for HTTP, websocket, job and provider operations",
 });
 
 test("Host update drain rejects new inference requests and counts admitted work", async () => {
-  const controller = new HostUpdateController(undefined, undefined);
+  const controller = new HostUpdateController(undefined);
   const response = new EventEmitter() as any;
   response.setHeader = () => undefined;
   response.status = (status: number) => { response.statusCode = status; return response; };
@@ -99,19 +94,11 @@ test("Host update drain coordinates begin, status and resume with the native edg
     });
   };
 
-  let providerOperation = "install";
   let stopped = false;
-  const controller = new HostUpdateController(
-    "/tmp/multivibe-host-updater",
-    {
-      enabled: true,
-      getManagedOllamaStatus: async () => ({ operation: providerOperation }),
-    } as any,
-    {
+  const controller = new HostUpdateController("/tmp/multivibe-host-updater", {
       baseUrl: "http://127.0.0.1:1455///",
       internalToken: "native-edge-token",
-    },
-  );
+    });
   controller.attachJobRunner({
     start() {
       stopped = false;
@@ -132,10 +119,9 @@ test("Host update drain coordinates begin, status and resume with the native edg
     active_requests: 2,
     active_websocket_turns: 1,
     active_jobs: 3,
-    provider_operation: "install",
+    provider_operation: null,
     quiet: false,
   });
-  providerOperation = "";
   await controller.resume();
   assert.equal(stopped, false);
 
@@ -166,14 +152,10 @@ test("Host update drain rolls back local state when native begin fails", async (
   globalThis.fetch = async () => new Response("unavailable", { status: 503 });
 
   const jobEvents: string[] = [];
-  const controller = new HostUpdateController(
-    "/tmp/multivibe-host-updater",
-    undefined,
-    {
+  const controller = new HostUpdateController("/tmp/multivibe-host-updater", {
       baseUrl: "http://127.0.0.1:1455",
       internalToken: "native-edge-token",
-    },
-  );
+    });
   controller.attachJobRunner({
     start() {
       jobEvents.push("start");
@@ -204,14 +186,10 @@ test("Host update readiness rejects an invalid native status", async (t) => {
       status: 200,
       headers: { "content-type": "application/json" },
     });
-  const controller = new HostUpdateController(
-    undefined,
-    undefined,
-    {
+  const controller = new HostUpdateController(undefined, {
       baseUrl: "http://127.0.0.1:1455",
       internalToken: "native-edge-token",
-    },
-  );
+    });
 
   await assert.rejects(
     () => controller.readiness(),
@@ -241,14 +219,10 @@ test("Host update resume keeps local admission drained when the native edge fail
   };
 
   const jobEvents: string[] = [];
-  const controller = new HostUpdateController(
-    undefined,
-    undefined,
-    {
+  const controller = new HostUpdateController(undefined, {
       baseUrl: "http://127.0.0.1:1455",
       internalToken: "native-edge-token",
-    },
-  );
+    });
   controller.attachJobRunner({
     start() {
       jobEvents.push("start");
@@ -273,7 +247,7 @@ test("Host update resume keeps local admission drained when the native edge fail
 
 test("quiet period covers startup, active requests and the last stream completion", async () => {
   let now = 0;
-  const controller = new HostUpdateController(undefined, undefined, undefined, () => now);
+  const controller = new HostUpdateController(undefined, undefined, () => now);
   assert.equal((await controller.readiness()).quiet, false);
   now = 30 * 60_000;
   assert.equal((await controller.readiness()).quiet, true);
@@ -296,7 +270,7 @@ test("native readiness also accounts for Team requests arriving during the statu
   let now = 0;
   const originalFetch = globalThis.fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
-  const controller = new HostUpdateController(undefined, undefined, {baseUrl: "http://localhost", internalToken: "test"}, () => now);
+  const controller = new HostUpdateController(undefined, {baseUrl: "http://localhost", internalToken: "test"}, () => now);
   const response = new EventEmitter() as any;
   globalThis.fetch = async () => {
     controller.inferenceMiddleware({} as any, response, () => {});

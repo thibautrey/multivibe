@@ -37,20 +37,8 @@ assert host['cap_drop'] == ['ALL']
 assert set(host['cap_add']) == {'CHOWN', 'FOWNER', 'SETGID', 'SETUID'}
 assert any('no-new-privileges' in opt for opt in host['security_opt'])
 assert len(host['ports']) == 1 and host['ports'][0]['target'] == 1455
-assert {v['target'] for v in host['volumes']} == {'/data', '/models'}
+assert {v['target'] for v in host['volumes']} == {'/data'}
 assert 'healthcheck' not in host  # Preserve the image's bundled-Node probe.
-assert host['deploy']['resources']['reservations']['devices'][0]['driver'] == 'nvidia'
+assert not host.get('deploy', {}).get('resources', {}).get('reservations', {}).get('devices')
 assert 'noexec' in host['tmpfs'][0]
-for bad in ['gpu', 'storage']:
-    inputs = copy.deepcopy(values)
-    if bad == 'gpu':
-        inputs['resources']['gpus'] = {}
-    else:
-        inputs['storage']['models_path'] = inputs['storage']['data_path']
-    try:
-        evaluate(inputs)
-    except error:
-        pass
-    else:
-        raise AssertionError(f'{bad} validation did not reject invalid inputs')
-print('TrueNAS render, hardening, GPU selection and storage guards passed')
+print('TrueNAS render and hardening passed without GPU or model storage')

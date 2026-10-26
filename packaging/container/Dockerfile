@@ -6,7 +6,7 @@ ARG MULTIVIBE_VERSION=unknown
 ARG MULTIVIBE_SOURCE_COMMIT=unknown
 
 LABEL org.opencontainers.image.title="MultiVibe Host" \
-      org.opencontainers.image.description="Security-bounded MultiVibe provider host for Linux NVIDIA systems" \
+      org.opencontainers.image.description="Security-bounded MultiVibe Host for Linux systems" \
       org.opencontainers.image.source="https://github.com/thibautrey/multivibe" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.version="$MULTIVIBE_VERSION" \
@@ -23,20 +23,18 @@ RUN chmod 1777 /tmp \
  && rm -rf /var/lib/apt/lists/* \
  && groupadd --gid 10001 multivibe \
  && useradd --uid 10001 --gid 10001 --home-dir /data --no-create-home --shell /usr/sbin/nologin multivibe \
- && install -d -o 10001 -g 10001 -m 0700 /data /models /tmp
+ && install -d -o 10001 -g 10001 -m 0700 /data /tmp
 
 COPY --chown=10001:10001 bundle/ /opt/multivibe-host/
 COPY --chmod=0555 entrypoint.sh /usr/local/bin/multivibe-host-container
 
 ENV HOME=/data \
     MULTIVIBE_HOST_DATA_DIR=/data \
-    MULTIVIBE_HOST_MANAGED_DIR=/models/runtime \
     MULTIVIBE_HOST_BIND=0.0.0.0 \
     MULTIVIBE_HOST_PORT=1455 \
-    MULTIVIBE_HOST_CONTAINER=true \
-    NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    MULTIVIBE_HOST_CONTAINER=true
 
-VOLUME ["/data", "/models"]
+VOLUME ["/data"]
 EXPOSE 1455
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \

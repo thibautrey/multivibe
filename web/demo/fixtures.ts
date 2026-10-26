@@ -8,7 +8,6 @@ const workloads = [
   { model: "gpt-5.4", account: 1, application: "Claude Code", project: "Atlas API" },
   { model: "gpt-5.4-mini", account: 0, application: "Documentation bot", project: "Developer docs" },
   { model: "mistral-small-latest", account: 2, application: "Support assistant", project: "Support portal" },
-  { model: "qwen3-coder:30b", account: 3, application: "Local code review", project: "Orbit dashboard" },
 ];
 
 /** Fictional fixtures only. The seed is fixed; timestamps follow the demo startup. */
@@ -22,19 +21,13 @@ export function createDemoFixtures(now = Date.now()) {
     { id: "demo-openai-studio", provider: "openai", email: "studio@example.com", enabled: true, priority: 10, location: "cloud" },
     { id: "demo-openai-lab", provider: "openai", email: "research@example.com", enabled: true, priority: 5, location: "cloud" },
     { id: "demo-mistral", provider: "mistral", email: "support@example.com", enabled: true, location: "cloud" },
-    {
-      id: "demo-local", provider: "openai-compatible", email: "Local workstation", enabled: true, location: "local",
-      baseUrl: "http://127.0.0.1:11434/v1",
-      localRuntime: { source: "multivibe-local-discovery", adapter: "ollama", endpoint: "http://127.0.0.1:11434", confirmedModelIds: ["qwen3-coder:30b"], authentication: "none" },
-      capacityProfile: { maxConcurrent: 2, decodeTokensPerSecond: 82, contextWindow: 131072 },
-    },
   ].map((account, index) => ({
     ...account,
     usage: index < 2 ? {
       fetchedAt: now,
       primary: { usedPercent: [24, 41][index], resetAt: now + (index + 1) * HOUR },
       secondary: { usedPercent: [32, 58][index], resetAt: now + (index + 2) * 24 * HOUR },
-    } : { fetchedAt: now, quotaStatus: "unsupported", quotaMessage: index === 3 ? "Local runtime — no subscription quota." : "API billing — quota windows are not exposed." },
+    } : { fetchedAt: now, quotaStatus: "unsupported", quotaMessage: "API billing — quota windows are not exposed." },
     state: { lastSelectedAt: now - (index + 1) * 60_000, lastUsageRefreshAt: now },
   })) as Account[];
 
@@ -44,14 +37,6 @@ export function createDemoFixtures(now = Date.now()) {
       description: "Route coding tasks to the primary model with a fast fallback.",
       defaults: { priority: "interactive", executionMode: "sync" },
       rules: [{ id: "primary", candidates: [{ model: "gpt-5.3-codex", provider: "openai" }, { model: "gpt-5.4-mini", provider: "openai" }], onNoCapacity: "queue" }],
-    },
-    {
-      schemaVersion: 2, id: "local-first", enabled: true,
-      description: "Prefer the workstation; use cloud capacity when it is busy.",
-      rules: [
-        { id: "local", candidates: [{ model: "qwen3-coder:30b", provider: "openai-compatible", location: "local" }], onNoCapacity: "next-rule" },
-        { id: "cloud-fallback", candidates: [{ model: "gpt-5.4-mini", provider: "openai", location: "cloud" }], cloudBudget: { amountUsd: 5, period: "day" }, onNoCapacity: "queue" },
-      ],
     },
     {
       schemaVersion: 2, id: "background", enabled: true,
@@ -91,7 +76,7 @@ export function createDemoFixtures(now = Date.now()) {
       const tokensOutput = isError ? 0 : 180 + Math.floor(random() * 1500);
       const ttftMs = 180 + Math.floor(random() * 900) + workload.account * 95;
       const latencyMs = isError ? 1200 : ttftMs + Math.round(tokensOutput / (55 + random() * 70) * 1000);
-      const costUsd = account.location === "local" || isError ? 0 : estimateCostUsd(workload.model, tokensInput, tokensOutput, tokensInputCached);
+      const costUsd = isError ? 0 : estimateCostUsd(workload.model, tokensInput, tokensOutput, tokensInputCached);
       const id = `demo-request-${hour}-${index}`;
       const trace: TraceEntry = {
         id, clientRequestId: id, at, route: workload.account === 2 ? "/v1/chat/completions" : "/v1/responses",
@@ -104,7 +89,7 @@ export function createDemoFixtures(now = Date.now()) {
         costUsd, pricingVersion: MODEL_PRICING_VERSION, usageStatus: isError ? "missing" : "measured", costStatus: costUsd === undefined ? "unpriced" : "estimated",
         providerAttempts: 1, lifecycleState: "completed", startedAt: at - latencyMs, completedAt: at,
         error: isError ? "Demo: provider quota temporarily exceeded." : undefined,
-        accountSelection: { reason: workload.account === 3 ? "policy-preferred" : "quota-headroom", provider: account.provider!, candidateCount: 4, eligibleCount: 4, nearLimitCount: 0, rotated: index % 5 === 0, selectedHeadroomPercent: 59 + Math.floor(random() * 30) },
+        accountSelection: { reason: "quota-headroom", provider: account.provider!, candidateCount: 3, eligibleCount: 3, nearLimitCount: 0, rotated: index % 5 === 0, selectedHeadroomPercent: 59 + Math.floor(random() * 30) },
         requestBody: { model: workload.model, input: "Review this fictional example and suggest a clearer implementation.", stream: true },
       };
       traces.push(

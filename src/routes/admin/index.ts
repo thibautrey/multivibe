@@ -1,15 +1,6 @@
-import {localMemoryBudget} from '../../model-memory-budget.js';
-import {totalmem, platform, arch} from 'node:os';
-import {createMemoryEstimationQueue} from '../../model-memory-queue.js';
-import {modelMemoryRequest} from '../../model-memory-request.js';
-import { benchmarkProfiles, createRecommendationEvidence, type MemoryAvailability } from '../../model-recommendation-evidence.js';
-import { localPreparationRoutes } from './local-preparation.js';
 import { modelBenchmarkRoutes } from './model-benchmark-routes.js';
 import { createModelBenchmarkClient } from '../../model-benchmarks.js';
 import { createCachedModelBenchmarkClient } from '../../model-benchmark-cache.js';
-import type { LocalModelPreparation } from '../../local-model-preparation.js';
-import { rankOpenModels, catalogSorts, type CatalogNeed, type CatalogSort, type RuntimeEstimate } from '../../open-model-ranking.js';
-import { loadOpenModelCatalog } from '../../open-model-catalog.js';
 import { GUIDANCE_VERSION, modelNeeds, relevantChoices, recommendedChoices, verifiedCloudCatalog, type GuidanceEntry, type ModelNeed } from '../../model-guidance.js';
 import { invoiceOverview } from "../../provider-invoices.js";
 import { publishDeviceSignIn } from "../../host/device-signin.js";
@@ -100,17 +91,6 @@ import {
   validateSmartAlias,
 } from "../../smart-routing.js";
 import type { SmartRoutingCoordinator } from "../../smart-routing-routes.js";
-import { configureNvidiaPairRuntime, discoverAndPersistLocalRuntimes } from "../../local-runtime-discovery.js";
-import {
-  isValidProviderRuntimeEndpointInput,
-  isValidProviderCapacityPolicy,
-  isValidProviderCloudEnrollmentRequest,
-  isValidProviderRelayShadowSessionRequest,
-  isValidProviderSelectedModelId,
-  ProviderAgentControlRequestError,
-  providerCloudEnrollmentRequestFromLocalState,
-  type ProviderAgentControl,
-} from "../../provider-agent-supervisor.js";
 import type { ModuleManager } from "../../module-manager.js";
 import {
   HostHarnessIntegrationError,
@@ -123,10 +103,6 @@ import {
 import { CODING_ECONOMY_ALIAS_DESCRIPTION, CODING_ECONOMY_PLUGIN } from "../../coding-economy-model.js";
 import { buildTaskLedger, buildTaskLedgerEntry } from "../../task-ledger.js";
 import { resolveVirtualModels, syncVirtualModelAliases } from "../../virtual-model-registry.js";
-import {
-  unavailableProviderWorkerEstimate,
-  type ProviderWorkerEstimateClient,
-} from "../../provider-worker-estimate.js";
 import type { HostUpdateController, HostUpdateStatus } from "../../host/update-controller.js";
 import type { MultivibeCloudService } from "../../multivibe-cloud.js";
 import { fetchCodexQuotaResetForecast } from "../../quota-reset-forecast.js";
@@ -164,13 +140,10 @@ export type AdminRoutesOptions = {
   usageRefreshCoordinator?: UsageRefreshCoordinator;
   anonymousUsageSharing?: AnonymousUsageSharingController;
   communityBenchmarks?: AnonymousUsageSharingController;
-  providerAgent?: ProviderAgentControl;
-  localPreparation?: LocalModelPreparation;
   hostApplication?: boolean;
   hostHarnessIntegrations?: HostHarnessIntegrationManager;
   hostConversationHarnesses?: HostConversationHarnessManager;
   hostHarnessRuntime?: HostHarnessRuntime;
-  providerWorkerEstimateClient?: ProviderWorkerEstimateClient;
   moduleManager?: ModuleManager;
   hostUpdateController?: HostUpdateController;
   multivibeCloud?: MultivibeCloudService;
@@ -328,36 +301,6 @@ function filterVisibleTraces<T extends { route?: string }>(traces: T[]): T[] {
   return traces.filter((trace) => !isHiddenTraceRoute(trace.route));
 }
 
-function writeProviderCloudEnrollmentError(
-  res: express.Response,
-  error: unknown,
-  invalidError: "invalid_provider_cloud_enrollment" | "invalid_provider_cloud_handoff",
-): boolean {
-  if (!(error instanceof ProviderAgentControlRequestError)) return false;
-  switch (error.status) {
-    case 400:
-      res.status(400).json({ error: invalidError });
-      return true;
-    case 409:
-      res.status(409).json({ error: "provider_cloud_enrollment_conflict" });
-      return true;
-    case 410:
-      res.status(410).json({ error: "provider_cloud_enrollment_expired" });
-      return true;
-    case 422:
-      res.status(422).json({ error: "provider_cloud_enrollment_rejected" });
-      return true;
-    case 502:
-      res.status(502).json({ error: "provider_cloud_unavailable" });
-      return true;
-    case 503:
-      res.status(503).json({ error: "provider_agent_unavailable" });
-      return true;
-    default:
-      return false;
-  }
-}
-
 function isOpenAiEnabledAccount(account: Account | undefined): account is Account {
   return Boolean(account && (account.provider ?? "openai") === "openai" && account.enabled);
 }
@@ -502,19 +445,11 @@ export function createAdminRouter(options: AdminRoutesOptions) {
 
   const router = express.Router();
   router.use("/host-harness-runtime/v1", harnessRuntimeRoutes(options.hostHarnessRuntime));
-  router.use("/local-model-preparation", localPreparationRoutes(options.localPreparation));
   const benchmarkClient = createCachedModelBenchmarkClient(
     createModelBenchmarkClient({ artificialAnalysisApiKey: ARTIFICIAL_ANALYSIS_API_KEY }),
     { path: path.join(path.dirname(storagePaths.accountsPath), "model-benchmarks-v1.json") },
   );
   router.use("/benchmarks", modelBenchmarkRoutes(benchmarkClient));
-  const memoryQueue=createMemoryEstimationQueue({path:path.join(path.dirname(storagePaths.accountsPath),'model-memory-queue-v2.json')});
-  const recommendationEvidence = createRecommendationEvidence(benchmarkClient, Date.now, undefined,memoryQueue);
-  router.get('/model-memory',async(req,res)=>{
-    try {res.setHeader('cache-control','no-store');res.json(await modelMemoryRequest(memoryQueue,loadOpenModelCatalog,String(req.query.model??''),String(req.query.variant??'')));}
-    catch {res.status(400).json({error:'Invalid model family or unavailable catalog'});}
-  });
-
   router.get("/host-update", async (_req, res) => {
     res.setHeader("cache-control", "no-store");
     if (!options.hostApplication || !options.hostUpdateController?.available()) {
@@ -870,12 +805,6 @@ export function createAdminRouter(options: AdminRoutesOptions) {
   router.get("/modules", (_req, res) => {
     if (!moduleManager) return res.status(503).json({ error: "Module manager is unavailable" });
     return res.json({ inferencePluginsSupported: !MULTIVIBE_CONTROL_PLANE, modules: moduleManager.list(), marketplace: moduleManager.marketplaceList() });
-  });
-
-  // Public workers are retired. Team sharing has its own signed entitlement projection.
-  router.get("/provider-agent/local-worker", (_req, res) => {
-    res.setHeader("cache-control", "no-store");
-    return res.json({ localWorker: null });
   });
 
   router.post("/modules/submit", async (req, res) => {
@@ -1263,50 +1192,6 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     }
   });
 
-  router.get("/model-recommendations", async (req, res) => {
-    res.setHeader("cache-control", "no-store");
-    const need = String(req.query.need ?? 'writing'); const sort = String(req.query.sort ?? 'recommended');
-    if (!['writing','coding','translation','documents'].includes(need) || !catalogSorts.includes(sort as CatalogSort) || (req.query.host && req.query.host !== 'local')) return res.status(400).json({error:'Invalid recommendation query'});
-    const benchmark = req.query.benchmark === undefined ? undefined : String(req.query.benchmark);
-    const budgetMiB = req.query.memory_gib === undefined ? undefined : Number(req.query.memory_gib) * 1024;
-    if ((benchmark && !benchmarkProfiles.some(p => p.id === benchmark)) || (budgetMiB !== undefined && (!Number.isFinite(budgetMiB) || budgetMiB <= 0 || budgetMiB > 4096 * 1024))) return res.status(400).json({error:'Invalid benchmark or memory budget'});
-    try {
-      const catalog = await loadOpenModelCatalog();
-      const evidence = await recommendationEvidence(catalog, need as CatalogNeed, benchmark);
-      let memory: MemoryAvailability | undefined = options.hostApplication && platform()==='darwin' && arch()==='arm64' ? localMemoryBudget(totalmem(),budgetMiB) : undefined;
-      let host: { name: string; supported: boolean } | null = null; let estimates: RuntimeEstimate[] = [];
-      if (options.hostApplication && options.providerAgent?.enabled) {
-        try {
-          const capability = await options.providerAgent.getCapability();
-          host = {name: capability.hardware_model ?? 'This Host', supported: capability.supported};
-          memory = {...memory, accelerator: capability.accelerator, budgetMiB: budgetMiB === undefined ? memory?.budgetMiB : Math.min(budgetMiB,memory?.budgetMiB ?? Infinity)};
-          try {
-            const resources = await options.providerAgent.getLocalPreparationResources?.();
-            if (resources) memory = {...memory, freeHostMiB: resources.free_host_memory_bytes === null ? null : resources.free_host_memory_bytes / 1048576, freeDeviceMiB: resources.free_accelerator_memory_bytes === null ? null : resources.free_accelerator_memory_bytes / 1048576, observedAt: resources.observed_at};
-          } catch { /* No claim of current free memory without a resource snapshot. */ }
-          // Existing estimator is read-only and may return unknown for absent weights.
-          if (capability.supported) {
-            const report = await options.providerAgent.estimateModelCompatibility(8192) as {models?: RuntimeEstimate[]};
-            if (Array.isArray(report.models)) estimates = report.models;
-          }
-        } catch { /* Hardware uncertainty must never become a positive compatibility claim. */ }
-      }
-      res.json({catalog, host, memory,memoryProgress:evidence.memoryProgress, contextTokens:8192, benchmarks:{selected:evidence.profile?.id, options:evidence.options, coverage:evidence.coverage}, recommendations: rankOpenModels(catalog, need as CatalogNeed, sort as CatalogSort, estimates, Date.now(), {...evidence, memory: memory ?? (budgetMiB ? {budgetMiB} : undefined)})});
-    } catch { res.status(503).json({error:'Public catalog unavailable'}); }
-  });
-
-  router.get("/open-model-family", async (req,res) => {
-    const model = String(req.query.model ?? '');
-    if (!/^[A-Za-z0-9][\w.-]{0,127}\/[A-Za-z0-9][\w.-]{0,127}$/.test(model)) return res.status(400).json({error:'Invalid model identity'});
-    try { res.json({models:await loadOpenModelCatalog.family(model),source:'Hugging Face',limit:100}); }
-    catch { res.status(503).json({error:'Model variants unavailable. Try again.'}); }
-  });
-
-  router.get("/open-model-catalog", async (_req, res) => {
-    try { res.json(await loadOpenModelCatalog()); }
-    catch { res.status(503).json({ error: "Public model catalog unavailable. Try again later." }); }
-  });
-
   router.get("/provider-catalog", async (_req, res) => {
     if (options.modelsDevCatalog) {
       try { await options.modelsDevCatalog.ensure(); } catch { /* bundled snapshot stays authoritative */ }
@@ -1415,321 +1300,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     }
   });
 
-  router.post("/local-runtimes/discover", async (_req, res) => {
-    try {
-      const report = await discoverAndPersistLocalRuntimes(store);
-      res.json({
-        ok: true,
-        results: report.results,
-        accounts: report.accounts.map(redact),
-      });
-    } catch (error: any) {
-      res.status(500).json({ error: error?.message ?? String(error) });
-    }
-  });
 
-  router.get("/provider-agent/selection", async (_req, res) => {
-    if (!options.providerAgent?.enabled) return res.status(503).json({ error: "provider_agent_unavailable" });
-    try {
-      res.json(await options.providerAgent.getSelection());
-    } catch {
-      res.status(503).json({ error: "provider_agent_unavailable" });
-    }
-  });
-
-  router.get("/provider-agent/manifest", async (_req, res) => {
-    if (!options.providerAgent?.enabled) return res.status(503).json({ error: "provider_agent_unavailable" });
-    try {
-      res.setHeader("cache-control", "no-store");
-      res.json(await options.providerAgent.getManifest());
-    } catch {
-      res.status(503).json({ error: "provider_agent_unavailable" });
-    }
-  });
-
-  router.post("/provider-agent/relay-shadow/session-open", async (req, res) => {
-    if (!options.providerAgent?.enabled) return res.status(503).json({ error: "provider_agent_unavailable" });
-    if (!isValidProviderRelayShadowSessionRequest(req.body)) {
-      return res.status(400).json({ error: "invalid_provider_relay_shadow_session" });
-    }
-    try {
-      const envelope = await options.providerAgent.openRelayShadowSession(req.body);
-      res.setHeader("cache-control", "no-store");
-      res.json(envelope);
-    } catch (error) {
-      if (error instanceof ProviderAgentControlRequestError && error.status === 400) {
-        return res.status(400).json({ error: "invalid_provider_relay_shadow_session" });
-      }
-      res.status(503).json({ error: "provider_agent_unavailable" });
-    }
-  });
-
-  router.get("/provider-agent/cloud-shadow/enrollment", async (_req, res) => {
-    if (!options.providerAgent?.enabled) return res.status(503).json({ error: "provider_agent_unavailable" });
-    try {
-      res.setHeader("cache-control", "no-store");
-      res.json(await options.providerAgent.getCloudEnrollment());
-    } catch (error) {
-      if (error instanceof ProviderAgentControlRequestError && error.status === 404) {
-        return res.status(404).json({ error: "provider_cloud_enrollment_not_found" });
-      }
-      res.status(503).json({ error: "provider_agent_unavailable" });
-    }
-  });
-
-  router.post("/provider-agent/cloud-shadow/enroll", async (req, res) => {
-    if (!options.providerAgent?.enabled) return res.status(503).json({ error: "provider_agent_unavailable" });
-    if (!isValidProviderCloudEnrollmentRequest(req.body)) {
-      return res.status(400).json({ error: "invalid_provider_cloud_enrollment" });
-    }
-    try {
-      const enrollment = await options.providerAgent.enrollCloud(req.body);
-      res.setHeader("cache-control", "no-store");
-      res.status(201).json(enrollment);
-    } catch (error) {
-      if (writeProviderCloudEnrollmentError(res, error, "invalid_provider_cloud_enrollment")) return;
-      res.status(503).json({ error: "provider_agent_unavailable" });
-    }
-  });
-
-  router.post("/provider-agent/cloud-shadow/enroll-handoff", async (req, res) => {
-    if (!options.providerAgent?.enabled) return res.status(503).json({ error: "provider_agent_unavailable" });
-    const body = req.body as Record<string, unknown> | undefined;
-    if (!body || Array.isArray(body) || Object.keys(body).join(",") !== "enrollment_token"
-      || typeof body.enrollment_token !== "string" || !/^mve_[A-Za-z0-9_-]{43}$/.test(body.enrollment_token)) {
-      return res.status(400).json({ error: "invalid_provider_cloud_handoff" });
-    }
-    try {
-      const enrollment = await options.providerAgent.enrollCloud(
-        providerCloudEnrollmentRequestFromLocalState({
-          enrollmentToken: body.enrollment_token,
-          coreVersion: options.appVersion ?? "unknown",
-        }),
-      );
-      res.setHeader("cache-control", "no-store");
-      res.status(201).json(enrollment);
-    } catch (error) {
-      if (writeProviderCloudEnrollmentError(res, error, "invalid_provider_cloud_handoff")) return;
-      if (error instanceof Error && !error.message.includes("provider agent")) {
-        return res.status(409).json({ error: "provider_cloud_handoff_not_ready", message: error.message });
-      }
-      res.status(503).json({ error: "provider_agent_unavailable" });
-    }
-  });
-
-  router.get("/provider-agent/adapters", async (_req, res) => {
-    if (!options.providerAgent?.enabled) return res.status(503).json({ error: "provider_agent_unavailable" });
-    try {
-      res.json(await options.providerAgent.getAdapters());
-    } catch {
-      res.status(503).json({ error: "provider_agent_unavailable" });
-    }
-  });
-
-  router.get("/provider-agent/runtime-endpoints", async (_req, res) => {
-    if (!options.providerAgent?.enabled) return res.status(503).json({ error: "provider_agent_unavailable" });
-    try {
-      res.setHeader("cache-control", "no-store");
-      res.json(await options.providerAgent.getRuntimeEndpoints());
-    } catch {
-      res.status(503).json({ error: "provider_agent_unavailable" });
-    }
-  });
-
-  router.put("/provider-agent/runtime-endpoints", async (req, res) => {
-    if (!options.providerAgent?.enabled) return res.status(503).json({ error: "provider_agent_unavailable" });
-    const revision = Number(req.body?.revision);
-    const endpoints = req.body?.endpoints;
-    if (!Number.isSafeInteger(revision) || revision < 1 || !Array.isArray(endpoints)
-      || endpoints.length > 29 || endpoints.some((value) => !isValidProviderRuntimeEndpointInput(value))
-      || new Set(endpoints.map((value) => value.adapter_id)).size !== endpoints.length) {
-      return res.status(400).json({ error: "invalid_provider_runtime_endpoints" });
-    }
-    try {
-      const result = await options.providerAgent.replaceRuntimeEndpoints(revision, endpoints);
-      res.setHeader("cache-control", "no-store");
-      res.status(result.conflict ? 409 : 200).json(result.endpoints);
-    } catch (error) {
-      if (error instanceof ProviderAgentControlRequestError && error.status === 400) {
-        return res.status(400).json({ error: "invalid_provider_runtime_endpoints" });
-      }
-      res.status(503).json({ error: "provider_agent_unavailable" });
-    }
-  });
-
-  router.put("/provider-agent/selection", async (req, res) => {
-    if (!options.providerAgent?.enabled) return res.status(503).json({ error: "provider_agent_unavailable" });
-    const revision = Number(req.body?.revision);
-    const selectedModels = req.body?.selected_models;
-    if (!Number.isSafeInteger(revision) || revision < 1 || !Array.isArray(selectedModels)
-      || selectedModels.length > 100 || selectedModels.some((value) => !isValidProviderSelectedModelId(value))
-      || new Set(selectedModels).size !== selectedModels.length) {
-      return res.status(400).json({ error: "invalid_provider_selection" });
-    }
-    try {
-      const result = await options.providerAgent.replaceSelection(revision, selectedModels);
-      res.status(result.conflict ? 409 : 200).json(result.selection);
-    } catch (error) {
-      if (error instanceof ProviderAgentControlRequestError && error.status === 400) {
-        return res.status(400).json({ error: "invalid_provider_selection" });
-      }
-      res.status(503).json({ error: "provider_agent_unavailable" });
-    }
-  });
-
-  router.get("/provider-agent/detected-models", async (_req, res) => {
-    if (!options.providerAgent?.enabled) return res.status(503).json({ error: "provider_agent_unavailable" });
-    try {
-      res.json(await options.providerAgent.detectModels());
-    } catch {
-      res.status(503).json({ error: "provider_agent_unavailable" });
-    }
-  });
-
-  router.get("/provider-agent/model-lifecycle", async (_req, res) => {
-    if (!options.providerAgent?.enabled) return res.status(503).json({ error: "provider_agent_unavailable" });
-    try {
-      res.setHeader("cache-control", "no-store");
-      res.json(await options.providerAgent.getModelLifecycleStatus());
-    } catch {
-      res.status(503).json({ error: "provider_model_lifecycle_unavailable" });
-    }
-  });
-
-  router.get("/provider-agent/capacity-policy", async (_req, res) => {
-    if (!options.providerAgent?.enabled) return res.status(503).json({ error: "provider_agent_unavailable" });
-    try {
-      res.setHeader("cache-control", "no-store");
-      res.json(await options.providerAgent.getCapacityPolicy());
-    } catch (error) {
-      if (error instanceof ProviderAgentControlRequestError && error.status === 404) {
-        return res.status(404).json({ error: "provider_capacity_policy_not_found" });
-      }
-      res.status(503).json({ error: "provider_agent_unavailable" });
-    }
-  });
-
-  router.put("/provider-agent/capacity-policy", async (req, res) => {
-    if (!options.providerAgent?.enabled) return res.status(503).json({ error: "provider_agent_unavailable" });
-    if (!isValidProviderCapacityPolicy(req.body)) {
-      return res.status(400).json({ error: "invalid_provider_capacity_policy" });
-    }
-    try {
-      const result = await options.providerAgent.replaceCapacityPolicy(req.body);
-      res.setHeader("cache-control", "no-store");
-      res.status(result.conflict ? 409 : 200).json(result.policy);
-    } catch (error) {
-      if (error instanceof ProviderAgentControlRequestError && error.status === 400) {
-        return res.status(400).json({ error: "invalid_provider_capacity_policy" });
-      }
-      res.status(503).json({ error: "provider_agent_unavailable" });
-    }
-  });
-
-  router.get("/provider-agent/cloud-shadow/demand-plan", async (_req, res) => {
-    if (!options.providerAgent?.enabled) return res.status(503).json({ error: "provider_agent_unavailable" });
-    try {
-      res.setHeader("cache-control", "no-store");
-      res.json(await options.providerAgent.getDemandPlan());
-    } catch (error) {
-      if (error instanceof ProviderAgentControlRequestError && error.status === 404) {
-        return res.status(404).json({ error: "provider_demand_plan_not_found" });
-      }
-      res.status(503).json({ error: "provider_agent_unavailable" });
-    }
-  });
-
-  router.post("/provider-agent/cloud-shadow/demand", async (req, res) => {
-    if (!options.providerAgent?.enabled) return res.status(503).json({ error: "provider_agent_unavailable" });
-    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
-      return res.status(400).json({ error: "invalid_provider_demand" });
-    }
-    let encoded: string;
-    try {
-      encoded = JSON.stringify(req.body);
-    } catch {
-      return res.status(400).json({ error: "invalid_provider_demand" });
-    }
-    if (Buffer.byteLength(encoded) > 64 * 1024) {
-      return res.status(400).json({ error: "invalid_provider_demand" });
-    }
-    try {
-      const result = await options.providerAgent.submitSignedDemand(req.body as Record<string, unknown>);
-      res.setHeader("cache-control", "no-store");
-      res.status(result.duplicate ? 200 : 201).json(result.plan);
-    } catch (error) {
-      if (error instanceof ProviderAgentControlRequestError && error.status === 400) {
-        return res.status(400).json({ error: "invalid_provider_demand" });
-      }
-      if (error instanceof ProviderAgentControlRequestError && error.status === 409) {
-        return res.status(409).json({ error: "provider_demand_rejected" });
-      }
-      res.status(503).json({ error: "provider_agent_unavailable" });
-    }
-  });
-
-  router.post("/provider-agent/model-compatibility", async (req, res) => {
-    res.setHeader("cache-control", "no-store");
-    const body = req.body;
-    if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length !== 1 ||
-        !Number.isSafeInteger(body.context_tokens) || body.context_tokens < 512 || body.context_tokens > 131072) {
-      return res.status(400).json({ error: "invalid_compatibility_context" });
-    }
-    if (!options.providerAgent?.enabled) return res.status(503).json({ error: "provider_agent_unavailable" });
-    try { res.json(await options.providerAgent.estimateModelCompatibility(body.context_tokens)); }
-    catch { res.status(503).json({ error: "model_estimator_unavailable" }); }
-  });
-
-  router.get("/provider-agent/managed-ollama/status", async (_req, res) => {
-    if (!options.providerAgent?.enabled) return res.status(503).json({ error: "provider_agent_unavailable" });
-    try {
-      res.setHeader("cache-control", "no-store");
-      res.json(await options.providerAgent.getManagedOllamaStatus());
-    } catch {
-      res.status(503).json({ error: "provider_managed_ollama_unavailable" });
-    }
-  });
-
-  for (const action of ["install", "start", "stop", "reconcile"] as const) {
-    router.post(`/provider-agent/managed-ollama/${action}`, async (req, res) => {
-      if (!options.providerAgent?.enabled) return res.status(503).json({ error: "provider_agent_unavailable" });
-      const body = req.body;
-      if (!body || typeof body !== "object" || Array.isArray(body)) {
-        return res.status(400).json({ error: "invalid_provider_managed_ollama_fence" });
-      }
-      const keys = Object.keys(body);
-      const expectedKeys = action === "stop"
-        ? []
-        : action === "reconcile"
-          ? ["envelope_digest", "plan_generation", "policy_revision"]
-          : ["policy_revision"];
-      if (keys.length !== expectedKeys.length || expectedKeys.some((key) => !(key in body)) ||
-        (action !== "stop" && (!Number.isSafeInteger(body.policy_revision) || body.policy_revision < 1)) ||
-        (action === "reconcile" && (!Number.isSafeInteger(body.plan_generation) || body.plan_generation < 1 ||
-          typeof body.envelope_digest !== "string" || !/^[a-f0-9]{64}$/u.test(body.envelope_digest)))) {
-        return res.status(400).json({ error: "invalid_provider_managed_ollama_fence" });
-      }
-      try {
-        const view = action === "install"
-          ? await options.providerAgent.installManagedOllama(body.policy_revision)
-          : action === "start"
-            ? await options.providerAgent.startManagedOllama(body.policy_revision)
-            : action === "stop"
-              ? await options.providerAgent.stopManagedOllama()
-              : await options.providerAgent.reconcileManagedOllama(body);
-        res.setHeader("cache-control", "no-store");
-        res.json(view);
-      } catch (error) {
-        if (error instanceof ProviderAgentControlRequestError && error.status === 409) {
-          return res.status(409).json({ error: "provider_managed_ollama_operation_rejected" });
-        }
-        if (error instanceof ProviderAgentControlRequestError && error.status === 400) {
-          return res.status(400).json({ error: "invalid_provider_managed_ollama_fence" });
-        }
-        res.status(503).json({ error: "provider_managed_ollama_unavailable" });
-      }
-    });
-  }
 
   router.post("/grok/import", createAuthRateLimiter({ limit: 5 }), async (_req, res) => {
     try {
@@ -2377,17 +1948,6 @@ export function createAdminRouter(options: AdminRoutesOptions) {
 
   router.post("/accounts", async (req, res) => {
     const body = req.body ?? {};
-    if (body.provider === "nvidia-pair") {
-      if (typeof body.baseUrl !== "string" || !body.baseUrl.trim()) {
-        return res.status(400).json({ error: "baseUrl required for NVIDIA PAIR" });
-      }
-      try {
-        const account = await configureNvidiaPairRuntime(store, body.baseUrl.trim());
-        return res.json({ ok: true, account: redact(account) });
-      } catch (error: any) {
-        return res.status(400).json({ error: error?.message ?? String(error) });
-      }
-    }
     if (body.provider === "github-copilot") {
       return res.status(400).json({ error: "Connect GitHub Copilot using device sign-in" });
     }
