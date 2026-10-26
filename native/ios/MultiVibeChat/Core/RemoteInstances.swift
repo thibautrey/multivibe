@@ -16,6 +16,14 @@ struct RemoteHarness: Codable, Identifiable, Sendable {
 struct RemoteHarnessModel: Codable, Identifiable, Sendable {
     let id: String; let name: String?; let provider: String?
     var displayName: String { name ?? id }
+    var selectionID: String { (provider ?? "") + ":" + id }
+}
+struct RemoteHarnessEffort: Codable, Sendable {
+    struct Option: Codable, Identifiable, Sendable { let value: String; let label: String; var id: String { value } }
+    let options: [Option]; let currentValue: String?; let defaultValue: String?
+}
+struct RemoteHarnessProject: Codable, Identifiable, Sendable {
+    let id: String; let harnessId: String; let name: String; let updatedAt: Double
 }
 struct RemoteDeviceAuthorization: Codable, Sendable {
     let deviceId: String; let deviceToken: String; let expiresAt: Double
@@ -138,11 +146,25 @@ private final class RemoteInstanceRedirectPolicy: NSObject, URLSessionTaskDelega
 }
 
 struct RemoteChat: Codable, Identifiable, Sendable {
-    var id = UUID(); var machine: String; var harness: String; var model: String; var provider: String?
+    var id = UUID(); var machine: String; var harness: String; var model: String; var provider: String? = nil
+    var effort: String? = nil; var projectId: String? = nil; var projectName: String? = nil
     var title = "Nouvelle conversation"; var messages: [ChatMessage] = []
     var command: String?; var cursor = 0; var state = "idle"; var items: [String: String] = [:]; var itemOrder: [String] = []
+    var pendingConfiguration: RemoteConfiguration? = nil
 }
-struct RemoteModelPreference: Codable { var harness: String; var model: String; var provider: String? }
+struct RemoteConfiguration: Codable, Sendable {
+    var id = UUID().uuidString.lowercased()
+    var model: String?; var provider: String?; var effort: String?
+    var fields: [String: HistoryJSON] {
+        var result: [String: HistoryJSON] = ["commandId": .string(id)]
+        if let model { result["model"] = .string(model); if let provider { result["provider"] = .string(provider) } }
+        else { result["effort"] = effort.map(HistoryJSON.string) ?? .null }
+        return result
+    }
+}
+struct RemoteModelPreference: Codable {
+    var harness: String; var model: String; var provider: String? = nil; var effort: String? = nil; var projectId: String? = nil; var projectName: String? = nil
+}
 
 @MainActor @Observable final class RemoteInstances {
     static let shared = RemoteInstances()
@@ -150,14 +172,18 @@ struct RemoteModelPreference: Codable { var harness: String; var model: String; 
     private(set) var machines: [RemoteMachine] = []
     private(set) var harnesses: [String: [RemoteHarness]] = [:]
     private(set) var modelCatalog: [String: [RemoteHarnessModel]] = [:]
+    private(set) var effortCatalog: [String: RemoteHarnessEffort] = [:]
+    private(set) var projectCatalog: [String: [RemoteHarnessProject]] = [:]
     private(set) var chats: [RemoteChat] = []
     private(set) var preferences: [String: RemoteModelPreference] = [:]
     private(set) var paired: Set<String> = []
     private(set) var busy = false
     private(set) var activeChat: UUID?
+    var selection: UUID?
     var error: String?
     var pendingPairing: RemotePairing?
     private var generation = UUID()
+    private var streamGeneration = UUID()
     private var task: Task<Void, Never>?
     private var network = "inconnu"
     private var storageLoaded = false
@@ -183,7 +209,7 @@ struct RemoteModelPreference: Codable { var harness: String; var model: String; 
     }
     func activate(_ account: String?) {
         guard self.account != account else { return }; task?.cancel(); task = nil; generation = UUID(); activeChat = nil; busy = false
-        self.account = account; machines = []; harnesses = [:]; modelCatalog = [:]; chats = []; preferences = [:]; paired = []; error = nil; storageLoaded = false
+        self.account = account; machines = []; harnesses = [:]; modelCatalog = [:]; effortCatalog = [:]; projectCatalog = [:]; chats = []; preferences = [:]; paired = []; error = nil; selection = nil; storageLoaded = false
         guard let account else { pendingPairing = nil; return }
         let url = archiveURL(account)
         do { if FileManager.default.fileExists(atPath: url.path) {
@@ -250,39 +276,157 @@ struct RemoteModelPreference: Codable { var harness: String; var model: String; 
         let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: fields); try check(owner, epoch)
         let values = try JSONDecoder().decode([RemoteHarnessModel].self, from: JSONEncoder().encode(result.object?["models"] ?? .array([])))
         modelCatalog[machine + ":" + harness] = values
+        var preference = preference(machine, harness: harness) ?? .init(harness: harness, model: "")
+        if preference.model.isEmpty, let selected = result.object?["currentModelId"]?.string.flatMap({ id in values.first { $0.id == id } }) ?? values.first {
+            preference.model = selected.id; preference.provider = selected.provider
+        }
+        remember(preference, machine: machine); updateSelectedEmptyChat(from: preference, machine: machine); try persist()
     }
-    func choose(_ machine: String, harness: String, model: RemoteHarnessModel) throws {
-        preferences[machine] = .init(harness: harness, model: model.id, provider: model.provider); try persist()
+    func efforts(_ machine: String, harness: String, model: String, provider: String?) async throws {
+        guard !model.isEmpty, !busy, let owner = account else { return }; let epoch = generation; busy = true; defer { if epoch == generation { busy = false } }
+        let (session, auth) = try await authorizedFields(machine, operation: "effort"); var fields = auth
+        fields["harnessId"] = .string(harness); fields["model"] = .string(model); if let provider { fields["provider"] = .string(provider) }
+        if let chat = current, chat.machine == machine, chat.harness == harness, !chat.messages.isEmpty { fields["conversationId"] = .string(chat.id.uuidString.lowercased()) }
+        let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: fields); try check(owner, epoch)
+        let key = machine + ":" + harness + ":" + model
+        if let value = result.object?["effort"], value != .null {
+            let effort = try JSONDecoder().decode(RemoteHarnessEffort.self, from: JSONEncoder().encode(value)); effortCatalog[key] = effort
+            var preference = preference(machine, harness: harness) ?? .init(harness: harness, model: model, provider: provider)
+            if !effort.options.contains(where: { $0.value == preference.effort }) { preference.effort = effort.currentValue ?? effort.defaultValue }
+            remember(preference, machine: machine); updateSelectedEmptyChat(from: preference, machine: machine); try persist()
+        } else { effortCatalog[key] = nil }
     }
-    func newChat(_ machine: String) throws -> UUID {
-        guard let p = preferences[machine], paired.contains(machine) else { throw APIError.noModel }
-        let chat = RemoteChat(machine: machine, harness: p.harness, model: p.model, provider: p.provider); chats.append(chat); try persist(); return chat.id
+    func projects(_ machine: String, harness: String) async throws {
+        guard !busy, let owner = account else { return }; let epoch = generation; busy = true; defer { if epoch == generation { busy = false } }
+        let (session, auth) = try await authorizedFields(machine, operation: "projects"); var fields = auth; fields["harnessId"] = .string(harness)
+        let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: fields); try check(owner, epoch)
+        projectCatalog[machine + ":" + harness] = try JSONDecoder().decode([RemoteHarnessProject].self, from: JSONEncoder().encode(result.object?["projects"] ?? .array([])))
     }
-    func stopFollowing() { task?.cancel(); task = nil; activeChat = nil; generation = UUID() }
-    func send(_ text: String, chat id: UUID, recover: Bool = false) {
-        guard activeChat == nil, let owner = account, let index = chats.firstIndex(where: { $0.id == id }), !busy else { return }
+    func prepare(_ machine: String, harness: String) async throws {
+        if harnesses[machine] == nil { try await catalog(machine) }
+        try await models(machine, harness: harness)
+        try await projects(machine, harness: harness)
+        if let chat = current, chat.machine == machine, chat.harness == harness, !chat.messages.isEmpty {
+            try await efforts(machine, harness: harness, model: chat.model, provider: chat.provider)
+        } else if let preference = preference(machine, harness: harness), !preference.model.isEmpty {
+            try await efforts(machine, harness: harness, model: preference.model, provider: preference.provider)
+        }
+    }
+    func preference(_ machine: String, harness: String) -> RemoteModelPreference? {
+        preferences[machine + ":" + harness] ?? preferences[machine].flatMap { $0.harness == harness ? $0 : nil }
+    }
+    private func remember(_ preference: RemoteModelPreference, machine: String) {
+        preferences[machine] = preference; preferences[machine + ":" + preference.harness] = preference
+    }
+    func choose(_ machine: String, harness: String, model: RemoteHarnessModel) async throws {
+        if let chat = current, chat.machine == machine, chat.harness == harness, !chat.messages.isEmpty {
+            try await configure(chat.id, change: .init(model: model.id, provider: model.provider))
+        }
+        var preference = preference(machine, harness: harness) ?? .init(harness: harness, model: model.id)
+        preference.harness = harness; preference.model = model.id; preference.provider = model.provider; preference.effort = nil
+        remember(preference, machine: machine); updateSelectedEmptyChat(from: preference, machine: machine); try persist()
+    }
+    func chooseEffort(_ value: String?, machine: String) async throws {
+        guard let chat = current, chat.machine == machine else { throw APIError.noModel }
+        guard var preference = preference(machine, harness: chat.harness) else { throw APIError.noModel }
+        if !chat.messages.isEmpty { try await configure(chat.id, change: .init(effort: value)) }
+        preference.effort = value; remember(preference, machine: machine); updateSelectedEmptyChat(from: preference, machine: machine); try persist()
+    }
+    func chooseProject(_ project: RemoteHarnessProject?, machine: String) throws {
+        guard let chat = current, chat.machine == machine, chat.messages.isEmpty,
+              var preference = preference(machine, harness: chat.harness) else { throw APIError.noModel }
+        preference.projectId = project?.id; preference.projectName = project?.name; remember(preference, machine: machine)
+        updateSelectedEmptyChat(from: preference, machine: machine); try persist()
+    }
+    func configure(_ id: UUID, change: RemoteConfiguration? = nil) async throws {
+        guard !busy, let owner = account, let index = chats.firstIndex(where: { $0.id == id }),
+              chats[index].command == nil else { throw APIError.invalidResponse }
+        let epoch = generation; busy = true; defer { if epoch == generation { busy = false } }
+        if chats[index].pendingConfiguration == nil { chats[index].pendingConfiguration = change }
+        guard let pending = chats[index].pendingConfiguration else { return }
+        try persist()
+        let machine = chats[index].machine
+        let (session, auth) = try await authorizedFields(machine, operation: "configure")
+        var fields = auth.merging(pending.fields) { _, new in new }; fields["conversationId"] = .string(id.uuidString.lowercased())
+        let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: fields); try check(owner, epoch)
+        guard let currentIndex = chats.firstIndex(where: { $0.id == id }) else { throw CancellationError() }
+        if result.object?["state"]?.string == "failed" {
+            chats[currentIndex].pendingConfiguration = nil; try persist(); throw APIError.server(409, "instance_configuration_refused")
+        }
+        guard result.object?["state"]?.string == "completed" else { throw APIError.invalidResponse }
+        if let model = pending.model { chats[currentIndex].model = model; chats[currentIndex].provider = pending.provider; chats[currentIndex].effort = nil }
+        else { chats[currentIndex].effort = pending.effort }
+        chats[currentIndex].pendingConfiguration = nil
+        let chat = chats[currentIndex]
+        remember(.init(harness: chat.harness, model: chat.model, provider: chat.provider, effort: chat.effort, projectId: chat.projectId, projectName: chat.projectName), machine: machine)
+        try persist()
+    }
+    @discardableResult func newChat(_ machine: String, harness: String? = nil) throws -> UUID {
+        guard paired.contains(machine) else { throw APIError.authenticationRequired }
+        let p = preferences[machine]
+        let chosenHarness = harness ?? p?.harness ?? harnesses[machine]?.first(where: { $0.available })?.id ?? ""
+        guard !chosenHarness.isEmpty else { throw APIError.noModel }
+        let applied = preference(machine, harness: chosenHarness)
+        let chat = RemoteChat(machine: machine, harness: chosenHarness, model: applied?.model ?? "", provider: applied?.provider,
+            effort: applied?.effort, projectId: applied?.projectId, projectName: applied?.projectName)
+        chats.append(chat); select(chat.id); try persist(); return chat.id
+    }
+    var current: RemoteChat? { selection.flatMap { id in chats.first { $0.id == id } } }
+    func select(_ id: UUID?) {
+        guard selection != id else { return }
+        stopFollowing(); selection = id
+        if id != nil { ConversationManager.shared.stop(); ConversationManager.shared.voice.silence() }
+    }
+    func delete(_ id: UUID) throws {
+        guard activeChat != id else { return }; chats.removeAll { $0.id == id }; if selection == id { selection = nil }; try persist()
+    }
+    private func updateSelectedEmptyChat(from preference: RemoteModelPreference, machine: String) {
+        guard let id = selection, let index = chats.firstIndex(where: { $0.id == id && $0.machine == machine && $0.harness == preference.harness && $0.messages.isEmpty }) else { return }
+        chats[index].harness = preference.harness; chats[index].model = preference.model; chats[index].provider = preference.provider
+        chats[index].effort = preference.effort; chats[index].projectId = preference.projectId; chats[index].projectName = preference.projectName
+    }
+    func stopFollowing() { task?.cancel(); task = nil; activeChat = nil; streamGeneration = UUID() }
+    @discardableResult func send(_ text: String, chat id: UUID, recover: Bool = false) -> Bool {
+        guard activeChat == nil, let owner = account, let index = chats.firstIndex(where: { $0.id == id }), !busy, chats[index].pendingConfiguration == nil else { return false }
         if !recover {
-            guard chats[index].command == nil, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            guard !chats[index].model.isEmpty, chats[index].command == nil, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
             chats[index].command = UUID().uuidString.lowercased(); chats[index].cursor = 0; chats[index].items = [:]; chats[index].itemOrder = []
-            chats[index].messages.append(.init(role: "user", content: text)); chats[index].messages.append(.init(role: "assistant", content: ""))
+            chats[index].messages.append(.init(role: "user", content: text)); chats[index].messages.append(.init(role: "assistant", content: "", completion: .streaming))
             if chats[index].messages.count == 2 { chats[index].title = ConversationTitle.fallback(for: text) }
         }
         chats[index].state = "running"
-        do { try persist() } catch { self.error = "Le message n’a pas pu être enregistré. Il n’a pas été envoyé."; return }
-        let epoch = generation, chat = chats[index]; activeChat = id; error = nil
+        guard chats[index].command != nil else { return false }
+        do { try persist() } catch { self.error = "Le message n’a pas pu être enregistré. Il n’a pas été envoyé."; return false }
+        let epoch = generation, streamEpoch = streamGeneration, chat = chats[index]; activeChat = id; error = nil
         task = Task {
-            defer { if generation == epoch { activeChat = nil; task = nil; try? persist() } }
+            defer { if generation == epoch && streamGeneration == streamEpoch { activeChat = nil; task = nil; try? persist() } }
             do {
                 let (session, auth) = try await authorizedFields(chat.machine, operation: recover ? "recover" : "prompt"); try check(owner, epoch)
                 var fields = auth; fields["conversationId"] = .string(id.uuidString.lowercased()); fields["commandId"] = .string(chat.command!); fields["after"] = .number(Double(chat.cursor))
-                if !recover { fields["harnessId"] = .string(chat.harness); fields["model"] = .string(chat.model); fields["text"] = .string(text); if let provider = chat.provider { fields["provider"] = .string(provider) } }
+                if !recover {
+                    fields["harnessId"] = .string(chat.harness); fields["model"] = .string(chat.model); fields["text"] = .string(text)
+                    if let provider = chat.provider { fields["provider"] = .string(provider) }
+                    if let effort = chat.effort { fields["effort"] = .string(effort) }
+                    if let projectId = chat.projectId { fields["projectId"] = .string(projectId) }
+                }
                 try await RemoteInstanceAPI.shared.events(chat.machine, account: owner, token: session.accessToken, fields: fields) { event in
+                    guard await self.streamGeneration == streamEpoch else { throw CancellationError() }
                     try await self.receive(event, chat: id, owner: owner, epoch: epoch)
                 }
             } catch is CancellationError { } catch {
-                if generation == epoch { self.error = "Le suivi a été interrompu. Le Mac peut continuer ; utilisez Reprendre pour consulter le résultat sans renvoyer le message." }
+                if generation == epoch && streamGeneration == streamEpoch { self.error = "Le suivi a été interrompu. Le Mac peut continuer ; utilisez Reprendre pour consulter le résultat sans renvoyer le message." }
             }
         }
+        return true
+    }
+    func interrupt(_ id: UUID) async throws {
+        guard !busy, let owner = account, let chat = chats.first(where: { $0.id == id }), chat.command != nil else { return }
+        let epoch = generation; busy = true; defer { if epoch == generation { busy = false } }
+        let (session, auth) = try await authorizedFields(chat.machine, operation: "interrupt")
+        var fields = auth; fields["conversationId"] = .string(id.uuidString.lowercased()); fields["commandId"] = .string(UUID().uuidString.lowercased())
+        let result = try await RemoteInstanceAPI.shared.control(chat.machine, account: owner, token: session.accessToken, fields: fields); try check(owner, epoch)
+        guard result.object?["state"]?.string == "completed" else { throw APIError.invalidResponse }
+        busy = false; stopFollowing(); send("", chat: id, recover: true)
     }
     private func receive(_ event: HistoryJSON, chat id: UUID, owner: String, epoch: UUID) throws {
         try check(owner, epoch); guard let index = chats.firstIndex(where: { $0.id == id }), let object = event.object else { throw APIError.invalidResponse }
@@ -296,7 +440,11 @@ struct RemoteModelPreference: Codable { var harness: String; var model: String; 
         } else if type == "terminal" {
             let state = object["state"]?.string ?? "uncertain"; chats[index].state = state
             chats[index].cursor = Int(object["cursor"]?.number ?? Double(chats[index].cursor))
-            if state == "completed" { chats[index].command = nil; chats[index].messages[chats[index].messages.count - 1].completion = .completed }
+            if ["completed", "cancelled", "failed"].contains(state), !chats[index].messages.isEmpty {
+                chats[index].command = nil
+                chats[index].messages[chats[index].messages.count - 1].completion = state == "completed" ? .completed : state == "cancelled" ? .stopped : .failed
+                if state == "failed" { error = "Le harness a refusé ce tour. Vérifiez son accès au modèle sur le Mac." }
+            }
             else { error = "Le harness n’a pas confirmé la réussite de ce tour. Consultez le Mac avant toute nouvelle tentative." }
         } else if type == "approval_required" { chats[index].state = "waiting_user"; error = "Le harness attend une autorisation sur le Mac. Confirmez-la sur le Mac, puis reprenez le suivi." }
         try persist()

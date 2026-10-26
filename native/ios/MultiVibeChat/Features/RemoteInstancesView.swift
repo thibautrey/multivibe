@@ -20,7 +20,7 @@ struct RemoteInstancesView: View {
                 } else {
                     Section {
                         ForEach(instances.machines) { machine in
-                            NavigationLink { RemoteMachineView(machine: machine) } label: {
+                            NavigationLink { RemoteMachineView(machine: machine, openChat: { dismiss() }) } label: {
                                 HStack {
                                     Image(systemName: "desktopcomputer").font(.title2)
                                     VStack(alignment: .leading) {
@@ -90,7 +90,7 @@ private struct RemoteMachineView: View {
     let machine: RemoteMachine
     @State private var instances = RemoteInstances.shared
     @State private var harness = ""
-    @State private var chatID: UUID?
+    let openChat: () -> Void
     @State private var failure: String?
     @State private var revokeConfirmation = false
     private var isPaired: Bool { instances.paired.contains(machine.id) }
@@ -111,21 +111,16 @@ private struct RemoteMachineView: View {
                     if let h = instances.harnesses[machine.id]?.first(where: { $0.id == harness }) {
                         Text(h.reason ?? (h.configured ? "Configuré sur cette instance" : "Authentification à vérifier sur l’instance")).font(.caption).foregroundStyle(.secondary)
                     }
-                    Button("Charger les modèles") { Task { do { try await instances.models(machine.id, harness: harness) } catch { failure = "Le harness n’a pas exposé ses modèles. Vérifiez sa connexion sur le Mac." } } }.disabled(harness.isEmpty || !machine.online || instances.busy)
-                    ForEach(instances.modelCatalog[machine.id + ":" + harness] ?? []) { model in
-                        Button {
-                            do { try instances.choose(machine.id, harness: harness, model: model) } catch { failure = error.localizedDescription }
-                        } label: {
-                            HStack { Text(model.displayName); Spacer(); if instances.preferences[machine.id]?.harness == harness && instances.preferences[machine.id]?.model == model.id { Image(systemName: "checkmark") } }
-                        }.accessibilityIdentifier("remoteModelRow")
-                    }
                 }
                 Section("Conversations sur cette instance") {
-                    Button("Nouvelle conversation", systemImage: "square.and.pencil") {
-                        do { chatID = try instances.newChat(machine.id) } catch { failure = "Choisissez d’abord un harness et un modèle." }
-                    }.disabled(instances.preferences[machine.id] == nil)
-                    ForEach(instances.chats.filter { $0.machine == machine.id }.reversed()) { chat in
-                        Button(chat.title) { chatID = chat.id }.accessibilityIdentifier("remoteChatRow")
+                    Button("Ouvrir dans le chat", systemImage: "square.and.pencil") {
+                        do {
+                            _ = try instances.newChat(machine.id, harness: harness)
+                            openChat()
+                        } catch { failure = "Choisissez d’abord un harness disponible." }
+                    }.disabled(harness.isEmpty || !machine.online || instances.busy)
+                    ForEach(instances.chats.filter { $0.machine == machine.id && !$0.messages.isEmpty }.reversed()) { chat in
+                        Button(chat.title) { instances.select(chat.id); openChat() }.accessibilityIdentifier("remoteChatRow")
                     }
                 }
                 Section {
@@ -136,56 +131,107 @@ private struct RemoteMachineView: View {
             if let failure { Text(failure).foregroundStyle(.red) }
         }.navigationTitle(machine.name).disabled(instances.busy)
         .task { harness = instances.preferences[machine.id]?.harness ?? ""; if isPaired && machine.online { do { try await instances.catalog(machine.id) } catch { failure = "Catalogue indisponible ou autorisation expirée. Réappairez l’iPhone si nécessaire." } } }
-        .sheet(isPresented: Binding(get: { chatID != nil }, set: { if !$0 { chatID = nil } })) { if let id = chatID { RemoteInstanceChatView(chatID: id, machineName: machine.name) } }
         .confirmationDialog("Révoquer cette instance pour tous vos appareils ?", isPresented: $revokeConfirmation, titleVisibility: .visible) {
             Button("Révoquer l’instance", role: .destructive) { Task { do { try await instances.disconnect(machine.id, revokeMachine: true) } catch { failure = "La révocation de l’instance n’a pas pu être confirmée." } } }
         }
     }
 }
 
-private struct RemoteInstanceChatView: View {
-    let chatID: UUID; let machineName: String
+struct RemoteHarnessModelPicker: View {
+    let chatID: UUID
     @Environment(\.dismiss) private var dismiss
     @State private var instances = RemoteInstances.shared
-    @State private var draft = ""
+    @State private var search = ""
+    @State private var failure: String?
+    private var chat: RemoteChat? { instances.chats.first { $0.id == chatID } }
+    private var models: [RemoteHarnessModel] {
+        guard let chat else { return [] }
+        return (instances.modelCatalog[chat.machine + ":" + chat.harness] ?? []).filter {
+            search.isEmpty || $0.displayName.localizedCaseInsensitiveContains(search) || $0.id.localizedCaseInsensitiveContains(search)
+        }
+    }
+    var body: some View {
+        NavigationStack {
+            List {
+                if let failure { Text(failure).foregroundStyle(.red) }
+                ForEach(models, id: \.selectionID) { model in
+                    Button {
+                        guard let chat else { return }
+                        Task {
+                            do {
+                                try await instances.choose(chat.machine, harness: chat.harness, model: model)
+                                dismiss()
+                                do { try await instances.efforts(chat.machine, harness: chat.harness, model: model.id, provider: model.provider) }
+                                catch { instances.error = "Le modèle est sélectionné ; son catalogue d’effort est momentanément indisponible." }
+                            } catch { failure = "Le changement n’a pas été confirmé. Reprenez sa vérification depuis le chat." }
+                        }
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(model.displayName).foregroundStyle(.primary)
+                                if let provider = model.provider { Text(provider).font(.caption).foregroundStyle(.secondary) }
+                            }
+                            Spacer()
+                            if chat?.model == model.id && chat?.provider == model.provider { Image(systemName: "checkmark") }
+                        }.padding(.vertical, 4)
+                    }.disabled(instances.busy || chat?.pendingConfiguration != nil).accessibilityIdentifier("remoteModelRow")
+                }
+                if models.isEmpty && !instances.busy { Text("Aucun modèle. Actualisez le catalogue ou modifiez la recherche.").foregroundStyle(.secondary) }
+            }
+            .searchable(text: $search, prompt: "Rechercher un modèle")
+            .navigationTitle("Modèle du harness").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) { Button("Fermer") { dismiss() } }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Actualiser", systemImage: "arrow.clockwise") {
+                        guard let chat else { return }
+                        Task { do { try await instances.models(chat.machine, harness: chat.harness); failure = nil } catch { failure = "Catalogue indisponible sur cette instance." } }
+                    }.disabled(instances.busy)
+                }
+            }
+            .overlay { if instances.busy { ProgressView() } }
+        }
+    }
+}
+
+struct RemoteHarnessProjectPicker: View {
+    let chatID: UUID
+    @Environment(\.dismiss) private var dismiss
+    @State private var instances = RemoteInstances.shared
+    @State private var search = ""
+    @State private var failure: String?
     private var chat: RemoteChat? { instances.chats.first { $0.id == chatID } }
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                VStack(spacing: 3) {
-                    Text(machineName + " · " + (chat?.harness ?? "")).font(.subheadline.weight(.medium))
-                    Text(chat?.model ?? "").font(.caption).foregroundStyle(.secondary)
-                    Text(instances.transportLabel).font(.caption2).foregroundStyle(.secondary).accessibilityIdentifier("remoteChatTransport")
-                }.padding(12)
-                Divider()
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 18) {
-                            ForEach(chat?.messages ?? []) { message in
-                                VStack(alignment: .leading, spacing: 5) {
-                                    Text(message.role == "user" ? "Vous" : machineName).font(.caption.bold()).foregroundStyle(.secondary)
-                                    Text(message.content.isEmpty ? "Réponse en cours…" : message.content).textSelection(.enabled)
-                                        .accessibilityIdentifier(message.role == "assistant" ? "remoteAssistantReply" : "remoteUserMessage")
-                                }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(message.role == "user" ? Color.accentColor.opacity(0.08) : Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 16))
+            List {
+                if let chat {
+                    Section {
+                        Button { select(nil, machine: chat.machine) } label: {
+                            Label("Aucun projet", systemImage: chat.projectId == nil ? "checkmark" : "folder.badge.minus")
+                        }
+                        ForEach((instances.projectCatalog[chat.machine + ":" + chat.harness] ?? []).filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) }) { project in
+                            Button { select(project, machine: chat.machine) } label: {
+                                Label(project.name, systemImage: chat.projectId == project.id ? "checkmark" : "folder")
                             }
-                            Color.clear.frame(height: 1).id("end")
-                        }.padding()
-                    }.onChange(of: chat?.messages.last?.content) { _, _ in proxy.scrollTo("end", anchor: .bottom) }
+                        }
+                    } footer: { Text("Dossiers existants de cette instance. Le projet est fixé au premier message.") }
+                    if let failure { Text(failure).foregroundStyle(.red) }
                 }
-                if let error = instances.error { Text(error).font(.caption).foregroundStyle(.red).padding(.horizontal) }
-                if instances.activeChat == chatID {
-                    HStack { ProgressView(); Text("Exécution sur le Mac"); Button("Fermer le suivi") { instances.stopFollowing() } }.font(.caption).padding()
-                } else if chat?.command != nil {
-                    Button("Reprendre le suivi sans renvoyer") { instances.send("", chat: chatID, recover: true) }.padding().accessibilityIdentifier("recoverRemoteTurn")
+            }.disabled(instances.busy || chat?.messages.isEmpty != true)
+                .searchable(text: $search, prompt: "Rechercher un projet")
+                .navigationTitle("Dossier de projet").navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) { Button("Fermer") { dismiss() } }
+                    ToolbarItem(placement: .topBarTrailing) { Button("Actualiser", systemImage: "arrow.clockwise") {
+                        guard let chat else { return }
+                        Task { do { try await instances.projects(chat.machine, harness: chat.harness); failure = nil } catch { failure = "Projets indisponibles sur cette instance." } }
+                    }.disabled(instances.busy) }
                 }
-                HStack(alignment: .bottom) {
-                    TextField("Message à cette instance", text: $draft, axis: .vertical).lineLimit(1...5).textFieldStyle(.roundedBorder).accessibilityIdentifier("remoteMessage")
-                    Button("Envoyer", systemImage: "arrow.up.circle.fill") { let text = draft; instances.send(text, chat: chatID); if instances.activeChat == chatID { draft = "" } }
-                        .labelStyle(.iconOnly).font(.title2).disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || chat?.command != nil || instances.activeChat != nil).accessibilityIdentifier("sendRemoteMessage")
-                }.padding()
-            }.navigationTitle(chat?.title ?? "Instance distante").navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Fermer") { dismiss() } } }
         }
+    }
+    private func select(_ project: RemoteHarnessProject?, machine: String) {
+        do { try instances.chooseProject(project, machine: machine); dismiss() }
+        catch { failure = "Le projet n’a pas pu être enregistré." }
     }
 }
 

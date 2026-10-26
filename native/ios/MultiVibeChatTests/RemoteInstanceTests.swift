@@ -34,4 +34,24 @@ final class RemoteInstanceTests: XCTestCase {
         RemoteAuthorizationStore.clearAccount(account)
         XCTAssertNil(try RemoteAuthorizationStore.load(account, machine))
     }
+    func testExistingRemoteConversationAndPreferenceDecodeWithoutDesktopControls() throws {
+        let chat = RemoteChat(machine: UUID().uuidString, harness: "pi", model: "model")
+        var chatObject = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(chat)) as? [String: Any])
+        for key in ["effort", "projectId", "projectName"] { chatObject.removeValue(forKey: key) }
+        let restored = try JSONDecoder().decode(RemoteChat.self, from: JSONSerialization.data(withJSONObject: chatObject))
+        XCTAssertNil(restored.effort); XCTAssertNil(restored.projectId); XCTAssertNil(restored.projectName)
+
+        let oldPreference = Data(#"{"harness":"pi","model":"model"}"#.utf8)
+        let preference = try JSONDecoder().decode(RemoteModelPreference.self, from: oldPreference)
+        XCTAssertNil(preference.effort); XCTAssertNil(preference.projectId)
+    }
+    func testPendingConfigurationKeepsItsOperationIdentityAcrossRestore() throws {
+        var chat = RemoteChat(machine: UUID().uuidString, harness: "hermes-agent", model: "old")
+        chat.pendingConfiguration = .init(model: "openai-api:gpt-6.1-sol", provider: "openai-api")
+        let restored = try JSONDecoder().decode(RemoteChat.self, from: JSONEncoder().encode(chat))
+        XCTAssertEqual(restored.pendingConfiguration?.id, chat.pendingConfiguration?.id)
+        XCTAssertEqual(restored.pendingConfiguration?.fields["model"]?.string, "openai-api:gpt-6.1-sol")
+        XCTAssertNil(restored.pendingConfiguration?.fields["projectId"])
+        XCTAssertEqual(RemoteConfiguration(effort: nil).fields["effort"], .null)
+    }
 }
