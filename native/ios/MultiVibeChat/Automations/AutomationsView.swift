@@ -18,18 +18,18 @@ struct AutomationsView: View {
     private var jobs: [AgentAutomation] { coordinator.store?.jobs.sorted { $0.createdAt > $1.createdAt } ?? [] }
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 18) {
-                header
-                if let error = coordinator.error {
-                    MultiVibeStatusMessage(message: error, actionTitle: "Fermer") { coordinator.error = nil }
-                        .padding(.horizontal, 4)
-                }
-                if jobs.isEmpty { emptyState } else {
-                    Text("Vos tâches").font(.title3.bold()).padding(.horizontal, 4)
+        List {
+            if let error = coordinator.error {
+                MultiVibeStatusMessage(message: error, actionTitle: "Fermer") { coordinator.error = nil }
+            }
+            Section {
+                if jobs.isEmpty {
+                    ContentUnavailableView("Aucune tâche planifiée", systemImage: "calendar.badge.clock",
+                        description: Text("Créez une tâche ou partez d’une suggestion."))
+                        .frame(maxWidth: .infinity)
+                } else {
                     ForEach(jobs) { job in
-                        NavigationLink { AutomationDetailView(job: job) } label: { AutomationCard(job: job) }
-                            .buttonStyle(.plain)
+                        NavigationLink { AutomationDetailView(job: job) } label: { AutomationRow(job: job) }
                             .contextMenu {
                                 Button(job.enabled ? "Mettre en pause" : "Reprendre", systemImage: job.enabled ? "pause.circle" : "play.circle") { action(job.enabled ? "pause" : "resume", job) }
                                 Button("Exécuter maintenant", systemImage: "play.fill") { action("run", job) }
@@ -37,20 +37,46 @@ struct AutomationsView: View {
                             }
                     }
                 }
-                starterSection
-                permissionSection
-            }.padding(.horizontal, 18).padding(.bottom, 34)
+            }
+            Section("Suggestions") {
+                StarterRow(icon: "sun.max.fill", color: .orange, title: "Briefing quotidien", subtitle: "Une synthèse personnalisée chaque matin") { editor = .briefing }
+                StarterRow(icon: "sparkles", color: MultiVibeTheme.accent, title: "Veille hebdomadaire", subtitle: "Les nouveautés importantes d’un sujet") { editor = .watch }
+            }
         }
-        .background(MultiVibeTheme.softAccent.ignoresSafeArea())
-        .navigationTitle("Automatisations")
-        .toolbar { Button("Ajouter", systemImage: "plus") { editor = .blank }.accessibilityIdentifier("addAutomation") }
+        .listStyle(.insetGrouped)
+        .navigationTitle("Tâches planifiées")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button(notificationPermissionTitle, systemImage: notificationPermissionIcon) {
+                        if coordinator.notificationAuthorization == .notDetermined {
+                            Task { await coordinator.requestPermissions() }
+                        } else { openSettings() }
+                    }
+                    Button(locationPermissionTitle, systemImage: locationPermissionIcon) {
+                        if coordinator.locationAuthorization == .denied || coordinator.locationAuthorization == .restricted {
+                            openSettings()
+                        } else { Task { await coordinator.requestPermissions(location: true) } }
+                    }
+                } label: {
+                    Label("Autorisations", systemImage: "ellipsis")
+                }
+            }
+        }
         .safeAreaInset(edge: .bottom) {
             Button { editor = .blank } label: {
-                HStack { Image(systemName: "plus"); Text("Planifier une tâche").fontWeight(.semibold); Spacer(); Image(systemName: "arrow.up").padding(8).background(MultiVibeTheme.accent, in: Circle()).foregroundStyle(.white) }
-                    .padding(.leading, 18).padding(.trailing, 8).padding(.vertical, 8)
-                    .background(.regularMaterial, in: Capsule()).overlay(Capsule().stroke(.primary.opacity(0.08)))
-                    .shadow(color: .black.opacity(0.08), radius: 18, y: 7)
-            }.buttonStyle(.plain).padding(.horizontal, 20).padding(.bottom, 8).accessibilityIdentifier("scheduleAutomation")
+                Label("Planifier une tâche", systemImage: "plus")
+                    .fontWeight(.semibold)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .tint(MultiVibeTheme.accent)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 8)
+            .background(.ultraThinMaterial)
+            .accessibilityIdentifier("scheduleAutomation")
         }
         .sheet(item: $editor) { AutomationEditor(preset: $0) }
         .confirmationDialog("Supprimer cette automatisation ?", isPresented: Binding(
@@ -70,44 +96,6 @@ struct AutomationsView: View {
             try? await coordinator.syncCloud()
         }
         .refreshable { do { try await coordinator.syncCloud() } catch { coordinator.error = error.localizedDescription } }
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Image(systemName: "clock.badge.checkmark").font(.title2).foregroundStyle(MultiVibeTheme.accent)
-            Text("Planifiez ce qui compte").font(.largeTitle.bold())
-            Text("MultiVibe exécutera votre consigne à la date choisie, régulièrement ou lorsqu’un événement se produit.").foregroundStyle(.secondary)
-        }.padding(.top, 10).padding(.horizontal, 4)
-    }
-    private var emptyState: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Aucune tâche planifiée").font(.title3.bold())
-            Text("Commencez avec un exemple ou créez une tâche adaptée à votre besoin.").foregroundStyle(.secondary)
-        }.frame(maxWidth: .infinity, alignment: .leading).padding(22)
-            .background(MultiVibeTheme.card, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-    }
-    private var starterSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Pour commencer").font(.title3.bold()).padding(.horizontal, 4)
-            StarterCard(icon: "sun.max.fill", color: .orange, title: "Briefing quotidien", subtitle: "Recevez chaque matin une synthèse personnalisée.") { editor = .briefing }
-            StarterCard(icon: "sparkles", color: MultiVibeTheme.accent, title: "Veille hebdomadaire", subtitle: "Suivez chaque semaine les nouveautés d’un sujet.") { editor = .watch }
-        }
-    }
-    private var permissionSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Autorisations locales").font(.headline)
-            Button(notificationPermissionTitle, systemImage: notificationPermissionIcon) {
-                if coordinator.notificationAuthorization == .notDetermined {
-                    Task { await coordinator.requestPermissions() }
-                } else { openSettings() }
-            }
-            Button(locationPermissionTitle, systemImage: locationPermissionIcon) {
-                if coordinator.locationAuthorization == .denied || coordinator.locationAuthorization == .restricted {
-                    openSettings()
-                } else { Task { await coordinator.requestPermissions(location: true) } }
-            }
-            Text("iOS choisit les périodes d’exécution en arrière-plan. Les tâches MultiVibe Cloud continuent même lorsque l’app est fermée.").font(.caption).foregroundStyle(.secondary)
-        }.padding(20).background(MultiVibeTheme.card, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
     private var notificationPermissionTitle: String {
         switch coordinator.notificationAuthorization {
@@ -149,44 +137,49 @@ struct AutomationsView: View {
     }
 }
 
-private struct AutomationCard: View {
+private struct AutomationRow: View {
     let job: AgentAutomation
     private var icon: String { switch job.trigger.kind { case "at": "calendar.badge.clock"; case "daily": "sun.max"; case "interval": "repeat"; case "geofence": "location"; default: "bolt" } }
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top) {
-                Image(systemName: icon).font(.title3).foregroundStyle(MultiVibeTheme.accent).frame(width: 34, height: 34).background(MultiVibeTheme.accent.opacity(0.12), in: Circle())
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(job.trigger.kind == "at" ? "À VENIR" : job.trigger.kind == "daily" ? "QUOTIDIEN" : "AUTOMATISÉE").font(.caption2.bold()).foregroundStyle(MultiVibeTheme.accent)
-                    Text(job.title).font(.title3.bold()).foregroundStyle(.primary)
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: icon)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(MultiVibeTheme.accent)
+                .frame(width: 34, height: 34)
+                .background(MultiVibeTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text(job.title).font(.headline).foregroundStyle(.primary).lineLimit(1)
+                    if !job.enabled {
+                        Image(systemName: "pause.circle.fill").font(.caption).foregroundStyle(.secondary)
+                            .accessibilityLabel("En pause")
+                    }
                 }
-                Spacer(); Image(systemName: "ellipsis").foregroundStyle(.secondary)
+                Text(job.prompt).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
+                Label(job.trigger.label, systemImage: "clock")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
-            Text(job.prompt).foregroundStyle(.secondary).lineLimit(3)
-            Divider()
-            HStack {
-                Label(job.trigger.label, systemImage: "clock").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-                Spacer()
-                Text(job.enabled ? "Active" : "En pause").font(.caption.bold()).padding(.horizontal, 10).padding(.vertical, 6)
-                    .background((job.enabled ? MultiVibeTheme.accent : Color.secondary).opacity(0.12), in: Capsule())
-                    .foregroundStyle(job.enabled ? MultiVibeTheme.accent : .secondary)
-            }
-        }.padding(20).background(MultiVibeTheme.card, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).stroke(.primary.opacity(0.07)))
+        }
+        .padding(.vertical, 6)
     }
 }
 
-private struct StarterCard: View {
+private struct StarterRow: View {
     let icon: String, color: Color, title: String, subtitle: String
     let action: () -> Void
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 14) {
-                Image(systemName: icon).font(.title2).foregroundStyle(color).frame(width: 40)
-                VStack(alignment: .leading, spacing: 4) { Text(title).font(.headline).foregroundStyle(.primary); Text(subtitle).font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.leading) }
+            HStack(spacing: 12) {
+                Image(systemName: icon).font(.body.weight(.semibold)).foregroundStyle(color).frame(width: 28)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.headline).foregroundStyle(.primary)
+                    Text(subtitle).font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.leading).lineLimit(1)
+                }
                 Spacer(); Image(systemName: "plus").font(.headline).foregroundStyle(.secondary)
-            }.padding(18).background(MultiVibeTheme.card.opacity(0.7), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(style: StrokeStyle(lineWidth: 1, dash: [6])).foregroundStyle(.secondary.opacity(0.28)))
+            }
+            .contentShape(Rectangle())
         }.buttonStyle(.plain)
     }
 }
