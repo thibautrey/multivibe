@@ -938,8 +938,6 @@ struct ChatView: View {
             }
 
             Divider().padding(.vertical, 5)
-            Button("Actualiser les instances", systemImage: "arrow.clockwise") { Task { await instances.reload() } }
-                .disabled(instances.busy)
             Button("Gérer les instances…", systemImage: "desktopcomputer.and.iphone") { remoteInstancesPresented = true }
         }
         .font(.subheadline)
