@@ -123,16 +123,18 @@ private struct RemoteMachineView: View {
                         Button(chat.title) { instances.select(chat.id); openChat() }.accessibilityIdentifier("remoteChatRow")
                     }
                 }
-                Section {
+            }
+            Section {
+                if isPaired {
                     Button("Déconnecter cet iPhone", role: .destructive) { Task { do { try await instances.disconnect(machine.id) } catch { failure = "Accès local effacé ; révocation distante non confirmée. Révoquez cet appareil depuis le Mac si celui-ci reste hors ligne." } } }
-                    Button("Révoquer l’instance pour mon compte", role: .destructive) { revokeConfirmation = true }
                 }
+                Button("Révoquer l’instance pour mon compte", role: .destructive) { revokeConfirmation = true }
             }
             if let failure { Text(failure).foregroundStyle(.red) }
         }.navigationTitle(machine.name).disabled(instances.busy)
         .task { harness = instances.preferences[machine.id]?.harness ?? ""; if isPaired && machine.online { do { try await instances.catalog(machine.id) } catch { failure = "Catalogue indisponible ou autorisation expirée. Réappairez l’iPhone si nécessaire." } } }
         .confirmationDialog("Révoquer cette instance pour tous vos appareils ?", isPresented: $revokeConfirmation, titleVisibility: .visible) {
-            Button("Révoquer l’instance", role: .destructive) { Task { do { try await instances.disconnect(machine.id, revokeMachine: true) } catch { failure = "La révocation de l’instance n’a pas pu être confirmée." } } }
+            Button("Révoquer l’instance", role: .destructive) { Task { do { try await instances.disconnect(machine.id, revokeMachine: true); await instances.reload() } catch { failure = "La révocation de l’instance n’a pas pu être confirmée." } } }
         }
     }
 }
