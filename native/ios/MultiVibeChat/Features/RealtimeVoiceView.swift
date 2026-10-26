@@ -619,6 +619,7 @@ private struct VoiceOrb: View {
                         .blur(radius: side * 0.08)
                         .offset(x: -crossWave * side * 0.15, y: wave * side * 0.16)
                 }
+                .frame(width: side, height: side)
                 .clipShape(Circle())
                 .overlay(Circle().stroke(.white.opacity(0.16), lineWidth: 0.7))
                 .scaleEffect(1 + reactiveLevel * 0.09 + (reduceMotion ? 0 : wave * (phase == .speaking ? 0.022 : 0.010)))
