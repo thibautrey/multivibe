@@ -816,10 +816,12 @@ struct ChatView: View {
                     } else if voice.starting {
                         ProgressView().frame(width: 36, height: 36)
                             .accessibilityLabel("Démarrage de la dictée")
-                    } else if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isRemoteConversation {
-                        Button("Dicter sur cet appareil", systemImage: "mic") { startVoiceInput() }
-                            .accessibilityIdentifier("startDictation")
-                            .font(.title3.weight(.medium)).frame(width: 36, height: 36)
+                    } else if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        if !isRemoteConversation {
+                            Button("Dicter sur cet appareil", systemImage: "mic") { startVoiceInput() }
+                                .accessibilityIdentifier("startDictation")
+                                .font(.title3.weight(.medium)).frame(width: 36, height: 36)
+                        }
                         composerCircleButton("Démarrer une conversation vocale", systemImage: "waveform", foreground: .white, background: MultiVibeTheme.accent, size: 36) { startVoiceConversation() }
                             .accessibilityIdentifier("startVoiceConversation")
                     } else {
