@@ -40,7 +40,7 @@ export function dashboardResourceAllowed(resource: string, capabilities: Dashboa
   if (/^(?:host-harnesses)(?:\/|$)/.test(path)) return capabilities.hostHarnesses;
   if (/^(?:modules)(?:\/|$)/.test(path)) return capabilities.plugins;
   if (/^(?:team-machine)(?:\/|$)/.test(path)) return false;
-  if (/^(?:provider-agent|local-runtimes|local-model-preparation|model-memory|open-model-family|model-recommendations)(?:\/|$)/.test(path)) return false;
+  if (/^(?:provider-agent|local-runtimes|local-model-preparation|model-memory|open-model-catalog|open-model-family|model-recommendations)(?:\/|$)/.test(path)) return false;
   if (/^cloud\/(?:connect|disconnect)$/.test(path)) return capabilities.cloudConnection;
   if (path === 'usage/refresh-stale') return capabilities.usageRefresh;
   if (path === 'quota-reset-forecast') return capabilities.host;

@@ -47,7 +47,7 @@ export function ModelsTab({ canConfigure = true, models, accounts, cloudConnecte
   const [connecting, setConnecting] = useState(false);
   useEffect(() => {
     let active = true;
-    if (!canConfigure || view !== 'expert' || expertSection !== 'library') { setLoading(false); return; }
+    if (!canConfigure) { setLoading(false); return; }
     setLoading(true);
     setCatalogError('');
     void Promise.allSettled([api('cloud/models'), api('provider-catalog')]).then(([cloudResult, providerResult]) => {
@@ -61,7 +61,7 @@ export function ModelsTab({ canConfigure = true, models, accounts, cloudConnecte
       setLoading(false);
     });
     return () => { active = false; };
-  }, [canConfigure, catalogRequest, view, expertSection]);
+  }, [canConfigure, catalogRequest]);
   const loadMoreCatalog = async () => {
     if (!catalogCursor || loadingMore) return;
     const cursor = catalogCursor;

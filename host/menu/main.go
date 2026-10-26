@@ -123,14 +123,11 @@ func runLinuxMenu() error {
 		return err
 	}
 	app := &menuApplication{
-		client:                  client,
-		state:                   menuState{version: menuApplicationVersion, status: "Starting..."},
-		actions:                 make(chan int, 16),
-		enrollmentDecisions:     make(chan bool, 1),
-		stop:                    make(chan struct{}),
-		done:                    make(chan struct{}),
-		pendingEnrollmentToken:  pendingToken,
-		pendingEnrollmentAccept: false,
+		client:  client,
+		state:   menuState{version: menuApplicationVersion, status: "Starting..."},
+		actions: make(chan int, 16),
+		stop:    make(chan struct{}),
+		done:    make(chan struct{}),
 	}
 
 	iconPath := bundledIconPath()

@@ -91,6 +91,7 @@ extension MultiVibeMenuBarApp {
                 return
             }
             DispatchQueue.main.async {
+                self?.refreshing = false
                 self?.summary = summary
                 self?.ingestNotifications(summary)
                 let forecastCrossingIsPending = summary.notifications?.contains {

@@ -1,4 +1,3 @@
-import { parseOpenModels } from '../../src/open-model-catalog.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { modelView, modelNeeds, relevantChoices, recommendedChoices } from '../../packages/ui/src/lib/modelGuidance.js';
@@ -6,14 +5,14 @@ import type { CatalogEntry, ModelRoute } from '../../packages/ui/src/lib/modelCa
 const route = (source: ModelRoute['source'], ready = true): ModelRoute => ({ source, ready, label: source, accountId: source, modelId: 'gpt-5' });
 const entry = (routes: ModelRoute[], id = 'gpt-5'): CatalogEntry => ({ id, name: id, routes });
 
-const evidenceFor = (ids: string[]) => ids.map(id => ({...parseOpenModels([{id:'publisher/model',private:false,gated:false,pipeline_tag:'text-generation',tags:['conversational','license:custom']}])[0],id}));
+const evidenceFor = (ids: string[]) => ids.map(id => ({ id, url: 'https://publisher.example/model', needs: modelNeeds.map(need => need.id) }));
 test('new users and invalid persisted values use guided mode', () => {
   for (const value of [null, undefined, '', 'beginner', '{}']) assert.equal(modelView(value), 'guided');
   assert.equal(modelView('expert'), 'expert'); assert.equal(modelView('compare'), 'compare');
 });
 test('each need has a curated usable choice without fabricated cost or speed', () => {
   for (const need of modelNeeds) {
-    const [choice] = relevantChoices([entry([route('provider')])], need.id, parseOpenModels([{id:'openai/gpt-5', private:false, gated:false, pipeline_tag:'text-generation',tags:['conversational','code','translation','summarization','license:custom']}]).map(m=>({...m,id:'gpt-5'})));
+    const [choice] = relevantChoices([entry([route('provider')])], need.id, evidenceFor(['gpt-5']));
     assert.equal(choice.access, 'usable'); assert.equal(choice.cost.amount, null);
     assert.equal(choice.cost.unit, null); assert.equal(choice.speed.kind, 'unknown');
     assert.ok(choice.evidence.source); assert.ok(choice.reason);

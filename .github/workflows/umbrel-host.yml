@@ -31,7 +31,6 @@ jobs:
       id-token: write
       attestations: write
     env:
-      MULTIVIBE_PROVIDER_ACCELERATOR: cpu
       IMAGE: ghcr.io/thibautrey/multivibe-host-umbrel
       ARCH: ${{ matrix.architecture }}
       PUBLISH: ${{ inputs.publish }}
@@ -63,7 +62,7 @@ jobs:
           command -v zstd
           npm ci --no-audit --no-fund
           npm --prefix web ci --no-audit --no-fund
-      - name: Validate CPU runtime and catalog
+      - name: Validate Host and release bundles
         run: |
           go -C host/application test -race ./...
           node --test scripts/umbrel/generate.test.mjs scripts/provider-host/provider-host-native-dependencies.test.mjs scripts/provider-host/verify-provider-host-archive-fixtures.test.mjs

@@ -1,9 +1,7 @@
 import { installModelsDevPricing } from "./model-pricing.js";
-import { COMMUNITY_BENCHMARKS_API_BASE_URL, COMMUNITY_BENCHMARKS_ENABLED, COMMUNITY_BENCHMARKS_STATE_PATH, COMMUNITY_BENCHMARK_STORE_PATH } from "./config.js";
+import { COMMUNITY_BENCHMARKS_API_BASE_URL, COMMUNITY_BENCHMARKS_ENABLED, COMMUNITY_BENCHMARKS_STATE_PATH } from "./config.js";
 import { createCommunityReportSharingWorker } from "./community-report-sharing.js";
 import { detectCommunityHost } from "./community-host-profile.js";
-import fs from "node:fs/promises";
-import { loadOpenModelCatalog } from './open-model-catalog.js';
 import { takeDeviceSignIn } from "./host/device-signin.js";
 import { getHostMenuProviderActivity, recordHostMenuTraceUsage } from "./host/menu-bar.js";
 import { automaticRouterManifest, createAutomaticRouter } from "./automatic-router.js";
@@ -407,9 +405,6 @@ const communityReportSharing = COMMUNITY_BENCHMARKS_ENABLED
       settingsStore: store,
       traceSource: traceManager,
       hostProvider: detectCommunityHost,
-      benchmarkStore: {
-        read: async () => JSON.parse(await fs.readFile(COMMUNITY_BENCHMARK_STORE_PATH, "utf8")),
-      },
       statePath: COMMUNITY_BENCHMARKS_STATE_PATH,
       apiBaseUrl: COMMUNITY_BENCHMARKS_API_BASE_URL,
     })
@@ -777,8 +772,6 @@ app.get("/{*path}", (req, res, next) => {
 Sentry.setupExpressErrorHandler(app);
 
 const server = http.createServer(app);
-const stopOpenCatalog = loadOpenModelCatalog.start();
-server.once("close", stopOpenCatalog);
 // The shipped Compose default is a well-known placeholder. Serving the admin
 // boundary with it would let anyone on the reachable network authenticate.
 const INSECURE_ADMIN_TOKENS = new Set(["change-me"]);

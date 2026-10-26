@@ -63,8 +63,6 @@ export const COMMUNITY_BENCHMARKS_API_BASE_URL =
   process.env.COMMUNITY_BENCHMARKS_API_BASE_URL ?? ANONYMOUS_USAGE_API_BASE_URL;
 export const COMMUNITY_BENCHMARKS_STATE_PATH =
   process.env.COMMUNITY_BENCHMARKS_STATE_PATH ?? "/data/community-report-state.json";
-export const COMMUNITY_BENCHMARK_STORE_PATH =
-  process.env.COMMUNITY_BENCHMARK_STORE_PATH ?? "/data/runtime-benchmark-store.json";
 export const MULTIVIBE_CLOUD_AUTH_BASE_URL =
   (process.env.MULTIVIBE_CLOUD_AUTH_BASE_URL ?? "https://auth.multivibe.cloud").replace(/\/+$/, "");
 export const MULTIVIBE_CLOUD_API_BASE_URL =

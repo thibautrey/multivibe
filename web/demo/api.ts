@@ -14,7 +14,6 @@ export function createDemoApi(now = Date.now(), workspace: "personal" | "owner" 
     const url = new URL(input, "http://demo.invalid");
     const path = url.pathname;
     // These POSTs normally run automatically. In the demo they only return fixtures.
-    if (method === "POST" && path === "/admin/local-runtimes/discover") return json({ accounts: [] });
     if (method === "POST" && path === "/admin/usage/refresh-stale") return json({ accounts: fixtures.accounts });
     if (method !== "GET" && method !== "HEAD") return json({ error: DEMO_READ_ONLY }, 403);
     if (path === "/admin/invoices" && workspace === "member") return json({ error: "Billing access is unavailable for this workspace." }, 403);
