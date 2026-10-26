@@ -581,7 +581,7 @@ struct ChatView: View {
         remoteChat.flatMap { chat in instances.harnesses[chat.machine]?.first { $0.id == chat.harness }?.name }
             ?? remoteChat.map { harnessDisplayName($0.harness) } ?? "Harness"
     }
-    private var localExecutionName: String { ModelExecution(manager.selectedModel).isLocal ? "Sur cet iPhone" : "Hermes Cloud" }
+    private var localExecutionName: String { ModelExecution(manager.selectedModel).isLocal ? "Sur cet iPhone" : "MultiVibe Cloud" }
     private var pickerModels: [ModelOption] {
         guard let chat = remoteChat else { return manager.models }
         let catalog = instances.modelCatalog[chat.machine + ":" + chat.harness] ?? []
@@ -840,7 +840,13 @@ struct ChatView: View {
             Label("Cet iPhone", systemImage: instances.selection == nil && ModelExecution(manager.selectedModel).isLocal ? "checkmark" : "iphone")
         }
         Button { selectLocalExecution(cloud: true) } label: {
-            Label("Hermes Cloud", systemImage: instances.selection == nil && !ModelExecution(manager.selectedModel).isLocal ? "checkmark" : "cloud")
+            HStack {
+                Image("MultiVibeMark").resizable().scaledToFit().frame(width: 18, height: 18)
+                Text("MultiVibe Cloud")
+                if instances.selection == nil && !ModelExecution(manager.selectedModel).isLocal {
+                    Image(systemName: "checkmark")
+                }
+            }
         }
         ForEach(instances.machines.filter { instances.paired.contains($0.id) }) { machine in
             Menu(machine.name) {
@@ -905,7 +911,7 @@ struct ChatView: View {
                                 selected: instances.selection == nil && ModelExecution(manager.selectedModel).isLocal) {
                 selectLocalExecution()
             }
-            welcomeExecutionRow(id: "hermes-cloud", name: "Hermes Cloud",
+            welcomeExecutionRow(id: "hermes-cloud", name: "MultiVibe Cloud",
                                 selected: instances.selection == nil && !ModelExecution(manager.selectedModel).isLocal) {
                 selectLocalExecution(cloud: true)
             }
@@ -2076,7 +2082,7 @@ private struct HarnessIdentityLogo: View {
             case "gemini-cli":
                 Image("ProviderGemini").resizable().renderingMode(.template).scaledToFit().padding(size * 0.2)
             case "hermes-cloud":
-                Image(systemName: "cloud.fill").resizable().scaledToFit().padding(size * 0.23)
+                Image("MultiVibeMark").resizable().scaledToFit().padding(size * 0.12)
             case "hermes-agent":
                 Image("HarnessHermes").resizable().scaledToFit().padding(size * 0.12)
             case "pi":
