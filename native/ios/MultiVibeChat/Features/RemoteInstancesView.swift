@@ -78,7 +78,7 @@ struct RemoteInstancesView: View {
                 instances.activate(manager.session?.accountId); await instances.reload(); confirming = instances.pendingPairing
 #if DEBUG
                 if ProcessInfo.processInfo.arguments.contains("-remote-instances-live-validation"),
-                   let machine = instances.machines.first(where: { $0.online && $0.supportsHarness && !instances.paired.contains($0.id) }) {
+                   let machine = instances.machines.first(where: { $0.online && $0.supportsHarness && $0.localEndpoint != nil && !instances.paired.contains($0.id) }) {
                     try? await instances.requestConnection(machine.id, name: UIDevice.current.name)
                 }
 #endif
