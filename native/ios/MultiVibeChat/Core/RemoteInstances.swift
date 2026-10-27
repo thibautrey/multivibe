@@ -684,7 +684,11 @@ struct RemoteModelPreference: Codable {
         if case APIError.server(_, "instance_device_expired") = error { return "Cette ancienne association a expiré. Autorisez une dernière fois cet iPhone sur le Mac." }
         if case APIError.server(_, "instance_session_expired") = error { return "Reconnectez votre compte MultiVibe." }
         if case APIError.authenticationRequired = error { return "Connectez votre compte MultiVibe." }
+#if DEBUG
+        return "Diagnostic d’appairage : \(String(reflecting: error))"
+#else
         return "Connexion au Mac interrompue. Reconnexion automatique en cours ; votre association est conservée."
+#endif
     }
     private func decodeHarnesses(_ value: HistoryJSON) throws -> [RemoteHarness] {
         try JSONDecoder().decode([RemoteHarness].self, from: JSONEncoder().encode(value.object?["harnesses"] ?? .array([])))
