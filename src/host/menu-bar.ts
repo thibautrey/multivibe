@@ -53,6 +53,7 @@ export type HostMenuBarProvider = {
   accounts: HostMenuBarAccount[];
   windows: Array<{ label: string; remainingPercent: number; accountCount: number }>;
   balance?: HostMenuBarProviderBalance;
+  preferBalance?: boolean;
 };
 
 /**
@@ -272,6 +273,27 @@ function balanceSnapshot(balance?: { remaining?: number; unit?: string }): HostM
   return { remaining, unit };
 }
 
+// Codex credits are additive units, not dollars or a subscription percentage.
+function accountBalance(account: Account): HostMenuBarBalance | undefined {
+  if (hostMenuProviderId(account) === "openai") {
+    const credits = account.usage?.codexCredits;
+    const remaining = finiteNumber(credits?.remaining);
+    if (remaining !== undefined && remaining > 0 && credits?.hasCredits !== false
+      && credits?.overageLimitReached !== true) return { remaining, unit: "credits" };
+    return undefined;
+  }
+  return balanceSnapshot(account.usage?.balance);
+}
+
+function preferOpenAICredits(accounts: Account[]): boolean {
+  const enabled = accounts.filter((account) => account.enabled);
+  return enabled.length > 0 && enabled.every((account) =>
+    account.usage?.quotaStatus !== "unsupported"
+    && [account.usage?.primary, account.usage?.secondary, account.usage?.monthly]
+      .some((window) => quotaWindow(window)?.remainingPercent === 0))
+    && enabled.some((account) => accountBalance(account) !== undefined);
+}
+
 /**
  * Credit-only providers report an absolute balance instead of quota windows.
  * Amounts are summed only when every account shares one unit; mixing currencies
@@ -279,7 +301,7 @@ function balanceSnapshot(balance?: { remaining?: number; unit?: string }): HostM
  */
 function providerBalance(accounts: Account[]): HostMenuBarProviderBalance | undefined {
   const entries = accounts.flatMap((account) => {
-    const balance = balanceSnapshot(account.usage?.balance);
+    const balance = accountBalance(account);
     return balance ? [balance] : [];
   });
   if (!entries.length) return undefined;
@@ -350,7 +372,7 @@ export function buildHostMenuBarAccountsSummary(
     const fiveHour = quotaWindow(account.usage?.primary);
     const weekly = quotaWindow(account.usage?.secondary);
     const monthly = quotaWindow(account.usage?.monthly);
-    const balance = balanceSnapshot(account.usage?.balance);
+    const balance = accountBalance(account);
     const fetchedAt = finiteNumber(account.usage?.fetchedAt);
     const hasQuota = Boolean(fiveHour || weekly || monthly || balance);
     return {
@@ -379,7 +401,8 @@ export function buildHostMenuBarAccountsSummary(
   }
   const providers = [...providerGroups].map(([id, group]) => ({
     id, displayName: providerName(group[0]), accounts: mapAccounts(group), windows: providerWindows(group),
-    balance: providerBalance(group),
+    balance: providerBalance(id === "openai" ? group.filter((account) => account.enabled) : group),
+    ...(id === "openai" && preferOpenAICredits(group) ? { preferBalance: true } : {}),
   }));
   const fiveHourRemainingPercent = averageRemaining(accounts.map((account) => account.fiveHour));
   const weeklyRemainingPercent = averageRemaining(accounts.map((account) => account.weekly));

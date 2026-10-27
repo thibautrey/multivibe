@@ -29,3 +29,13 @@ func decimalText(_ value: Double, minimumFractionDigits: Int, maximumFractionDig
     formatter.maximumFractionDigits = maximumFractionDigits
     return formatter.string(from: NSNumber(value: value)) ?? String(value)
 }
+
+/// Keep subscription windows visible in the popover while showing spendable
+/// credits in the status item once all subscription accounts are exhausted.
+func providerQuotaText(_ provider: ProviderQuota) -> String {
+    if let balance = provider.balance, provider.preferBalance == true || provider.windows.isEmpty {
+        return creditBalanceText(remaining: balance.remaining, unit: balance.unit)
+    }
+    let values = provider.windows.map { "\($0.label):\(Int($0.remainingPercent.rounded()))%" }.joined(separator: "  ")
+    return values.isEmpty ? "Quota unavailable" : values
+}

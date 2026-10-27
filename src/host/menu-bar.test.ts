@@ -358,3 +358,42 @@ test("completed upstream traces resolve exact SDK accounts and exclude failed or
   activity.record({ provider: "openai" }, 3000);
   assert.equal(activity.get(3000)?.providerId, "openai");
 });
+
+function codexAccount(id: string, primary: number, secondary: number, remaining = 25): Account {
+  return { id, provider: "openai", enabled: true, accessToken: "secret",
+    usage: { fetchedAt: 1, quotaStatus: "available", primary: { usedPercent: primary },
+      secondary: { usedPercent: secondary }, codexCredits: { remaining, hasCredits: true } } };
+}
+
+test("OpenAI menu prefers summed enabled credits when each account has an exhausted window", () => {
+  const paused = { ...codexAccount("paused", 0, 0, 1000), enabled: false };
+  const provider = buildHostMenuBarAccountsSummary([
+    codexAccount("a", 100, 30, 12.5), codexAccount("b", 10, 100, 20), paused,
+  ]).providers[0];
+  assert.equal(provider.preferBalance, true);
+  assert.deepEqual(provider.balance, { remaining: 32.5, unit: "credits", accountCount: 2 });
+  assert.equal(provider.windows.length, 2);
+  assert.deepEqual(provider.accounts[0].balance, { remaining: 12.5, unit: "credits" });
+});
+
+test("OpenAI menu retains quotas while an enabled account has headroom or unknown quota", () => {
+  for (const other of [codexAccount("ready", 99, 99),
+    { ...codexAccount("unknown", 100, 100), usage: { fetchedAt: 1 } }]) {
+    const provider = buildHostMenuBarAccountsSummary([codexAccount("exhausted", 100, 100), other]).providers[0];
+    assert.equal(provider.preferBalance, undefined);
+  }
+});
+
+test("OpenAI menu ignores unavailable, invalid and nonspendable credit balances", () => {
+  for (const credits of [undefined, { remaining: 0 }, { remaining: -1 },
+    { remaining: NaN }, { remaining: Infinity }, { remaining: 5, hasCredits: false },
+    { remaining: 5, overageLimitReached: true }]) {
+    const account = codexAccount("a", 100, 100);
+    account.usage!.codexCredits = credits;
+    const provider = buildHostMenuBarAccountsSummary([account]).providers[0];
+    assert.equal(provider.preferBalance, undefined);
+    assert.equal(provider.balance, undefined);
+  }
+  const paused = { ...codexAccount("paused", 100, 100), enabled: false };
+  assert.equal(buildHostMenuBarAccountsSummary([paused]).providers[0].preferBalance, undefined);
+});
