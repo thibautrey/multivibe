@@ -570,13 +570,20 @@ struct RemoteModelPreference: Codable {
         do {
             let session = try await ConversationManager.shared.validSession(); try check(owner, epoch)
             let result = try await RemoteInstanceAPI.shared.machines(token: session.accessToken); try check(owner, epoch)
-            machines = result
+            machines = Self.preservingLANEndpoints(result, previous: machines)
             paired = Set(try result.compactMap { machine in
                 guard let auth = try RemoteAuthorizationStore.load(owner, machine.id), auth.pendingUntil == nil else { return nil }
                 return auth.trustToken != nil || auth.expiresAt > Date().timeIntervalSince1970 * 1000 ? machine.id : nil
             })
             error = nil
         } catch is CancellationError { } catch { if generation == epoch { self.error = "Instances indisponibles. Vérifiez votre compte et la connexion réseau." } }
+    }
+    static func preservingLANEndpoints(_ incoming: [RemoteMachine], previous: [RemoteMachine]) -> [RemoteMachine] {
+        let known = Dictionary(previous.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return incoming.map { value in
+            guard value.online, value.localEndpoint == nil, let endpoint = known[value.id]?.localEndpoint else { return value }
+            var value = value; value.lanPublicKey = endpoint.pin; value.lanHost = endpoint.host; value.lanPort = endpoint.port; return value
+        }
     }
     private func authorizedFields(_ machine: String, operation: String) async throws -> (NativeSession, [String: HistoryJSON]) {
         guard let owner = account else { throw APIError.authenticationRequired }; let epoch = generation
