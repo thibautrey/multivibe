@@ -2646,7 +2646,8 @@ private struct AgentThinkingGlow: View {
             let path = RoundedRectangle(cornerRadius: radius, style: .continuous).path(in: rect)
 
             ZStack {
-                path.stroke(MultiVibeTheme.accent.opacity(0.16), lineWidth: 2)
+                path.stroke(MultiVibeTheme.accent.opacity(reduceTransparency ? 0.16 : 0.10), lineWidth: 2)
+                    .blur(radius: reduceTransparency ? 0 : 3)
 
                 TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: reduceMotion)) { timeline in
                     let time = reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate
@@ -2658,7 +2659,7 @@ private struct AgentThinkingGlow: View {
                         let phase = -travel * perimeter
                         let segment = perimeter * 0.20
                         let gap = perimeter - segment
-                        let segmentStyle = StrokeStyle(lineWidth: reduceTransparency ? 6 : 5, lineCap: .round,
+                        let segmentStyle = StrokeStyle(lineWidth: reduceTransparency ? 6 : 8, lineCap: .round,
                             lineJoin: .round, dash: [segment, gap], dashPhase: phase)
 
                         if !reduceTransparency {
@@ -2670,11 +2671,12 @@ private struct AgentThinkingGlow: View {
                             }
                         }
 
-                        context.stroke(path, with: .color(MultiVibeTheme.accent), style: segmentStyle)
-                        context.stroke(path, with: .color(MultiVibeTheme.warmAccent),
-                            style: StrokeStyle(lineWidth: reduceTransparency ? 5 : 4, lineCap: .round,
-                                lineJoin: .round, dash: [perimeter * 0.035, perimeter * 0.965],
-                                dashPhase: phase - segment * 0.78))
+                        // Diffuse the center as well as the outer halo so the moving segment
+                        // reads as light rather than a sharply outlined stroke.
+                        context.drawLayer { light in
+                            if !reduceTransparency { light.addFilter(.blur(radius: 3)) }
+                            light.stroke(path, with: .color(MultiVibeTheme.accent), style: segmentStyle)
+                        }
                     }
                 }
             }
