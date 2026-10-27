@@ -292,3 +292,9 @@ test('durable session rotation preserves in-flight access and distinguishes sess
  f.advance(24*3600_000+1);
  await assert.rejects(f.send({...old,operation:'catalog'}),/renewal required/);
 });
+test('expired submissions cannot reopen a request and late cancellation revokes a missed approval',async t=>{
+ const f=await fixture(t),request=durableRequest();await f.send(request);f.advance(300_001);
+ assert.equal(JSON.parse(await f.send(request)).state,'expired');assert.equal(f.service.status().requests.length,0);
+ const approved=durableRequest();await f.send(approved);f.service.decidePairing(approved.requestId,true);f.advance(300_001);
+ assert.equal(JSON.parse(await f.send({...approved,operation:'pair-cancel'})).state,'cancelled');assert.equal(f.service.status().devices.length,0);
+});
