@@ -213,6 +213,12 @@ extension RemoteInstanceTests {
         }
         machine.lanHost = "mac.local"; machine.lanPort = 0; XCTAssertThrowsError(try RemoteInstanceAPI.lanURL(machine))
         machine.lanPort = 65536; XCTAssertThrowsError(try RemoteInstanceAPI.lanURL(machine))
+
+        var advertised = RemoteMachine(id: UUID().uuidString, name: "Mac", online: true,
+            models: [.init(id: "multivibe/instance-lan-v1", name: String(repeating: "A", count: 43) + " 42424 macbook-pro.local")])
+        XCTAssertEqual(try RemoteInstanceAPI.lanURL(advertised).absoluteString, "https://macbook-pro.local:42424/v1")
+        advertised = RemoteMachine(id: UUID().uuidString, name: "Mac", online: true, models: [.init(id: "multivibe/instance-lan-v1", name: "malformed")])
+        XCTAssertThrowsError(try RemoteInstanceAPI.lanURL(advertised))
     }
 
 }
