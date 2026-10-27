@@ -3,6 +3,7 @@ import CryptoKit
 import Security
 import Network
 import Observation
+import OSLog
 
 struct RemoteMachine: Codable, Identifiable, Sendable {
     struct Model: Codable, Sendable { let id: String }
@@ -677,6 +678,7 @@ struct RemoteModelPreference: Codable {
         }
     }
     static func connectionError(_ error: Error) -> String {
+        Logger(subsystem: NativeApplicationIdentity.identifier("remote-instances"), category: "pairing").error("Connection operation failed: \(String(reflecting: error), privacy: .public)")
         if case APIError.server(_, "instance_update_required") = error { return "Mettez MultiVibe à jour sur le Mac, ou utilisez le QR dans les options avancées." }
         if case APIError.server(_, "instance_device_revoked") = error { return "L’accès de cet iPhone a été révoqué. Connectez-le à nouveau depuis le Mac." }
         if case APIError.server(_, "instance_device_expired") = error { return "Cette ancienne association a expiré. Autorisez une dernière fois cet iPhone sur le Mac." }
