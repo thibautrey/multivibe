@@ -971,9 +971,15 @@ private struct NativeChatSuggestionEditor: View {
         }.frame(maxWidth: .infinity).transition(.opacity)
     }
     private var desiredFeatureCatalogKey: String {
-        [store.selection?.uuidString ?? "", harness.wrappedValue, store.current?.executionTargetID ?? "local",
-         store.current?.workspace ?? "", store.current?.runtimeSessionID ?? "", store.current?.authMode ?? "native",
-         store.current?.nativeModelID ?? store.current?.model ?? ""].joined(separator: "|")
+        let conversation = store.current
+        let selection: String = store.selection?.uuidString ?? ""
+        let target: String = conversation?.executionTargetID ?? "local"
+        let workspace: String = conversation?.workspace ?? ""
+        let session: String = conversation?.runtimeSessionID ?? ""
+        let authMode: String = conversation?.authMode ?? "native"
+        let model: String = conversation?.nativeModelID ?? conversation?.model ?? ""
+        let components: [String] = [selection, harness.wrappedValue, target, workspace, session, authMode, model]
+        return components.joined(separator: "|")
     }
     private var addMenu: some View {
         NativeHarnessAddMenu(

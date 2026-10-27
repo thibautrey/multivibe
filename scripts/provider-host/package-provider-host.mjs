@@ -117,16 +117,17 @@ export function commandInvocation(program, args, runtime = {}) {
   };
 }
 
-async function command(program, args, options = {}) {
+export async function command(program, args, options = {}) {
   return await new Promise((resolve, reject) => {
     const invocation = commandInvocation(program, args);
     const child = spawn(invocation.program, invocation.args, {
       cwd: options.cwd ?? repositoryRoot,
       env: options.env ?? process.env,
-      stdio: options.capture ? ["ignore", "pipe", "inherit"] : "inherit",
+      stdio: options.capture ? ["ignore", "pipe", "pipe"] : "inherit",
       shell: false,
     });
     let output = "";
+    let stderr = "";
     let outputExceeded = false;
     if (options.capture) child.stdout.setEncoding("utf8").on("data", (chunk) => {
       output += chunk;
@@ -135,11 +136,19 @@ async function command(program, args, options = {}) {
         child.kill("SIGKILL");
       }
     });
+    if (options.capture) child.stderr.setEncoding("utf8").on("data", (chunk) => {
+      stderr += chunk;
+      process.stderr.write(chunk);
+      if (Buffer.byteLength(stderr) > (options.captureLimit ?? maximumCommandOutputBytes)) {
+        outputExceeded = true;
+        child.kill("SIGKILL");
+      }
+    });
     child.once("error", reject);
     child.once("close", (code, signal) => {
       if (outputExceeded) reject(new Error(`${program} produced excessive output`));
       else if (code === 0) resolve(output.trim());
-      else reject(Object.assign(new Error(`${program} failed with ${signal ?? `exit ${code}`}`), { code, signal, stdout: output }));
+      else reject(Object.assign(new Error(`${program} failed with ${signal ?? `exit ${code}`}`), { code, signal, stdout: output, stderr }));
     });
   });
 }
