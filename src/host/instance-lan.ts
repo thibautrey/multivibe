@@ -1,4 +1,4 @@
-import {createHash,X509Certificate} from 'node:crypto';
+import {createHash,createPrivateKey,createPublicKey,X509Certificate} from 'node:crypto';
 import fs from 'node:fs';
 import https from 'node:https';
 import type {IncomingMessage,ServerResponse} from 'node:http';
@@ -16,13 +16,23 @@ export function localLANHost():string {
 }
 function credentials(directory:string):{key:string;cert:string} {
  const keyFile=path.join(directory,'instance-lan-key.pem'),certFile=path.join(directory,'instance-lan-cert.pem');
- if(!fs.existsSync(keyFile)||!fs.existsSync(certFile)){
+ let regenerate=!fs.existsSync(keyFile)||!fs.existsSync(certFile);
+ if(!regenerate){
+  try {
+   const certificate=new X509Certificate(fs.readFileSync(certFile,'utf8'));
+   const certificateKey=certificate.publicKey.export({format:'der',type:'spki'}),privateKey=createPublicKey(createPrivateKey(fs.readFileSync(keyFile,'utf8'))).export({format:'der',type:'spki'});
+   regenerate=!certificate.subjectAltName||!certificateKey.equals(privateKey);
+  }
+  catch {regenerate=true;}
+ }
+ if(regenerate){
   fs.mkdirSync(directory,{recursive:true,mode:0o700});const temporary=path.join(directory,'.instance-lan-'+process.pid+'-'+Date.now());
   const key=temporary+'.key',cert=temporary+'.crt';
-  const result=spawnSync('/usr/bin/openssl',['req','-x509','-newkey','ec','-pkeyopt','ec_paramgen_curve:P-256','-sha256','-nodes','-keyout',key,'-out',cert,'-subj','/CN=MultiVibe LAN','-days','3650'],{stdio:'ignore',timeout:10000});
+  const result=spawnSync('/usr/bin/openssl',['req','-x509','-newkey','ec','-pkeyopt','ec_paramgen_curve:P-256','-pkeyopt','ec_param_enc:named_curve','-sha256','-nodes','-keyout',key,'-out',cert,'-subj','/CN=MultiVibe LAN','-addext','basicConstraints=critical,CA:FALSE','-addext','keyUsage=critical,digitalSignature','-addext','extendedKeyUsage=serverAuth','-addext','subjectAltName=DNS:multivibe.local','-days','3650'],{stdio:'ignore',timeout:10000});
   if(result.status!==0)throw Error('Unable to create the local instance identity');
   fs.chmodSync(key,0o600);fs.chmodSync(cert,0o600);fs.renameSync(key,keyFile);fs.renameSync(cert,certFile);
  }
+ fs.chmodSync(keyFile,0o600);fs.chmodSync(certFile,0o600);
  const key=fs.readFileSync(keyFile,'utf8'),cert=fs.readFileSync(certFile,'utf8');
  if(certificatePin(cert).length!==43)throw Error('Invalid local instance identity');return {key,cert};
 }
