@@ -683,6 +683,10 @@ struct RemoteModelPreference: Codable {
         if case APIError.server(_, "instance_device_revoked") = error { return "L’accès de cet iPhone a été révoqué. Connectez-le à nouveau depuis le Mac." }
         if case APIError.server(_, "instance_device_expired") = error { return "Cette ancienne association a expiré. Autorisez une dernière fois cet iPhone sur le Mac." }
         if case APIError.server(_, "instance_session_expired") = error { return "Reconnectez votre compte MultiVibe." }
+        if case APIError.server(402, _) = error { return "Le Relay du compte n’a pas de crédits disponibles. Rechargez le compte puis réessayez." }
+        if case APIError.server(429, _) = error { return "Le Relay reçoit trop de demandes. Nouvelle tentative automatique dans quelques secondes." }
+        if case APIError.server(503, _) = error { return "Le Relay est temporairement indisponible. Votre demande sera reprise automatiquement." }
+        if let error = error as? URLError, error.code == .notConnectedToInternet { return "L’iPhone est hors ligne. La connexion reprendra automatiquement." }
         if case APIError.authenticationRequired = error { return "Connectez votre compte MultiVibe." }
 #if DEBUG
         return "Diagnostic d’appairage : \(String(reflecting: error))"
