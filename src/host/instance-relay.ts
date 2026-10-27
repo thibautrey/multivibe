@@ -145,7 +145,8 @@ export class InstanceRelay {
  }
  private device(e:Envelope):Device {
   const d=this.state?.devices.find(d=>d.id===e.deviceId),digest=hash(typeof e.deviceToken==='string'?e.deviceToken:'');
-  if(!d||d.expiresAt<=this.clock()||!(equal(d.digest,digest)||d.previous&&d.previous.expiresAt>this.clock()&&equal(d.previous.digest,digest)))fail('Device authorization expired or revoked',401);
+  if(!d)fail('Device authorization expired or revoked',401);
+  if(d.expiresAt<=this.clock()||!(equal(d.digest,digest)||d.previous&&d.previous.expiresAt>this.clock()&&equal(d.previous.digest,digest)))fail(d.trustDigest?'Device session renewal required':'Device authorization expired or revoked',401);
   return d;
  }
  private authorize(e:Envelope):{deviceId:string;deviceToken:string;expiresAt:number}{
@@ -166,7 +167,9 @@ export class InstanceRelay {
    if(!/^[-_A-Za-z0-9]{43}$/.test(e.deviceToken??''))fail('Invalid device token');
    // The client saves its next token before sending. Retrying after restart
    // installs the same digest; no replacement plaintext is persisted by Host.
-   d.digest=hash(e.deviceToken!);d.previous=undefined;d.expiresAt=this.clock()+24*3600_000;
+   const nextDigest=hash(e.deviceToken!);
+   if(!equal(d.digest,nextDigest)){d.previous={digest:d.digest,expiresAt:d.expiresAt};d.digest=nextDigest;}
+   d.expiresAt=this.clock()+24*3600_000;
    this.persist();return {deviceId:d.id,deviceToken:e.deviceToken!,expiresAt:d.expiresAt};
   }
   const d=this.device(e);const previous=this.rotations.get(d.id);
@@ -273,7 +276,7 @@ export class InstanceRelay {
   const timer=setInterval(()=>{if(checking)return;checking=true;void this.machine('jobs/'+job.id+'/status',undefined,execution).then(v=>{if(v.state!=='running')local.abort();},()=>{}).finally(()=>{checking=false;});},2000);timer.unref();
   const upload:Upload=async(data,terminal=false,status=200,contentType='application/json')=>{total+=Buffer.byteLength(data);if(total>8*1024*1024)fail('Instance response exceeds limit',413);const chunks=instanceRelayChunks(data);for(const [index,chunk] of chunks.entries()){if(seq>2047)fail('Instance response exceeds limit',413);await this.machine('jobs/'+job.id+'/chunks',{sequence:seq++,data:chunk,terminal:terminal&&index===chunks.length-1,status,contentType},execution);}};
   try{await this.dispatch(job.body,upload,execution);}
-  catch(error:any){if(seq===0&&!execution.aborted)await upload(JSON.stringify({error:'Instance operation refused',code:error.status===401&&/Device/.test(error.message)?'instance_device_revoked':error.status===400?'instance_update_required':'instance_operation_refused',status:error.status??502}),true,error.status??502);else await this.machine('jobs/'+job.id+'/fail',{},AbortSignal.timeout(5000)).catch(()=>{});}
+  catch(error:any){if(seq===0&&!execution.aborted)await upload(JSON.stringify({error:'Instance operation refused',code:error.status===401&&/renewal required/.test(error.message)?'instance_device_renew_required':error.status===401&&/Device/.test(error.message)?'instance_device_revoked':error.status===400?'instance_update_required':'instance_operation_refused',status:error.status??502}),true,error.status??502);else await this.machine('jobs/'+job.id+'/fail',{},AbortSignal.timeout(5000)).catch(()=>{});}
   finally{clearInterval(timer);local.abort();}
  }
 }

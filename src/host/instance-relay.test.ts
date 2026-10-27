@@ -284,3 +284,11 @@ test('failed approval persistence rolls back access instead of silently authoriz
  } finally {fs.rmdirSync(f.file);fs.renameSync(backup,f.file);}
  f.service.decidePairing(request.requestId,true);assert.equal(f.service.status().devices.length,1);
 });
+test('durable session rotation preserves in-flight access and distinguishes session expiry from revocation',async t=>{
+ const f=await fixture(t),request=durableRequest();await f.send(request);f.service.decidePairing(request.requestId,true);
+ const old={deviceId:request.requestId,deviceToken:request.deviceToken};
+ await f.send({...old,operation:'renew',trustToken:request.trustToken,deviceToken:randomBytes(32).toString('base64url')});
+ assert.equal(JSON.parse(await f.send({...old,operation:'catalog'})).name,'Fixture Mac');
+ f.advance(24*3600_000+1);
+ await assert.rejects(f.send({...old,operation:'catalog'}),/renewal required/);
+});
