@@ -119,16 +119,22 @@ enum RemoteAuthorizationStore {
     }
 }
 
-private final class RemoteLANTrust: NSObject, URLSessionDelegate, @unchecked Sendable {
+private final class RemoteLANTrust: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     let pin: Data
     init?(_ value: String) { guard let data = Data(base64URLEncoded: value), data.count == 32 else { return nil }; pin = data }
-    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+    private func resolve(_ challenge: URLAuthenticationChallenge, completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
               let trust = challenge.protectionSpace.serverTrust,
               let certificate = SecTrustGetCertificateAtIndex(trust, 0) else { completionHandler(.cancelAuthenticationChallenge, nil); return }
         let digest = Data(SHA256.hash(data: SecCertificateCopyData(certificate) as Data))
         guard digest == pin else { completionHandler(.cancelAuthenticationChallenge, nil); return }
         completionHandler(.useCredential, URLCredential(trust: trust))
+    }
+    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        resolve(challenge, completionHandler: completionHandler)
+    }
+    func urlSession(_ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        resolve(challenge, completionHandler: completionHandler)
     }
 }
 private extension Data {
