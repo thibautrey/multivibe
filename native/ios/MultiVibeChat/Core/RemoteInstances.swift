@@ -688,11 +688,7 @@ struct RemoteModelPreference: Codable {
         if case APIError.server(503, _) = error { return "Le Relay est temporairement indisponible. Votre demande sera reprise automatiquement." }
         if let error = error as? URLError, error.code == .notConnectedToInternet { return "L’iPhone est hors ligne. La connexion reprendra automatiquement." }
         if case APIError.authenticationRequired = error { return "Connectez votre compte MultiVibe." }
-#if DEBUG
-        return "Diagnostic d’appairage : \(String(reflecting: error))"
-#else
         return "Connexion au Mac interrompue. Reconnexion automatique en cours ; votre association est conservée."
-#endif
     }
     private func decodeHarnesses(_ value: HistoryJSON) throws -> [RemoteHarness] {
         try JSONDecoder().decode([RemoteHarness].self, from: JSONEncoder().encode(value.object?["harnesses"] ?? .array([])))
