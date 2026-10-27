@@ -311,7 +311,7 @@ async function productionApplication(destination, selectedTarget) {
   await copySource(path.join(repositoryRoot, "dist"), path.join(destination, "dist"));
   await copySource(path.join(repositoryRoot, "web-dist"), path.join(destination, "web-dist"));
   await mkdir(path.join(destination, "scripts"), { recursive: true, mode: 0o755 });
-  for (const file of ["codex-project-hook.mjs", "install-codex-project-hook.mjs", "install-codex-project-hook.sh"]) {
+  for (const file of ["codex-project-hook.mjs", "install-codex-project-hook.mjs", "install-codex-project-hook.sh", "codex-desktop-bridge.mjs"]) {
     await cp(path.join(repositoryRoot, "scripts", file), path.join(destination, "scripts", file));
   }
   const nativeSource = path.join(repositoryRoot, "native", "multivibe-proxy-core.node");

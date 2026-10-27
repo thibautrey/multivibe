@@ -1,7 +1,9 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import http from "node:http";
+import type { AddressInfo, Socket } from "node:net";
 
 const MAX_CONFIG_BYTES = 1024 * 1024;
 const STATE_SCHEMA_VERSION = "multivibe-host-harness-integrations-v1";
@@ -53,6 +55,7 @@ export type HostHarnessView = {
   projectTracking?: "installed" | "not-installed" | "unavailable";
   effectiveProvider?: string;
   effectiveBaseUrl?: string;
+  codexConnection?: { authentication: "ready" | "expired" | "sign-in-required"; relay: "running" | "unavailable"; restartRequired: true };
   /** Codex-only: whether the cost-optimized coding profile is enabled. */
   codexCodingEconomy?: { enabled: boolean; workerModel?: string; reasoningEffort?: string };
 };
@@ -68,6 +71,7 @@ export type HarnessContext = {
   /** Provider-published display names keyed by model id. */
   modelNames?: Record<string, string>;
   homeDirectory?: string;
+  codexBridgeUrl?: string;
   /** Present only when the operator enabled the cost-optimized coding profile. */
   codingEconomy?: { workerModel: string; reasoningEffort?: string };
 };
@@ -81,6 +85,7 @@ type HarnessInspection = {
 };
 
 export type HarnessConfiguration = {
+  codexDesktop?: boolean;
   relativePath: string;
   revision?: number;
   driftScope?: "file" | "managed";
@@ -88,7 +93,7 @@ export type HarnessConfiguration = {
   prepare?: (context: HarnessContext) => Promise<Partial<HarnessContext>>;
   auxiliaryFiles?: (context: HarnessContext) => Array<{ relativePath: string; content: string; mode?: number }>;
   isConfigured: (current: string, baseUrl: string) => boolean;
-  inspect?: (current: string, baseUrl: string, expectedApiKey?: string, homeDirectory?: string) => HarnessInspection;
+  inspect?: (current: string, baseUrl: string, expectedApiKey?: string, homeDirectory?: string, codexBridgeUrl?: string) => HarnessInspection;
 };
 
 export type HostHarnessDefinition = {
@@ -111,6 +116,7 @@ type InstallationState = {
   installedAt: number;
   configurationRevision?: number;
   auxiliaryFiles?: ManagedFileState[];
+  codexBridgePort?: number;
 };
 
 type ManagedFileState = {
@@ -395,7 +401,7 @@ function matchTomlTableHeader(line: string): string | undefined {
   return match?.[1].trim();
 }
 
-function parseCodexToml(current: string, expectedBaseUrl: string, expectedApiKey?: string): CodexTomlInspection {
+function parseCodexToml(current: string, expectedBaseUrl: string, expectedApiKey?: string, expectedBridgeUrl?: string): CodexTomlInspection {
   let table = "";
   let rootProvider: string | undefined;
   let openaiBaseUrl: string | undefined;
@@ -403,6 +409,7 @@ function parseCodexToml(current: string, expectedBaseUrl: string, expectedApiKey
   let providerBearerToken: string | undefined;
   let providerWireApi: string | undefined;
   let rootModelCatalogJson: string | undefined;
+  let credentialStore: string | undefined;
   const profileProviders: Record<string, string> = {};
   const errors: string[] = [];
   const seen = new Set<string>();
@@ -435,6 +442,10 @@ function parseCodexToml(current: string, expectedBaseUrl: string, expectedApiKey
       if (seen.has("root.model_catalog_json")) errors.push("duplicate root model_catalog_json");
       seen.add("root.model_catalog_json");
       rootModelCatalogJson = value;
+    } else if (table === "" && key === "cli_auth_credentials_store") {
+      if (seen.has("root.cli_auth_credentials_store")) errors.push("duplicate root cli_auth_credentials_store");
+      seen.add("root.cli_auth_credentials_store");
+      credentialStore = value;
     } else if (table.startsWith("profiles.") && key === "model_provider") {
       const profile = table.slice("profiles.".length);
       const seenKey = `profile.${profile}.model_provider`;
@@ -457,9 +468,12 @@ function parseCodexToml(current: string, expectedBaseUrl: string, expectedApiKey
   }
 
   const profileOverrides = Object.entries(profileProviders)
-    .filter(([, provider]) => provider !== "multivibe")
+    .filter(([, provider]) => provider !== "openai")
     .map(([profile, provider]) => `${profile}=${provider}`);
   const configurationIssues = [
+    ...(rootProvider !== "openai" ? ["Repair Codex to retain the ChatGPT sign-in and native Voice"] : []),
+    ...(!expectedBridgeUrl || openaiBaseUrl !== expectedBridgeUrl ? ["Codex does not point to its managed local relay"] : []),
+    ...(credentialStore !== "file" ? ["Codex must use its local ChatGPT sign-in file for the managed relay"] : []),
     ...(!providerBearerToken || (expectedApiKey !== undefined && providerBearerToken !== expectedApiKey)
       ? ["Codex MultiVibe proxy API key is missing or does not match the managed credential"]
       : []),
@@ -471,7 +485,8 @@ function parseCodexToml(current: string, expectedBaseUrl: string, expectedApiKey
     ? configurationIssues.join("; ")
     : undefined;
   return {
-    configured: errors.length === 0 && rootProvider === "multivibe" &&
+    configured: errors.length === 0 && rootProvider === "openai" && credentialStore === "file" &&
+      Boolean(expectedBridgeUrl) && openaiBaseUrl === expectedBridgeUrl &&
       providerBaseUrl === expectedBaseUrl && providerWireApi === "responses" &&
       Boolean(providerBearerToken) && (expectedApiKey === undefined || providerBearerToken === expectedApiKey) &&
       Boolean(rootModelCatalogJson),
@@ -484,8 +499,8 @@ function parseCodexToml(current: string, expectedBaseUrl: string, expectedApiKey
   };
 }
 
-function inspectCodexToml(current: string, baseUrl: string, expectedApiKey?: string, homeDirectory?: string): HarnessInspection {
-  const parsed = parseCodexToml(current, `${baseUrl}/v1`, expectedApiKey);
+function inspectCodexToml(current: string, baseUrl: string, expectedApiKey?: string, homeDirectory?: string, codexBridgeUrl?: string): HarnessInspection {
+  const parsed = parseCodexToml(current, `${baseUrl}/v1`, expectedApiKey, codexBridgeUrl);
   const expectedCatalog = homeDirectory ? path.join(homeDirectory, CODEX_MODEL_CATALOG_RELATIVE_PATH) : undefined;
   return {
     ...parsed,
@@ -541,7 +556,7 @@ function stripCodexManagedContent(value: string): string {
     if (insideManagedBlock) {
       if (blockKind === "agents" && /^\s*(?:\[agents\]\s*$|default_subagent_(?:model|reasoning_effort)\s*=)/.test(line)) continue;
       if (blockKind !== "agents" && /^\s*model_provider\s*=/.test(line)) continue;
-      if (blockKind !== "agents" && /^\s*(?:model_catalog_json|openai_base_url)\s*=/.test(line)) continue;
+      if (blockKind !== "agents" && /^\s*(?:model_catalog_json|openai_base_url|cli_auth_credentials_store)\s*=/.test(line)) continue;
       if (blockKind !== "agents" && /^\s*developer_instructions\s*=/.test(line)) {
         const assigned = line.slice(line.indexOf("=") + 1).trim();
         if (assigned === jsonString(CODEX_CODING_ECONOMY_GUIDANCE)) continue;
@@ -555,8 +570,8 @@ function stripCodexManagedContent(value: string): string {
     }
     if (skippingProvider) continue;
     if (table === "" && /^\s*model_provider\s*=/.test(line)) continue;
-    if (table === "" && /^\s*(?:model_catalog_json|openai_base_url)\s*=/.test(line)) continue;
-    if (insideManagedBlock && /^\s*(?:model_provider|model_catalog_json|openai_base_url)\s*=/.test(line)) continue;
+    if (table === "" && /^\s*(?:model_catalog_json|openai_base_url|cli_auth_credentials_store)\s*=/.test(line)) continue;
+    if (insideManagedBlock && /^\s*(?:model_provider|model_catalog_json|openai_base_url|cli_auth_credentials_store)\s*=/.test(line)) continue;
     output.push(line);
   }
   if (insideManagedBlock) {
@@ -568,17 +583,21 @@ function stripCodexManagedContent(value: string): string {
 function renderCodexToml(current: string | null, context: HarnessContext): string {
   const value = stripCodexManagedContent(current ?? "").trim();
   if (!context.homeDirectory) throw new HostHarnessIntegrationError("Codex home directory is unavailable", 500);
+  if (!context.codexBridgeUrl) throw new HostHarnessIntegrationError("Codex local relay is unavailable", 503);
   const catalogPath = path.join(context.homeDirectory, CODEX_MODEL_CATALOG_RELATIVE_PATH);
   const codingEconomy = context.codingEconomy;
   // Root keys must precede every table header, so the delegation guidance is
   // emitted with the root block while `[agents]` is appended as a table.
   const rootKeys = [
-    'model_provider = "multivibe"',
+    'model_provider = "openai"',
+    `openai_base_url = ${jsonString(context.codexBridgeUrl)}`,
+    'cli_auth_credentials_store = "file"',
     `model_catalog_json = ${jsonString(catalogPath)}`,
     ...(codingEconomy ? [`developer_instructions = ${jsonString(CODEX_CODING_ECONOMY_GUIDANCE)}`] : []),
   ].join("\n");
   const rootBlock = `${CODEX_ROOT_BLOCK_START}\n${rootKeys}\n${CODEX_ROOT_BLOCK_END}`;
-  // The built-in OpenAI provider uses OpenAI login credentials, not the proxy key.
+  // This inactive provider entry is the relay's credential source. The active
+  // built-in provider keeps the real ChatGPT identity and its Voice permissions.
   const providerBlock = `${CODEX_PROVIDER_BLOCK_START}\n[model_providers.multivibe]\nname = "MultiVibe Host"\nbase_url = ${jsonString(`${context.baseUrl}/v1`)}\nwire_api = "responses"\nexperimental_bearer_token = ${jsonString(context.apiKey)}\n${CODEX_PROVIDER_BLOCK_END}`;
   const agentsBlock = codingEconomy
     ? `${CODEX_AGENTS_BLOCK_START}\n[agents]\ndefault_subagent_model = ${jsonString(codingEconomy.workerModel)}\n${codingEconomy.reasoningEffort ? `default_subagent_reasoning_effort = ${jsonString(codingEconomy.reasoningEffort)}\n` : ""}${CODEX_AGENTS_BLOCK_END}`
@@ -641,8 +660,9 @@ function renderCodexModelCatalog(context: HarnessContext): string {
 }
 
 const codexConfiguration: HarnessConfiguration = {
+  codexDesktop: true,
   relativePath: ".codex/config.toml",
-  revision: 4,
+  revision: 5,
   driftScope: "managed",
   prepare: prepareModelCatalog,
   auxiliaryFiles: (context) => [{
@@ -1027,6 +1047,111 @@ export class HostHarnessIntegrationManager {
   private operation = Promise.resolve();
   private catalogSynchronizationTimer: NodeJS.Timeout | undefined;
   private catalogSynchronizationRunning = false;
+  private codexBridge?: { port: number; server?: http.Server; sockets: Set<Socket> };
+  private codexBridgeError?: string;
+
+  private bridgeUrl(port?: number): string | undefined {
+    return port ? `http://127.0.0.1:${port}/v1` : undefined;
+  }
+
+  private async bridgeModule() {
+    return import(new URL("../../scripts/codex-desktop-bridge.mjs", import.meta.url).href) as Promise<{
+      createDesktopBridge(options: { codexHome: string; upstream: string }): http.Server;
+      managedProxyKey(config: string): string;
+      bridgeSignature(key: string, challenge: string, home: string, upstream: string): string;
+      readDesktopAuthStatus(home: string): Promise<"ready" | "expired" | "sign-in-required">;
+    }>;
+  }
+
+  private closeBridge(bridge = this.codexBridge) {
+    if (!bridge) return;
+    for (const socket of bridge.sockets) socket.destroy();
+    bridge.server?.close();
+    if (this.codexBridge === bridge) this.codexBridge = undefined;
+  }
+
+  private async identifiesBridge(port: number, key: string): Promise<boolean> {
+    const module = await this.bridgeModule();
+    const challenge = createHash("sha256").update(randomUUID()).digest("hex");
+    const expected = module.bridgeSignature(key, challenge, path.join(this.homeDirectory, ".codex"), `${this.baseUrl}/v1`);
+    return new Promise(resolve => {
+      // Never send an application key or OAuth token to an occupied, unknown port.
+      const request = http.get(`http://127.0.0.1:${port}/_multivibe/codex-bridge?challenge=${challenge}`, response => {
+        let body = "";
+        response.on("data", chunk => { body += chunk; if (body.length > 1024) request.destroy(); });
+        response.on("error", () => resolve(false));
+        response.on("end", () => {
+          try {
+            const actual = JSON.parse(body).signature;
+            resolve(response.statusCode === 200 && typeof actual === "string" && actual.length === expected.length &&
+              timingSafeEqual(Buffer.from(actual), Buffer.from(expected)));
+          } catch { resolve(false); }
+        });
+      });
+      request.setTimeout(1500, () => request.destroy());
+      request.on("error", () => resolve(false));
+    });
+  }
+
+  private async withCodexBridge<T>(
+    id: string, preferredPort: number | undefined, key: string,
+    work: (url?: string, port?: number) => Promise<T>, allowNewPort = true,
+  ): Promise<T> {
+    if (id !== "openai-codex" || !this.definition(id).configuration?.codexDesktop) return work();
+    const previous = this.codexBridge;
+    let bridge = previous;
+    if (bridge && (bridge.server ? !bridge.server.listening : !await this.identifiesBridge(bridge.port, key))) bridge = undefined;
+    if (!bridge || preferredPort && bridge.port !== preferredPort) {
+      const module = await this.bridgeModule();
+      const listen = async (port: number) => {
+        const server = module.createDesktopBridge({ codexHome: path.join(this.homeDirectory, ".codex"), upstream: `${this.baseUrl}/v1` });
+        const sockets = new Set<Socket>();
+        server.on("connection", socket => { sockets.add(socket); socket.on("close", () => sockets.delete(socket)); });
+        await new Promise<void>((resolve, reject) => {
+          server.once("error", reject);
+          server.listen(port, "127.0.0.1", () => { server.removeListener("error", reject); resolve(); });
+        });
+        server.unref();
+        return { port: (server.address() as AddressInfo).port, server, sockets };
+      };
+      try { bridge = await listen(preferredPort ?? 0); }
+      catch (error: any) {
+        if (error.code !== "EADDRINUSE" || !preferredPort) throw new HostHarnessIntegrationError("Codex local relay could not start", 503);
+        if (await this.identifiesBridge(preferredPort, key)) bridge = { port: preferredPort, sockets: new Set() };
+        else if (allowNewPort) bridge = await listen(0);
+        else throw new HostHarnessIntegrationError("Codex relay port is occupied; repair the connection to choose an available port", 409);
+      }
+    }
+    this.codexBridge = bridge;
+    this.codexBridgeError = undefined;
+    try {
+      const result = await work(this.bridgeUrl(bridge.port), bridge.port);
+      if (previous && previous !== bridge) this.closeBridge(previous);
+      return result;
+    } catch (error) {
+      if (previous !== bridge) this.closeBridge(bridge);
+      this.codexBridge = previous;
+      throw error;
+    }
+  }
+
+  private async restoreCodexBridge() {
+    if (!this.definitions.some(entry => entry.id === "openai-codex" && entry.configuration?.codexDesktop)) return;
+    return this.serial(async () => {
+      const state = await this.readState();
+      const installation = state.installations["openai-codex"];
+      if (!installation?.codexBridgePort) { this.closeBridge(); return; }
+      try {
+        const module = await this.bridgeModule();
+        const config = await readBounded(await this.safeConfigPath(".codex/config.toml"));
+        if (!config) throw new Error("missing config");
+        const key = this.apiKeyForId(installation.apiKeyId) ?? module.managedProxyKey(config.content);
+        await this.withCodexBridge("openai-codex", installation.codexBridgePort, key, async () => undefined, false);
+      } catch (error) {
+        this.codexBridgeError = error instanceof HostHarnessIntegrationError ? error.message : "Codex local relay is unavailable; repair the connection";
+      }
+    });
+  }
 
   constructor(options: HostHarnessManagerOptions) {
     if (!path.isAbsolute(options.homeDirectory)) {
@@ -1047,12 +1172,14 @@ export class HostHarnessIntegrationManager {
 
   async list(): Promise<HostHarnessView[]> {
     await this.operation;
+    await this.restoreCodexBridge();
     const state = await this.readState();
     return Promise.all(this.definitions.map((entry) => this.view(entry, state)));
   }
 
   async get(id: string): Promise<HostHarnessView> {
     await this.operation;
+    if (id === "openai-codex") await this.restoreCodexBridge();
     const definition = this.definition(id);
     return this.view(definition, await this.readState());
   }
@@ -1094,9 +1221,11 @@ export class HostHarnessIntegrationManager {
   stopCatalogSynchronization() {
     if (this.catalogSynchronizationTimer) clearInterval(this.catalogSynchronizationTimer);
     this.catalogSynchronizationTimer = undefined;
+    this.closeBridge();
   }
 
   async synchronizeModelCatalogs(): Promise<boolean> {
+    await this.restoreCodexBridge();
     let changed = false;
     const failures: Error[] = [];
     try {
@@ -1168,7 +1297,7 @@ export class HostHarnessIntegrationManager {
       // while the managed provider block still points at MultiVibe; anything
       // else is reported by `view()` and requires an explicit repair.
       const inspection = definition.configuration.inspect
-        ? definition.configuration.inspect(config.content, this.baseUrl, apiKey, this.homeDirectory)
+        ? definition.configuration.inspect(config.content, this.baseUrl, apiKey, this.homeDirectory, this.bridgeUrl(installation.codexBridgePort))
         : { configured: definition.configuration.isConfigured(config.content, this.baseUrl) };
       if (!inspection.configured) return false;
       const context: HarnessContext = {
@@ -1322,51 +1451,56 @@ export class HostHarnessIntegrationManager {
       }
       if (before.configured) return before;
 
-      const configPath = await this.safeConfigPath(definition.configuration.relativePath);
-      const original = await readBounded(configPath);
-      const context: HarnessContext = {
-        baseUrl: this.baseUrl,
-        apiKey: credential.apiKey,
-        clientId: id,
-        homeDirectory: this.homeDirectory,
-        codingEconomy: this.codexCodingEconomyContext(id, state),
-      };
-      const preparedContext = definition.configuration.prepare
-        ? { ...context, ...(await definition.configuration.prepare(context)) }
-        : context;
-      const installed = definition.configuration.render(original?.content ?? null, preparedContext);
-      const auxiliary = await this.writeAuxiliaryFiles(definition.configuration, preparedContext);
-      try {
-        await writeAtomic(configPath, installed, 0o600);
-      } catch (error) {
-        await auxiliary.restore();
-        throw error;
-      }
-      state.installations[id] = {
-        configPath,
-        originalContentBase64: original ? Buffer.from(original.content).toString("base64") : null,
-        originalMode: original?.mode ?? null,
-        installedSha256: sha256(installed),
-        apiKeyId: credential.apiKeyId,
-        application: credential.application,
-        installedAt: Date.now(),
-        ...(definition.configuration.revision
-          ? { configurationRevision: definition.configuration.revision }
-          : {}),
-        ...(auxiliary.states.length ? { auxiliaryFiles: auxiliary.states } : {}),
-      };
-      let restoreTracking: (() => Promise<void>) | undefined;
-      try {
-        if (id === "openai-codex" && this.projectRegistrationToken) restoreTracking = await this.writeProjectTracking();
-        await this.writeState(state);
-      } catch (error) {
-        await restoreTracking?.();
-        if (original) await writeAtomic(configPath, original.content, original.mode);
-        else await fs.unlink(configPath).catch(() => undefined);
-        await auxiliary.restore();
-        throw error;
-      }
-      return this.view(definition, state);
+      const configuration = definition.configuration;
+      return this.withCodexBridge(id, undefined, credential.apiKey, async (codexBridgeUrl, codexBridgePort) => {
+        const configPath = await this.safeConfigPath(configuration.relativePath);
+        const original = await readBounded(configPath);
+        const context: HarnessContext = {
+          baseUrl: this.baseUrl,
+          apiKey: credential.apiKey,
+          clientId: id,
+          homeDirectory: this.homeDirectory,
+          codexBridgeUrl,
+          codingEconomy: this.codexCodingEconomyContext(id, state),
+        };
+        const preparedContext = configuration.prepare
+          ? { ...context, ...(await configuration.prepare(context)) }
+          : context;
+        const installed = configuration.render(original?.content ?? null, preparedContext);
+        const auxiliary = await this.writeAuxiliaryFiles(configuration, preparedContext);
+        try {
+          await writeAtomic(configPath, installed, 0o600);
+        } catch (error) {
+          await auxiliary.restore();
+          throw error;
+        }
+        state.installations[id] = {
+          configPath,
+          originalContentBase64: original ? Buffer.from(original.content).toString("base64") : null,
+          originalMode: original?.mode ?? null,
+          installedSha256: sha256(installed),
+          apiKeyId: credential.apiKeyId,
+          application: credential.application,
+          installedAt: Date.now(),
+          ...(codexBridgePort ? { codexBridgePort } : {}),
+          ...(configuration.revision
+            ? { configurationRevision: configuration.revision }
+            : {}),
+          ...(auxiliary.states.length ? { auxiliaryFiles: auxiliary.states } : {}),
+        };
+        let restoreTracking: (() => Promise<void>) | undefined;
+        try {
+          if (id === "openai-codex" && this.projectRegistrationToken) restoreTracking = await this.writeProjectTracking();
+          await this.writeState(state);
+        } catch (error) {
+          await restoreTracking?.();
+          if (original) await writeAtomic(configPath, original.content, original.mode);
+          else await fs.unlink(configPath).catch(() => undefined);
+          await auxiliary.restore();
+          throw error;
+        }
+        return this.view(definition, state);
+      });
     });
   }
 
@@ -1388,50 +1522,55 @@ export class HostHarnessIntegrationManager {
       if (!inspection.repairable) {
         throw new HostHarnessIntegrationError(inspection.configurationIssue ?? `~/${definition.configuration.relativePath} cannot be repaired safely`, 409);
       }
-      const context: HarnessContext = {
-        baseUrl: this.baseUrl,
-        apiKey: credential.apiKey,
-        clientId: id,
-        homeDirectory: this.homeDirectory,
-        codingEconomy: this.codexCodingEconomyContext(id, state),
-      };
-      const preparedContext = definition.configuration.prepare
-        ? { ...context, ...(await definition.configuration.prepare(context)) }
-        : context;
-      const repaired = definition.configuration.render(current.content, preparedContext);
-      const auxiliary = await this.writeAuxiliaryFiles(
-        definition.configuration,
-        preparedContext,
-        installation.auxiliaryFiles,
-      );
-      try {
-        await writeAtomic(configPath, repaired, current.mode);
-      } catch (error) {
-        await auxiliary.restore();
-        throw error;
-      }
-      let restoreTracking: (() => Promise<void>) | undefined;
-      try {
-        if (id === "openai-codex" && this.projectRegistrationToken) restoreTracking = await this.writeProjectTracking();
-        state.installations[id] = {
-          ...installation,
-          installedSha256: sha256(repaired),
-          apiKeyId: credential.apiKeyId,
-          application: credential.application,
-          installedAt: Date.now(),
-          ...(definition.configuration.revision
-            ? { configurationRevision: definition.configuration.revision }
-            : {}),
-          ...(auxiliary.states.length ? { auxiliaryFiles: auxiliary.states } : {}),
+      const configuration = definition.configuration;
+      return this.withCodexBridge(id, installation.codexBridgePort, credential.apiKey, async (codexBridgeUrl, codexBridgePort) => {
+        const context: HarnessContext = {
+          baseUrl: this.baseUrl,
+          apiKey: credential.apiKey,
+          clientId: id,
+          homeDirectory: this.homeDirectory,
+          codexBridgeUrl,
+          codingEconomy: this.codexCodingEconomyContext(id, state),
         };
-        await this.writeState(state);
-      } catch (error) {
-        await restoreTracking?.();
-        await writeAtomic(configPath, current.content, current.mode);
-        await auxiliary.restore();
-        throw error;
-      }
-      return this.view(definition, state);
+        const preparedContext = configuration.prepare
+          ? { ...context, ...(await configuration.prepare(context)) }
+          : context;
+        const repaired = configuration.render(current.content, preparedContext);
+        const auxiliary = await this.writeAuxiliaryFiles(
+          configuration,
+          preparedContext,
+          installation.auxiliaryFiles,
+        );
+        try {
+          await writeAtomic(configPath, repaired, current.mode);
+        } catch (error) {
+          await auxiliary.restore();
+          throw error;
+        }
+        let restoreTracking: (() => Promise<void>) | undefined;
+        try {
+          if (id === "openai-codex" && this.projectRegistrationToken) restoreTracking = await this.writeProjectTracking();
+          state.installations[id] = {
+            ...installation,
+            installedSha256: sha256(repaired),
+            apiKeyId: credential.apiKeyId,
+            application: credential.application,
+            installedAt: Date.now(),
+            ...(codexBridgePort ? { codexBridgePort } : {}),
+            ...(configuration.revision
+              ? { configurationRevision: configuration.revision }
+              : {}),
+            ...(auxiliary.states.length ? { auxiliaryFiles: auxiliary.states } : {}),
+          };
+          await this.writeState(state);
+        } catch (error) {
+          await restoreTracking?.();
+          await writeAtomic(configPath, current.content, current.mode);
+          await auxiliary.restore();
+          throw error;
+        }
+        return this.view(definition, state);
+      });
     });
   }
 
@@ -1496,43 +1635,49 @@ export class HostHarnessIntegrationManager {
         workerModel: retainedWorker,
         ...(retainedEffort ? { reasoningEffort: retainedEffort } : {}),
       };
-      const context: HarnessContext = {
-        baseUrl: this.baseUrl,
-        apiKey,
-        clientId: id,
-        homeDirectory: this.homeDirectory,
-        codingEconomy: this.codexCodingEconomyContext(id, state),
-      };
-      const preparedContext = definition.configuration.prepare
-        ? { ...context, ...(await definition.configuration.prepare(context)) }
-        : context;
-      const rendered = definition.configuration.render(current.content, preparedContext);
-      const auxiliary = await this.writeAuxiliaryFiles(
-        definition.configuration,
-        preparedContext,
-        installation.auxiliaryFiles,
-      );
-      try {
-        await writeAtomic(configPath, rendered, current.mode);
-      } catch (error) {
-        await auxiliary.restore();
-        throw error;
-      }
-      try {
-        state.installations[id] = {
-          ...installation,
-          installedSha256: sha256(rendered),
-          installedAt: Date.now(),
-          ...(auxiliary.states.length ? { auxiliaryFiles: auxiliary.states } : {}),
+      const configuration = definition.configuration;
+      return this.withCodexBridge(id, installation.codexBridgePort, apiKey, async (codexBridgeUrl, codexBridgePort) => {
+        const context: HarnessContext = {
+          baseUrl: this.baseUrl,
+          apiKey,
+          clientId: id,
+          homeDirectory: this.homeDirectory,
+          codexBridgeUrl,
+          codingEconomy: this.codexCodingEconomyContext(id, state),
         };
-        await this.writeState(state);
-      } catch (error) {
-        state.codexCodingEconomy = previous;
-        await writeAtomic(configPath, current.content, current.mode);
-        await auxiliary.restore();
-        throw error;
-      }
-      return this.view(definition, state);
+        const preparedContext = configuration.prepare
+          ? { ...context, ...(await configuration.prepare(context)) }
+          : context;
+        const rendered = configuration.render(current.content, preparedContext);
+        const auxiliary = await this.writeAuxiliaryFiles(
+          configuration,
+          preparedContext,
+          installation.auxiliaryFiles,
+        );
+        try {
+          await writeAtomic(configPath, rendered, current.mode);
+        } catch (error) {
+          await auxiliary.restore();
+          throw error;
+        }
+        try {
+          state.installations[id] = {
+            ...installation,
+            installedSha256: sha256(rendered),
+            installedAt: Date.now(),
+            ...(codexBridgePort ? { codexBridgePort } : {}),
+            configurationRevision: configuration.revision,
+            ...(auxiliary.states.length ? { auxiliaryFiles: auxiliary.states } : {}),
+          };
+          await this.writeState(state);
+        } catch (error) {
+          state.codexCodingEconomy = previous;
+          await writeAtomic(configPath, current.content, current.mode);
+          await auxiliary.restore();
+          throw error;
+        }
+        return this.view(definition, state);
+      });
     });
   }
 
@@ -1576,6 +1721,7 @@ export class HostHarnessIntegrationManager {
         }
         delete state.installations[id];
         await this.writeState(state);
+        if (id === "openai-codex") this.closeBridge();
       } catch (error) {
         await restoreTracking?.();
         await writeAtomic(configPath, current.content, current.mode);
@@ -1629,6 +1775,7 @@ export class HostHarnessIntegrationManager {
               this.baseUrl,
               installation ? this.apiKeyForId(installation.apiKeyId) : undefined,
               this.homeDirectory,
+              this.bridgeUrl(installation?.codexBridgePort),
               )
             : {
                 configured: definition.configuration.isConfigured(current.content, this.baseUrl),
@@ -1664,6 +1811,11 @@ export class HostHarnessIntegrationManager {
                 ? !configured
                 : configurationFileChanged)),
         );
+        if (definition.id === "openai-codex" && installation?.codexBridgePort && this.codexBridgeError) {
+          configured = false;
+          drifted = true;
+          configurationIssue = this.codexBridgeError;
+        }
       } catch (error: any) {
         configurationError = error?.message ?? "The harness configuration cannot be edited safely.";
         drifted = Boolean(installation);
@@ -1696,6 +1848,13 @@ export class HostHarnessIntegrationManager {
       ...(configurationIssue ? { configurationIssue } : {}),
       ...(effectiveProvider ? { effectiveProvider } : {}),
       ...(effectiveBaseUrl ? { effectiveBaseUrl } : {}),
+      ...(definition.id === "openai-codex" && installation?.codexBridgePort ? {
+        codexConnection: {
+          authentication: await (await this.bridgeModule()).readDesktopAuthStatus(path.join(this.homeDirectory, ".codex")),
+          relay: this.codexBridge?.port === installation.codexBridgePort && !this.codexBridgeError ? "running" as const : "unavailable" as const,
+          restartRequired: true as const,
+        },
+      } : {}),
       ...(!definition.configuration || configurationError
         ? { unavailableReason: configurationError ?? definition.unavailableReason ?? manualReason }
         : {}),
@@ -1775,6 +1934,10 @@ export class HostHarnessIntegrationManager {
     const state = parsed as HarnessState;
     if (state.schemaVersion !== STATE_SCHEMA_VERSION || !state.installations || typeof state.installations !== "object" || Array.isArray(state.installations)) {
       throw new HostHarnessIntegrationError("the harness integration state has an unsupported schema", 500);
+    }
+    const port = state.installations["openai-codex"]?.codexBridgePort;
+    if (port !== undefined && (!Number.isInteger(port) || port < 1024 || port > 65535)) {
+      throw new HostHarnessIntegrationError("the saved Codex relay port is invalid", 500);
     }
     return state;
   }

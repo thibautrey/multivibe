@@ -42,6 +42,7 @@ async function fixture(t: { after: (fn: () => unknown) => void }) {
     apiKeyForId: () => "mv_codex",
     executableDirectories: [bin],
   });
+  t.after(() => manager.stopCatalogSynchronization());
   await manager.install("openai-codex", { apiKeyId: "key-codex", apiKey: "mv_codex", application: "harness-openai-codex" });
   return { manager, configPath, catalogPath: path.join(home, ".codex", "multivibe-models.json") };
 }

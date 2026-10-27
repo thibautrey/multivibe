@@ -595,17 +595,19 @@ test("Codex installation authenticates its provider with the proxy key and resto
     definitions: HOST_HARNESS_DEFINITIONS.filter((entry) => entry.id === "openai-codex"),
     executableDirectories: [bin],
   });
+  t.after(() => manager.stopCatalogSynchronization());
 
   await manager.install("openai-codex", { apiKeyId: "key-3", apiKey: "mv_codex", application: "harness-openai-codex" });
   const configured = await fs.readFile(configPath, "utf8");
-  assert.match(configured, /model_provider = "multivibe"/);
+  assert.match(configured, /model_provider = "openai"/);
   assert.match(configured, /base_url = "http:\/\/127\.0\.0\.1:1455\/v1"/);
   assert.match(configured, /approval_policy = "on-request"/);
   assert.match(configured, /model_catalog_json = /);
   assert.match(configured, /\[model_providers\.multivibe\]\nname = "MultiVibe Host"\nbase_url = "http:\/\/127\.0\.0\.1:1455\/v1"\nwire_api = "responses"\nexperimental_bearer_token = "mv_codex"/);
-  assert.doesNotMatch(configured, /openai_base_url/);
+  assert.match(configured, /openai_base_url = "http:\/\/127\.0\.0\.1:\d+\/v1"/);
+  assert.match(configured, /cli_auth_credentials_store = "file"/);
   const firstTable = configured.search(/^\[/m);
-  const rootProvider = configured.indexOf('model_provider = "multivibe"');
+  const rootProvider = configured.indexOf('model_provider = "openai"');
   assert.ok(rootProvider >= 0 && rootProvider < firstTable, "Codex provider must remain at the TOML root");
   assert.equal((configured.match(/^model_provider\s*=/gm) ?? []).length, 1);
   const catalog = JSON.parse(await fs.readFile(path.join(home, ".codex", "multivibe-models.json"), "utf8"));
@@ -645,6 +647,7 @@ test("Codex detects missing or stale proxy credentials and repairs the URL-only 
     definitions: HOST_HARNESS_DEFINITIONS.filter((entry) => entry.id === "openai-codex"),
     executableDirectories: [],
   });
+  t.after(() => manager.stopCatalogSynchronization());
   const credential = { apiKeyId: "key-auth", apiKey: "mv_expected", application: "harness-openai-codex" };
   await manager.install("openai-codex", credential);
   const installed = await fs.readFile(configPath, "utf8");
@@ -689,6 +692,7 @@ test("Codex synchronizes its managed catalog when MultiVibe models change at run
     definitions: HOST_HARNESS_DEFINITIONS.filter((entry) => entry.id === "openai-codex"),
     executableDirectories: [bin],
   });
+  t.after(() => manager.stopCatalogSynchronization());
   await manager.install("openai-codex", { apiKeyId: "key-live", apiKey: "mv_live", application: "harness-openai-codex" });
   const catalogPath = path.join(home, ".codex", "multivibe-models.json");
   assert.equal(await manager.synchronizeCodexModelCatalog(), false);
@@ -854,6 +858,7 @@ test("Codex catalog keeps the context window advertised for a native entry", asy
     definitions: HOST_HARNESS_DEFINITIONS.filter((entry) => entry.id === "openai-codex"),
     executableDirectories: [bin],
   });
+  t.after(() => manager.stopCatalogSynchronization());
   await manager.install("openai-codex", {
     apiKeyId: "key-live",
     apiKey: "mv_live",
@@ -892,6 +897,7 @@ test("Codex live synchronization survives unrelated config.toml edits", async (t
     definitions: HOST_HARNESS_DEFINITIONS.filter((entry) => entry.id === "openai-codex"),
     executableDirectories: [bin],
   });
+  t.after(() => manager.stopCatalogSynchronization());
   const credential = { apiKeyId: "key-live", apiKey: "mv_live", application: "harness-openai-codex" };
   await manager.install("openai-codex", credential);
   const configPath = path.join(home, ".codex", "config.toml");
@@ -937,6 +943,7 @@ test("Codex live synchronization never overwrites a user-modified catalog", asyn
     definitions: HOST_HARNESS_DEFINITIONS.filter((entry) => entry.id === "openai-codex"),
     executableDirectories: [bin],
   });
+  t.after(() => manager.stopCatalogSynchronization());
   await manager.install("openai-codex", { apiKeyId: "key-live", apiKey: "mv_live", application: "harness-openai-codex" });
   const catalogPath = path.join(home, ".codex", "multivibe-models.json");
   await fs.writeFile(catalogPath, '{"models":[{"slug":"user-model"}]}\n');
@@ -963,6 +970,7 @@ test("Codex repair refreshes a drifted MultiVibe catalog", async (t) => {
     definitions: HOST_HARNESS_DEFINITIONS.filter((entry) => entry.id === "openai-codex"),
     executableDirectories: [bin],
   });
+  t.after(() => manager.stopCatalogSynchronization());
   const credential = { apiKeyId: "key-static-catalog", apiKey: "mv_static", application: "harness-openai-codex" };
   await manager.install("openai-codex", credential);
   const changed = (await fs.readFile(configPath, "utf8")).replace(
@@ -1018,6 +1026,7 @@ test("Codex repair preserves a table inserted inside the legacy managed block", 
     definitions: HOST_HARNESS_DEFINITIONS.filter((entry) => entry.id === "openai-codex"),
     executableDirectories: [bin],
   });
+  t.after(() => manager.stopCatalogSynchronization());
 
   await manager.install("openai-codex", { apiKeyId: "key-repair", apiKey: "mv_repair", application: "harness-openai-codex" });
   const repaired = await fs.readFile(configPath, "utf8");
@@ -1045,6 +1054,7 @@ test("Codex ignores unrelated configuration changes when evaluating connection h
     definitions: HOST_HARNESS_DEFINITIONS.filter((entry) => entry.id === "openai-codex"),
     executableDirectories: [bin],
   });
+  t.after(() => manager.stopCatalogSynchronization());
   const credential = { apiKeyId: "key-reconcile", apiKey: "mv_reconcile", application: "harness-openai-codex" };
   await manager.install("openai-codex", credential);
   await fs.appendFile(configPath, "\n[plugins.\"sites@openai-bundled\"]\nenabled = true\n");
@@ -1073,6 +1083,7 @@ test("Codex repairs managed configuration drift without removing unrelated chang
     definitions: HOST_HARNESS_DEFINITIONS.filter((entry) => entry.id === "openai-codex"),
     executableDirectories: [bin],
   });
+  t.after(() => manager.stopCatalogSynchronization());
   const credential = { apiKeyId: "key-managed-drift", apiKey: "mv_managed_drift", application: "harness-openai-codex" };
   await manager.install("openai-codex", credential);
   const changed = (await fs.readFile(configPath, "utf8"))
@@ -1109,6 +1120,7 @@ test("Codex detects a changed managed model catalog", async (t) => {
     definitions: HOST_HARNESS_DEFINITIONS.filter((entry) => entry.id === "openai-codex"),
     executableDirectories: [bin],
   });
+  t.after(() => manager.stopCatalogSynchronization());
   const credential = { apiKeyId: "key-credential-drift", apiKey: "mv_expected", application: "harness-openai-codex" };
   await manager.install("openai-codex", credential);
   const catalogPath = path.join(home, ".codex", "multivibe-models.json");
@@ -1139,6 +1151,7 @@ test("Codex accepts brackets inside quoted TOML table keys", async (t) => {
     definitions: HOST_HARNESS_DEFINITIONS.filter((entry) => entry.id === "openai-codex"),
     executableDirectories: [bin],
   });
+  t.after(() => manager.stopCatalogSynchronization());
   const credential = { apiKeyId: "key-quoted-header", apiKey: "mv_quoted_header", application: "harness-openai-codex" };
   await manager.install("openai-codex", credential);
   await fs.appendFile(configPath, '\n[hooks.state."browser@openai-bundled:plugin.json#hooks[0]:stop:0:0"]\nenabled = true\n');
@@ -1169,6 +1182,7 @@ test("Codex reports profile overrides without hiding a correct default provider"
     definitions: HOST_HARNESS_DEFINITIONS.filter((entry) => entry.id === "openai-codex"),
     executableDirectories: [bin],
   });
+  t.after(() => manager.stopCatalogSynchronization());
   const installed = await manager.install("openai-codex", { apiKeyId: "key-profile", apiKey: "mv_profile", application: "harness-openai-codex" });
   assert.equal(installed.configured, true);
   assert.match(installed.configurationIssue ?? "", /normal=litellm/);

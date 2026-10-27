@@ -552,6 +552,7 @@ export type CreatedProxyApiKey = ProxyApiKey & {
 };
 
 export type HostHarness = {
+  codexConnection?: { authentication: "ready" | "expired" | "sign-in-required"; relay: "running" | "unavailable"; restartRequired: true };
   projectTracking?: "installed" | "not-installed" | "unavailable";
   id: string;
   name: string;

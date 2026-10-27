@@ -7,7 +7,7 @@ even when the gateway supports Realtime.
 
 The supported `openai_base_url` setting keeps the built-in provider and changes
 its inference destination. However, that provider sends the ChatGPT OAuth token,
-whereas MultiVibe expects its managed application key. The optional local bridge
+whereas MultiVibe expects its managed application key. The local bridge
 in `scripts/codex-desktop-bridge.mjs` translates these credentials without
 modifying the signed desktop application or its permission checks.
 
@@ -25,7 +25,29 @@ This preserves ChatGPT Voice; it does not replace its audio service with local
 Whisper/Kokoro or reproduce the private GPT-Live protocol. The selected reasoning
 model and tool work use MultiVibe's existing routing.
 
-## Install
+## Configure through MultiVibe Host
+
+Use **Connect** on the Codex card, or **Repair connection** for an installation
+created with the older custom provider. Host starts and supervises the loopback
+relay automatically, selects an available private port, persists it for the next
+Host startup, and retains its managed model catalogue. No separate service or
+manual bridge installation is needed. The relay helper is included in Host
+packages for macOS, Windows and Linux.
+
+The card reports whether the local ChatGPT sign-in is ready, expired or missing.
+The managed configuration selects file-based Codex credential storage; existing
+`auth.json` contents and any keyring entries remain untouched. If sign-in is
+needed, use `codex login --device-auth` on this computer. This avoids the hidden
+sign-in button in an already-running custom-provider GUI. It is not possible to
+create a paid ChatGPT entitlement through the configurator.
+
+Reopen Codex after current tasks finish. The configurator does not restart it.
+The exact old configuration is retained for disconnect, and later file edits
+block destructive restoration until they have been reviewed. A separately
+installed standalone bridge is left running; it can be removed after the
+Host-managed connection has been verified.
+
+## Standalone installation on macOS
 
 Requirements: macOS, Node.js 22 or newer, MultiVibe running on `127.0.0.1:1455`,
 and an existing managed `[model_providers.multivibe]` entry with its
@@ -60,8 +82,9 @@ rejects expired tokens. No account permission or rollout flag is overridden.
 The installer refuses to replace an existing LaunchAgent or use an occupied
 port. `--port 1459` and `--codex-home /absolute/path` can select another local
 port or Codex home. The current automatic installer targets only the local
-MultiVibe endpoint above. Reinstalling the normal MultiVibe harness may replace
-the selected provider; this opt-in bridge configuration must then be reapplied.
+MultiVibe endpoint above. The Host configurator can migrate this standalone configuration to its own
+managed listener through Connect or Repair. It preserves the standalone
+configuration in the installation backup and does not stop that service.
 
 ## Verification and removal
 
