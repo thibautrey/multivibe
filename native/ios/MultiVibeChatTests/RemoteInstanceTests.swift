@@ -201,7 +201,7 @@ extension RemoteInstanceTests {
     @MainActor func testConnectionErrorsDistinguishRevocationFromTemporaryTransportLoss() {
         XCTAssertTrue(RemoteInstances.connectionError(APIError.server(401, "instance_device_revoked")).contains("révoqué"))
         XCTAssertTrue(RemoteInstances.connectionError(APIError.server(401, "instance_session_expired")).contains("compte"))
-        XCTAssertTrue(RemoteInstances.connectionError(URLError(.notConnectedToInternet)).contains("conservée"))
+        XCTAssertTrue(RemoteInstances.connectionError(URLError(.notConnectedToInternet)).contains("hors ligne"))
         XCTAssertTrue(RemoteInstances.connectionError(APIError.server(409, "instance_update_required")).contains("jour"))
     }
 }
