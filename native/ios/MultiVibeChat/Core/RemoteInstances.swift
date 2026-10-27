@@ -168,7 +168,7 @@ actor RemoteInstanceAPI {
         let (data, response) = try await session.data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode), data.count <= 1_048_576,
            let reply = try? JSONDecoder().decode(HistoryJSON.self, from: data), let code = reply.object?["code"]?.string,
-           ["instance_device_revoked", "instance_update_required"].contains(code) { throw APIError.server(http.statusCode, code) }
+           ["instance_device_revoked", "instance_device_renew_required", "instance_update_required"].contains(code) { throw APIError.server(http.statusCode, code) }
         try validate(response)
         guard data.count <= 8_388_608 else { throw APIError.invalidResponse }
         let result = try JSONDecoder().decode(HistoryJSON.self, from: data)
@@ -359,6 +359,14 @@ struct RemoteModelPreference: Codable {
         } catch {
             try check(owner, epoch)
             if case APIError.server(_, "instance_device_revoked") = error { RemoteAuthorizationStore.clear(owner, machine); paired.remove(machine); pairingStates[machine] = "revoked" }
+            if case APIError.server(_, "instance_device_renew_required") = error,
+               let saved = try RemoteAuthorizationStore.load(owner, machine), saved.trustToken != nil {
+                let expired = RemoteDeviceAuthorization(deviceId: saved.deviceId, deviceToken: saved.deviceToken, expiresAt: 0, trustToken: saved.trustToken)
+                try RemoteAuthorizationStore.save(expired, owner, machine)
+                let (freshSession, freshAuth) = try await authorizedFields(machine, operation: operation)
+                let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: freshSession.accessToken, fields: freshAuth.merging(values) { _, new in new })
+                try check(owner, epoch); return result
+            }
             throw error
         }
     }
