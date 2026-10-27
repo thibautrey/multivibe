@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {randomUUID,randomBytes,createHash} from 'node:crypto';
+import {randomUUID,randomBytes,createHash,X509Certificate} from 'node:crypto';
+import {spawnSync} from 'node:child_process';
 import {HostHarnessRuntime} from './harness-runtime/runtime.js';
 import {InstanceConversations} from './instance-conversations.js';
 import {InstanceRelay,INSTANCE_RELAY_MODEL,instanceLANModel,instanceRelayChunks} from './instance-relay.js';
@@ -335,7 +336,19 @@ test('pinned HTTPS LAN transport executes control operations without Relay',asyn
  });
  assert.equal(reply.status,200);assert.equal(JSON.parse(reply.body).pairingVersion,2);
  const certificate=fs.readFileSync(path.join(path.dirname(f.file),'instance-lan-cert.pem'),'utf8');assert.equal(certificatePin(certificate),identity.publicKey);
+ assert.equal(new X509Certificate(certificate).subjectAltName,'DNS:multivibe.local');
  assert.equal(fs.statSync(path.join(path.dirname(f.file),'instance-lan-key.pem')).mode&0o777,0o600);
+});
+
+test('LAN identity migrates certificates that iOS cannot decode',async t=>{
+ const f=await fixture(t),directory=path.dirname(f.file),key=path.join(directory,'instance-lan-key.pem'),cert=path.join(directory,'instance-lan-cert.pem');
+ const generated=spawnSync('/usr/bin/openssl',['req','-x509','-newkey','ec','-pkeyopt','ec_paramgen_curve:P-256','-sha256','-nodes','-keyout',key,'-out',cert,'-subj','/CN=MultiVibe LAN','-days','3650'],{stdio:'ignore'});
+ assert.equal(generated.status,0);const legacyPin=certificatePin(fs.readFileSync(cert,'utf8'));
+ const server=new InstanceLANServer(f.service,directory);t.after(()=>server.stop());const identity=await server.start();
+ const migrated=fs.readFileSync(cert,'utf8'),certificate=new X509Certificate(migrated);
+ assert.notEqual(identity.publicKey,legacyPin);assert.equal(certificate.subjectAltName,'DNS:multivibe.local');
+ assert.equal(certificate.publicKey.asymmetricKeyDetails?.namedCurve,'prime256v1');
+ assert.equal(fs.statSync(key).mode&0o777,0o600);
 });
 
 test('LAN endpoint fits the legacy authenticated machine catalogue',()=>{
