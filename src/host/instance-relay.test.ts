@@ -273,3 +273,14 @@ test('valid legacy devices can upgrade to durable trust without re-pairing',asyn
  f.advance(30*24*3600_000);
  assert.equal(JSON.parse(await f.send({...upgraded,trustToken,operation:'renew'})).deviceId,legacy.deviceId);
 });
+test('failed approval persistence rolls back access instead of silently authorizing in memory',async t=>{
+ const f=await fixture(t),request=durableRequest();await f.send(request);
+ const backup=f.file+'.backup';fs.renameSync(f.file,backup);fs.mkdirSync(f.file);
+ try {
+  assert.throws(()=>f.service.decidePairing(request.requestId,true));
+  assert.equal(f.service.status().devices.length,0);
+  assert.equal(f.service.status().requests.length,1);
+  await assert.rejects(f.send({operation:'catalog',deviceId:request.requestId,deviceToken:request.deviceToken}));
+ } finally {fs.rmdirSync(f.file);fs.renameSync(backup,f.file);}
+ f.service.decidePairing(request.requestId,true);assert.equal(f.service.status().devices.length,1);
+});

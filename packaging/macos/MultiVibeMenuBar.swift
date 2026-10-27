@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import Foundation
+import UserNotifications
 
 let configuredHostPort: Int = {
     let configured = ProcessInfo.processInfo.environment["MULTIVIBE_HOST_PORT"] ?? "1455"
@@ -78,6 +79,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         didFinishLaunching = true
+        UNUserNotificationCenter.current().delegate = self
         configureStatusItem()
         configureAssistantIntegration()
         configurePopover()

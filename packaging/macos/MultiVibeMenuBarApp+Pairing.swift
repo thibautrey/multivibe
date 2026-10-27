@@ -2,10 +2,17 @@ import AppKit
 import SwiftUI
 import UserNotifications
 
-extension MultiVibeMenuBarApp {
+extension MultiVibeMenuBarApp: UNUserNotificationCenterDelegate {
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
+        if response.notification.request.identifier == "instance-pairing" {
+            DispatchQueue.main.async { self.pairingWindow?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
+        }
+        completionHandler()
+    }
     func pollInstancePairing() {
         guard !pollingPairing, !isMenuPreview,
-              let request = authorizedRequest(path: "/admin/instance-relay/v1", method: "GET") else { return }
+              var request = authorizedRequest(path: "/admin/instance-relay/v1", method: "GET") else { return }
+        request.timeoutInterval = 10
         pollingPairing = true
         URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
             DispatchQueue.main.async {
