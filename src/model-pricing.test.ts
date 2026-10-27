@@ -84,3 +84,19 @@ test("prices cached input at the standard rate for the no-cache equivalent", () 
     5.375,
   );
 });
+
+test("prices image generation and edits with separate text and image input rates", async () => {
+  const { estimateImageCostUsd, estimateTraceCostUsd } = await import("./model-pricing.js");
+  for (const model of ["gpt-image-2", "openai/gpt-image-2", "openai/gpt-image-2.5-flare", "gpt-image-2.5-flare-2026-09-08"]) {
+    assert.equal(getModelPricing(model)?.outputPer1M, 30);
+    const usage = {input_tokens: 1000, output_tokens: 2000, input_tokens_details: {text_tokens: 200, image_tokens: 800, cached_tokens: 500}};
+    assert.equal(estimateImageCostUsd(model, usage), 0.0674);
+    assert.equal(estimateTraceCostUsd({model, route: "/v1/images/edits", usage}), 0.0674);
+    assert.equal(estimateTraceCostUsd({model, route: "/v1/images/edits", usage, costUsd: 0.12}), 0.12);
+    assert.equal(estimateImageCostUsd(model, {input_tokens: 100, output_tokens: 1000}), 0.0305);
+    assert.equal(estimateImageCostUsd(model, {}), undefined);
+    assert.equal(estimateImageCostUsd(model, {input_tokens: 1, output_tokens: 1, input_tokens_details: {image_tokens: 2}}), undefined);
+  }
+  assert.equal(getModelPricing("gpt-image-2.5-unknown"), undefined);
+  assert.equal(estimateImageCostUsd("other/gpt-image-2", {input_tokens: 1, output_tokens: 1}), undefined);
+});
