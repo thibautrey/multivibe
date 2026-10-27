@@ -59,6 +59,7 @@ enum HostAssistantError: Error { case emptyReply }
         NativeChatStore.defaultHarnessID = "native"
         try await validateRemoteChatSynchronization(folder: directory, defaults: defaults)
         try await validateAutomaticConversationDiscovery(folder: directory, defaults: defaults)
+        validateLargeNativeCatalog(folder: directory, defaults: defaults)
         let file = directory.appendingPathComponent("history.json")
         let store = NativeChatStore(file: file, defaults: defaults)
         store.newConversation()
@@ -428,4 +429,17 @@ enum HostAssistantError: Error { case emptyReply }
     // Identical native IDs on distinct environments never collapse into one conversation.
     precondition(store.conversations.filter { $0.nativeSource != nil }.count == 1)
     print("PASS automatic native discovery across all environments, stable messages, live updates, read-only loading, drafts, offline cache, isolated continuation and dismissal")
+}
+
+@MainActor private func validateLargeNativeCatalog(folder: URL, defaults: UserDefaults) {
+    let store = NativeChatStore(file: folder.appendingPathComponent("bulk-sources.json"), defaults: defaults)
+    let sources = (0..<10_000).map { index in
+        DesktopNativeSessionSource(sourceId: "bulk-\(index)", harnessId: "pi", nativeSessionId: "native-\(index)", title: "Conversation \(index)", workspace: "/project", updatedAt: 1793000000000, canContinue: true, strategy: "isolated_fork", reason: nil)
+    }
+    let start = ContinuousClock.now
+    store.mergeNativeCatalog(sources, target: "local")
+    store.mergeNativeCatalog(sources, target: "local")
+    precondition(store.conversations.filter { $0.nativeSource != nil }.count == 10_000)
+    precondition(start.duration(to: .now) < .seconds(3), "Large discovery must leave Mac approval UI responsive")
+    print("PASS 10000-source discovery and refresh publish in a bounded batch without duplicates")
 }

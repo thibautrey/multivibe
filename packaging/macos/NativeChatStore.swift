@@ -799,17 +799,20 @@ private struct NativeChatModelPreference: Codable {
         saveSoon()
     }
     func mergeNativeCatalog(_ sources: [DesktopNativeSessionSource], target: String) {
+        // Publish once: mutating the observable array for every field/source
+        // repeatedly copies its storage and blocks Mac pairing approvals.
+        var merged = conversations
         let ids = Set(sources.map(\.sourceId))
         let hidden = Set(defaults.stringArray(forKey: "assistantHiddenNativeSources") ?? [])
-        let supervised = Set(conversations.compactMap { item -> String? in
+        let supervised = Set(merged.compactMap { item -> String? in
             guard (item.executionTargetID ?? "local") == target, item.runtimeSessionID != nil,
                   let harness = item.harnessID else { return nil }
             if let source = item.runtimeSession?.configuration?["sourceId"].string { return harness + ":source:" + source }
             if let native = item.harnessSessionID ?? item.runtimeSession?.nativeSessionId { return harness + ":native:" + native }
             return nil
         })
-        var existing = Dictionary(uniqueKeysWithValues: conversations.indices.compactMap { index -> (String, Int)? in
-            let item = conversations[index]
+        var existing = Dictionary(uniqueKeysWithValues: merged.indices.compactMap { index -> (String, Int)? in
+            let item = merged[index]
             guard (item.executionTargetID ?? "local") == target, let source = item.nativeSource else { return nil }
             return (source.harnessId + ":" + source.sourceId, index)
         })
@@ -821,15 +824,16 @@ private struct NativeChatModelPreference: Codable {
             if let known = existing[key] { index = known }
             else {
                 var item = NativeChatConversation(); item.harnessID = source.harnessId; item.executionTargetID = target; item.authMode = "native"; item.workspace = source.workspace
-                conversations.append(item); index = conversations.count - 1; existing[key] = index
+                merged.append(item); index = merged.count - 1; existing[key] = index
             }
-            conversations[index].nativeSource = source; conversations[index].sourceUnavailable = false
-            conversations[index].title = source.title; conversations[index].updatedAt = Date(timeIntervalSince1970: source.updatedAt / 1000)
+            merged[index].nativeSource = source; merged[index].sourceUnavailable = false
+            merged[index].title = source.title; merged[index].updatedAt = Date(timeIntervalSince1970: source.updatedAt / 1000)
         }
         // A bounded discovery is not proof of deletion: keep cached transcripts and drafts.
-        for index in conversations.indices where (conversations[index].executionTargetID ?? "local") == target && conversations[index].runtimeSessionID == nil {
-            if let source = conversations[index].nativeSource, !ids.contains(source.sourceId) { conversations[index].sourceUnavailable = true }
+        for index in merged.indices where (merged[index].executionTargetID ?? "local") == target && merged[index].runtimeSessionID == nil {
+            if let source = merged[index].nativeSource, !ids.contains(source.sourceId) { merged[index].sourceUnavailable = true }
         }
+        conversations = merged
         saveSoon()
     }
     func runSelectedConversationSynchronization() async {
