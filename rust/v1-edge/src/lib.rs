@@ -1711,12 +1711,25 @@ fn upstream_path(
     }
 }
 
+// Compatible providers accept either an API root or an already-versioned base.
+fn join_v1_api_url(base: &str, path: &str) -> String {
+    let base = trim_slashes(base);
+    let path = if base.ends_with("/v1") && path.starts_with("/v1/") {
+        &path[3..]
+    } else {
+        path
+    };
+    format!("{base}{path}")
+}
+
 fn upstream_url(account: &Account, config: &EdgeConfig, sends_chat: bool, compact: bool) -> String {
-    format!(
-        "{}{}",
-        trim_slashes(&account_base_url(account, config)),
-        upstream_path(account, config, sends_chat, compact)
-    )
+    let base = account_base_url(account, config);
+    let path = upstream_path(account, config, sends_chat, compact);
+    if normalize_provider(account) == "openai-compatible" {
+        join_v1_api_url(&base, &path)
+    } else {
+        format!("{}{}", trim_slashes(&base), path)
+    }
 }
 
 fn value_string(value: Option<&Value>) -> Option<String> {
@@ -10533,12 +10546,7 @@ fn model_discovery_url(account: &Account, config: &EdgeConfig) -> String {
     if provider == "zai" {
         return format!("{}{}", trim_slashes(&base), config.zai_models_path.as_str());
     }
-    let path = "/v1/models";
-    if base.ends_with("/v1") {
-        format!("{}{}", trim_slashes(&base), &path[3..])
-    } else {
-        format!("{}{}", trim_slashes(&base), path)
-    }
+    join_v1_api_url(&base, "/v1/models")
 }
 
 fn model_discovery_headers(account: &Account, config: &EdgeConfig) -> HeaderMap {
@@ -13008,6 +13016,35 @@ mod tests {
             "multivibe-v1-edge-{label}-{}",
             Uuid::new_v4().simple()
         ))
+    }
+
+    #[test]
+    fn compatible_versioned_base_urls_preserve_inference_and_discovery_paths() {
+        let config = EdgeConfig::default();
+        let mut upstream = account("librechat");
+        upstream.provider = Some("openai-compatible".to_owned());
+        for base in [
+            "http://localhost:3081/api/agents",
+            "http://localhost:3081/api/agents/",
+            "http://localhost:3081/api/agents/v1",
+            "http://localhost:3081/api/agents/v1/",
+        ] {
+            upstream.base_url = Some(base.to_owned());
+            assert_eq!(upstream_url(&upstream, &config, true, false),
+                "http://localhost:3081/api/agents/v1/chat/completions", "{base}");
+            assert_eq!(upstream_url(&upstream, &config, false, false),
+                "http://localhost:3081/api/agents/v1/responses", "{base}");
+            assert_eq!(model_discovery_url(&upstream, &config),
+                "http://localhost:3081/api/agents/v1/models", "{base}");
+        }
+        // A name ending in v1 is not necessarily the version path segment.
+        upstream.base_url = Some("https://example.com/service-v1".to_owned());
+        assert_eq!(upstream_url(&upstream, &config, true, false),
+            "https://example.com/service-v1/v1/chat/completions");
+        // Provider-specific paths are not subject to compatible-provider rewriting.
+        upstream.provider = Some("zai".to_owned());
+        assert_eq!(upstream_url(&upstream, &config, true, false),
+            format!("{}{}", trim_slashes(&config.zai_base_url), config.zai_upstream_path));
     }
 
     #[test]
