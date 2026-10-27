@@ -8,7 +8,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { argumentsFrom, archiveBundle, commandInvocation, download, stapleMacArtifact, submitMacNotarization } from "./package-provider-host.mjs";
+import { argumentsFrom, archiveBundle, command, commandInvocation, download, stapleMacArtifact, submitMacNotarization } from "./package-provider-host.mjs";
 
 const packager = fileURLToPath(new URL("./package-provider-host.mjs", import.meta.url));
 const verifier = fileURLToPath(new URL("./verify-provider-host.mjs", import.meta.url));
@@ -543,4 +543,25 @@ test("notarization explicitly opens the signing keychain for upload and wait", a
     assert.equal(args[args.indexOf("--keychain") + 1], keychain);
     assert.equal(args[args.indexOf("--keychain-profile") + 1], "release");
   }
+});
+
+
+test("notarization retries real subprocess stderr upload failures", async () => {
+  let submits = 0;
+  const id = await submitMacNotarization("Host.dmg", "release", async (_program, args) => {
+    if (args[1] !== "submit") return notaryAccepted;
+    submits += 1;
+    if (submits === 1) {
+      return await command(process.execPath, ["-e",
+        'process.stderr.write("Error: abortedUpload(error: HTTPClientError.deadlineExceeded)\\n"); process.exit(1);'], { capture: true });
+    }
+    return `id: ${notaryID}`;
+  }, 3, async () => {});
+  assert.equal(id, notaryID);
+  assert.equal(submits, 2);
+});
+
+test("captured commands bound stderr output", async () => {
+  await assert.rejects(command(process.execPath, ["-e", 'process.stderr.write("x".repeat(32));'],
+    { capture: true, captureLimit: 16 }), /produced excessive output/);
 });
