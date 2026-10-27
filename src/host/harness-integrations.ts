@@ -389,6 +389,10 @@ type CodexTomlInspection = HarnessInspection & {
   rootModelCatalogJson?: string;
 };
 
+function codexProfileKey(value: string): string {
+  return decodeTomlBasicString(value) ?? (value.startsWith("'") && value.endsWith("'") ? value.slice(1, -1) : value);
+}
+
 function decodeTomlBasicString(value: string): string | undefined {
   const match = /^"((?:\\.|[^"\\])*)"/.exec(value.trim());
   if (!match) return undefined;
@@ -410,6 +414,7 @@ function parseCodexToml(current: string, expectedBaseUrl: string, expectedApiKey
   let providerWireApi: string | undefined;
   let rootModelCatalogJson: string | undefined;
   let credentialStore: string | undefined;
+  let activeProfile: string | undefined;
   const profileProviders: Record<string, string> = {};
   const errors: string[] = [];
   const seen = new Set<string>();
@@ -446,8 +451,10 @@ function parseCodexToml(current: string, expectedBaseUrl: string, expectedApiKey
       if (seen.has("root.cli_auth_credentials_store")) errors.push("duplicate root cli_auth_credentials_store");
       seen.add("root.cli_auth_credentials_store");
       credentialStore = value;
+    } else if (table === "" && key === "profile") {
+      activeProfile = value;
     } else if (table.startsWith("profiles.") && key === "model_provider") {
-      const profile = table.slice("profiles.".length);
+      const profile = codexProfileKey(table.slice("profiles.".length));
       const seenKey = `profile.${profile}.model_provider`;
       if (seen.has(seenKey)) errors.push(`duplicate ${seenKey}`);
       seen.add(seenKey);
@@ -484,16 +491,17 @@ function parseCodexToml(current: string, expectedBaseUrl: string, expectedApiKey
   const configurationIssue = configurationIssues.length > 0
     ? configurationIssues.join("; ")
     : undefined;
+  const effectiveProvider = (activeProfile && profileProviders[activeProfile]) || rootProvider || "openai";
   return {
-    configured: errors.length === 0 && rootProvider === "openai" && credentialStore === "file" &&
+    configured: errors.length === 0 && effectiveProvider === "openai" && rootProvider === "openai" && credentialStore === "file" &&
       Boolean(expectedBridgeUrl) && openaiBaseUrl === expectedBridgeUrl &&
       providerBaseUrl === expectedBaseUrl && providerWireApi === "responses" &&
       Boolean(providerBearerToken) && (expectedApiKey === undefined || providerBearerToken === expectedApiKey) &&
       Boolean(rootModelCatalogJson),
     repairable: errors.length === 0,
     configurationIssue: errors.length > 0 ? errors.join("; ") : configurationIssue,
-    effectiveProvider: rootProvider ?? "openai",
-    effectiveBaseUrl: rootProvider === "multivibe" ? providerBaseUrl : openaiBaseUrl,
+    effectiveProvider,
+    effectiveBaseUrl: effectiveProvider === "multivibe" ? providerBaseUrl : effectiveProvider === "openai" ? openaiBaseUrl : undefined,
     profileProviders,
     rootModelCatalogJson,
   };
@@ -581,7 +589,29 @@ function stripCodexManagedContent(value: string): string {
 }
 
 function renderCodexToml(current: string | null, context: HarnessContext): string {
-  const value = stripCodexManagedContent(current ?? "").trim();
+  let value = stripCodexManagedContent(current ?? "").trim();
+  // A selected profile overrides the root provider. Route only that active
+  // profile; named profiles the user did not select remain available unchanged.
+  let table = "";
+  let activeProfile: string | undefined;
+  const lines = value.split(/\r?\n/);
+  for (const line of lines) {
+    const header = matchTomlTableHeader(line);
+    if (header) table = header;
+    if (!table) {
+      const assignment = /^\s*profile\s*=\s*("(?:\\.|[^"\\])*")/.exec(line);
+      if (assignment) activeProfile = decodeTomlBasicString(assignment[1]);
+    }
+  }
+  table = "";
+  value = lines.map(line => {
+    const header = matchTomlTableHeader(line);
+    if (header) table = header;
+    if (activeProfile && table.startsWith("profiles.") && codexProfileKey(table.slice(9)) === activeProfile) {
+      return line.replace(/^(\s*model_provider\s*=\s*)("(?:\\.|[^"\\])*"|'[^']*')/, '$1"openai"');
+    }
+    return line;
+  }).join("\n");
   if (!context.homeDirectory) throw new HostHarnessIntegrationError("Codex home directory is unavailable", 500);
   if (!context.codexBridgeUrl) throw new HostHarnessIntegrationError("Codex local relay is unavailable", 503);
   const catalogPath = path.join(context.homeDirectory, CODEX_MODEL_CATALOG_RELATIVE_PATH);

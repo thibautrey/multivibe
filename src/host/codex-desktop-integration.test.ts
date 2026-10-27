@@ -170,3 +170,14 @@ test("a failed disconnect restores the active catalogue and keeps the relay runn
   assert.equal((await f.manager.get("openai-codex")).configured, true);
   assert.equal((await request(installed.effectiveBaseUrl! + "/models", f.bearer)).status, 200);
 });
+
+test("one-click routes the selected profile while preserving other profiles and their settings", async t => {
+  const f = await fixture(t);
+  await fs.writeFile(f.configPath, 'profile = "work"\n[profiles."work"]\nmodel_provider = "legacy-proxy"\nmodel_reasoning_effort = "high"\n[profiles.personal]\nmodel_provider = "personal-provider"\n');
+  const installed = await f.manager.install("openai-codex", credential);
+  assert.equal(installed.configured, true);
+  assert.equal(installed.effectiveProvider, "openai");
+  const config = await fs.readFile(f.configPath, "utf8");
+  assert.match(config, /\[profiles\."work"\]\nmodel_provider = "openai"\nmodel_reasoning_effort = "high"/);
+  assert.match(config, /\[profiles.personal\]\nmodel_provider = "personal-provider"/);
+});
