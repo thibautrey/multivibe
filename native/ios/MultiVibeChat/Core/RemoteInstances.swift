@@ -125,6 +125,7 @@ private extension Data {
 actor RemoteInstanceAPI {
     static let shared = RemoteInstanceAPI()
     static let model = "multivibe/host-harness-v1"
+    static let lanControlTimeout: TimeInterval = 20
     private let session: URLSession
     static func sessionConfiguration() -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.ephemeral
@@ -203,9 +204,9 @@ actor RemoteInstanceAPI {
         var e = fields; e["version"] = .number(1); e["accountId"] = .string(account); e["machineId"] = .string(machine.id)
         let content = String(decoding: try JSONEncoder().encode(HistoryJSON.object(e)), as: UTF8.self)
         let body = HistoryJSON.object(["model": .string(Self.model), "stream": .bool(true), "messages": .array([.object(["role": .string("user"), "content": .string(content)])])])
-        var request = URLRequest(url: url); request.httpMethod = "POST"; request.httpBody = try JSONEncoder().encode(body); request.timeoutInterval = streaming ? .greatestFiniteMagnitude : 2
+        var request = URLRequest(url: url); request.httpMethod = "POST"; request.httpBody = try JSONEncoder().encode(body); request.timeoutInterval = streaming ? .greatestFiniteMagnitude : Self.lanControlTimeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let configuration = URLSessionConfiguration.ephemeral; configuration.waitsForConnectivity = false; configuration.timeoutIntervalForRequest = streaming ? .greatestFiniteMagnitude : 2; configuration.timeoutIntervalForResource = streaming ? .greatestFiniteMagnitude : 2
+        let configuration = URLSessionConfiguration.ephemeral; configuration.waitsForConnectivity = false; configuration.timeoutIntervalForRequest = streaming ? .greatestFiniteMagnitude : Self.lanControlTimeout; configuration.timeoutIntervalForResource = streaming ? .greatestFiniteMagnitude : Self.lanControlTimeout
         return (request, URLSession(configuration: configuration, delegate: trust, delegateQueue: nil))
     }
     private func lanControl(_ machine: RemoteMachine, account: String, fields: [String: HistoryJSON]) async throws -> HistoryJSON {

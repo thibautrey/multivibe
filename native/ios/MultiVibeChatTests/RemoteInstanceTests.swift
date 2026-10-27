@@ -5,6 +5,7 @@ import SwiftUI
 final class RemoteInstanceTests: XCTestCase {
     func testRemoteFollowHasNoTransportDeadlineAndRetriesWithoutAttemptLimit() {
         let configuration = RemoteInstanceAPI.sessionConfiguration()
+        XCTAssertEqual(RemoteInstanceAPI.lanControlTimeout, 20)
         XCTAssertEqual(configuration.timeoutIntervalForRequest, .greatestFiniteMagnitude)
         XCTAssertEqual(configuration.timeoutIntervalForResource, .greatestFiniteMagnitude)
         XCTAssertEqual(RemoteFollowRetryPolicy.delayNanoseconds(afterFailure: 0), 1_000_000_000)
