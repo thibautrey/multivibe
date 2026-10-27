@@ -81,9 +81,20 @@ struct RemoteInstancesView: View {
                    let machine = instances.machines.first(where: { $0.online && $0.supportsHarness && $0.localEndpoint != nil && !instances.paired.contains($0.id) }) {
                     try? await instances.requestConnection(machine.id, name: UIDevice.current.name)
                 }
-                if ProcessInfo.processInfo.arguments.contains("-remote-instances-message-validation"),
-                   let machine = instances.machines.first(where: { $0.online && $0.localEndpoint != nil && instances.paired.contains($0.id) }) {
-                    Task { @MainActor in await validateDirectMessage(machine) }
+                if ProcessInfo.processInfo.arguments.contains("-remote-instances-message-validation") {
+                    let output = FileManager.default.temporaryDirectory.appendingPathComponent("multivibe-p2p-message-validation.json")
+                    try? FileManager.default.removeItem(at: output)
+                    Task { @MainActor in
+                        for _ in 0..<20 {
+                            if let machine = instances.machines.first(where: { $0.online && $0.localEndpoint != nil && instances.paired.contains($0.id) }) {
+                                await validateDirectMessage(machine); return
+                            }
+                            await instances.reload()
+                            try? await Task.sleep(for: .seconds(1))
+                        }
+                        let evidence: [String: Any] = ["completed": false, "error": "local_endpoint_unavailable", "finishedAt": Date().timeIntervalSince1970]
+                        if let data = try? JSONSerialization.data(withJSONObject: evidence, options: [.sortedKeys]) { try? data.write(to: output, options: .atomic) }
+                    }
                 }
 #endif
                 var ticks = 0
@@ -128,7 +139,6 @@ struct RemoteInstancesView: View {
 #if DEBUG
     private func validateDirectMessage(_ machine: RemoteMachine) async {
         let output = FileManager.default.temporaryDirectory.appendingPathComponent("multivibe-p2p-message-validation.json")
-        try? FileManager.default.removeItem(at: output)
         var evidence: [String: Any] = ["machine": machine.id, "startedAt": Date().timeIntervalSince1970]
         do {
             try await instances.catalog(machine.id)
