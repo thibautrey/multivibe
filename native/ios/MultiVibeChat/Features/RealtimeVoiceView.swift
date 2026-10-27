@@ -105,6 +105,7 @@ struct RealtimeVoiceView: View {
     @State private var configurationRequired = false
     @State private var configurationReady = false
     @State private var sessionStarted = false
+    @State private var remoteVoicePreparation: RemoteVoicePreparation?
     private var instances: RemoteInstances { .shared }
     private var messages: [ChatMessage] {
         if let remoteChatID { return instances.chats.first(where: { $0.id == remoteChatID })?.messages ?? [] }
@@ -237,8 +238,10 @@ struct RealtimeVoiceView: View {
             controller.error = "Terminez le tour ou vérifiez sa configuration avant de parler à cette instance."
             return
         }
-        let capabilities = try await instances.voiceCapabilities(chat.machine)
+        let preparation = try await instances.prepareVoice(chat.machine)
+        let capabilities = preparation.capabilities
         guard capabilities.enabled, !capabilities.voices.isEmpty else { throw APIError.noModel }
+        remoteVoicePreparation = preparation
         instanceModel = capabilities.llmModel
         preparedModel = capabilities.llmModel
         preparedBackgroundAudio = capabilities.backgroundAudio
@@ -280,7 +283,9 @@ struct RealtimeVoiceView: View {
         do {
             if let id = remoteChatID {
                 guard let chat = instances.chats.first(where: { $0.id == id }) else { throw APIError.invalidResponse }
-                let connection = try await instances.voiceConnection(chat.machine, voice: selectedVoice)
+                guard let remoteVoicePreparation, remoteVoicePreparation.machine == chat.machine else { throw APIError.authenticationRequired }
+                controller.phase = .connecting
+                let connection = try instances.voiceConnection(remoteVoicePreparation, voice: selectedVoice)
                 await controller.start(session: connection.session, history: chat.messages, accountToken: "", backgroundAudio: preparedBackgroundAudio,
                                        headers: connection.headers) { role, text, turnID in
                     instances.appendVoiceTurn(chatID: id, accountID: account.accountId, model: preparedModel, role: role, text: text, turnID: turnID)
@@ -314,8 +319,8 @@ struct RealtimeVoiceView: View {
             }
         } catch {
             sessionStarted = false
-            controller.error = remoteChatID == nil ? error.localizedDescription :
-                "Le vocal est indisponible sur cette instance. Vérifiez que sa passerelle et ses modèles vocaux sont démarrés."
+            controller.phase = .idle
+            controller.error = remoteChatID == nil ? error.localizedDescription : RemoteInstances.connectionError(error)
         }
     }
 

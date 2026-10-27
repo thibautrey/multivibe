@@ -35,6 +35,26 @@ final class RemoteInstanceTests: XCTestCase {
         XCTAssertEqual(current.voices[0].model, "qwen-tts")
         XCTAssertEqual(current.voices[0].voice, "serena")
     }
+    func testPreparedVoiceConnectionReusesValidatedAuthorizationWithoutAnotherRequest() throws {
+        let capabilities = try JSONDecoder().decode(RemoteVoiceCapabilities.self, from: Data(#"{"enabled":true,"voices":[{"id":"kokoro:ff_siwis","name":"Kokoro"}],"llmModel":"gpt","transcriptionModel":"whisper","backgroundAudio":false}"#.utf8))
+        let expiry = Date(timeIntervalSince1970: 2_000)
+        let preparation = RemoteVoicePreparation(
+            machine: "db33779d-e9db-4be5-a4b4-8325f1f5c285",
+            capabilities: capabilities,
+            accountID: "account",
+            generation: UUID(),
+            accountToken: "account-session-token",
+            expiresAt: expiry,
+            headers: ["X-MultiVibe-Device-Id": "device", "X-MultiVibe-Device-Token": "device-token"]
+        )
+        let connection = try preparation.connection(voice: "kokoro:ff_siwis", now: Date(timeIntervalSince1970: 1_000))
+        XCTAssertEqual(connection.session.expiresAt, expiry)
+        XCTAssertEqual(connection.session.credential.token, "account-session-token")
+        XCTAssertEqual(URLComponents(url: connection.session.credential.endpoint, resolvingAgainstBaseURL: false)?.queryItems,
+                       [.init(name: "voice", value: "kokoro:ff_siwis")])
+        XCTAssertEqual(connection.headers["X-MultiVibe-Device-Id"], "device")
+        XCTAssertThrowsError(try preparation.connection(voice: "kokoro:ff_siwis", now: expiry))
+    }
     func testPairingAcceptsOnlyExactFirstPartyShapeAndNeverAnEndpoint() {
         let machine = UUID().uuidString.lowercased()
         XCTAssertNotNil(RemotePairing.parse(URL(string: "multivibe-chat://instance/pair?machine=\(machine)&handoff=SYNTHETIC123")!))
