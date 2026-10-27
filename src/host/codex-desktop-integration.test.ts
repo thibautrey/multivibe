@@ -92,7 +92,10 @@ test("repair migrates revision-four custom providers without touching authentica
   assert.equal(repaired.effectiveProvider, "openai");
   const updated = JSON.parse(await fs.readFile(f.statePath, "utf8"));
   assert.equal(updated.installations["openai-codex"].originalContentBase64, savedOriginal);
+  assert.equal(updated.installations["openai-codex"].auxiliaryFiles[0].originalContentBase64, null);
   assert.equal(await fs.readFile(f.authPath, "utf8"), f.auth);
+  await f.manager.uninstall("openai-codex");
+  await assert.rejects(fs.access(path.join(f.home, ".codex/multivibe-models.json")), /ENOENT/);
 });
 
 test("an occupied relay port receives no credentials and explicit repair safely selects a new port", async t => {
@@ -152,4 +155,18 @@ test("a failed durable install restores files and releases its provisional liste
   await assert.rejects(fs.access(path.join(f.home, ".codex/multivibe-models.json")), /ENOENT/);
   assert.ok(allocatedPort > 1024);
   await assert.rejects(request(`http://127.0.0.1:${allocatedPort}/v1/models`, f.bearer), /ECONNREFUSED|socket hang up/);
+});
+
+test("a failed disconnect restores the active catalogue and keeps the relay running", async t => {
+  const f = await fixture(t);
+  const installed = await f.manager.install("openai-codex", credential);
+  const catalogPath = path.join(f.home, ".codex/multivibe-models.json");
+  const catalog = await fs.readFile(catalogPath, "utf8");
+  const config = await fs.readFile(f.configPath, "utf8");
+  (f.manager as any).writeState = async () => { throw new Error("simulated disconnect storage failure"); };
+  await assert.rejects(f.manager.uninstall("openai-codex"), /disconnect storage failure/);
+  assert.equal(await fs.readFile(f.configPath, "utf8"), config);
+  assert.equal(await fs.readFile(catalogPath, "utf8"), catalog);
+  assert.equal((await f.manager.get("openai-codex")).configured, true);
+  assert.equal((await request(installed.effectiveBaseUrl! + "/models", f.bearer)).status, 200);
 });

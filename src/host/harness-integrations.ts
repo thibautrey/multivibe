@@ -1697,11 +1697,13 @@ export class HostHarnessIntegrationManager {
       if (!current || sha256(current.content) !== installation.installedSha256) {
         throw new HostHarnessIntegrationError(`~/${definition.configuration!.relativePath} changed after MultiVibe was installed; it was left untouched`, 409);
       }
+      const auxiliaryBefore: Array<{ path: string; content: string; mode: number }> = [];
       for (const auxiliary of installation.auxiliaryFiles ?? []) {
         const currentAuxiliary = await readBounded(auxiliary.path);
         if (!currentAuxiliary || sha256(currentAuxiliary.content) !== auxiliary.installedSha256) {
           throw new HostHarnessIntegrationError(`${auxiliary.path} changed after MultiVibe was installed; it was left untouched`, 409);
         }
+        auxiliaryBefore.push({ path: auxiliary.path, content: currentAuxiliary.content, mode: currentAuxiliary.mode });
       }
       const restoreTracking = id === "openai-codex" ? await this.writeProjectTracking(true) : undefined;
       try {
@@ -1725,6 +1727,7 @@ export class HostHarnessIntegrationManager {
       } catch (error) {
         await restoreTracking?.();
         await writeAtomic(configPath, current.content, current.mode);
+        for (const file of auxiliaryBefore) await writeAtomic(file.path, file.content, file.mode);
         throw error;
       }
       return { view: await this.view(definition, state), apiKeyId: installation.apiKeyId };
@@ -1907,8 +1910,8 @@ export class HostHarnessIntegrationManager {
         const saved = preserved?.find((entry) => entry.path === filePath);
         states.push({
           path: filePath,
-          originalContentBase64: saved?.originalContentBase64 ?? (before ? Buffer.from(before.content).toString("base64") : null),
-          originalMode: saved?.originalMode ?? before?.mode ?? null,
+          originalContentBase64: saved ? saved.originalContentBase64 : (before ? Buffer.from(before.content).toString("base64") : null),
+          originalMode: saved ? saved.originalMode : before?.mode ?? null,
           installedSha256: sha256(definition.content),
         });
       }
