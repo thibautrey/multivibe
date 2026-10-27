@@ -947,7 +947,7 @@ struct RemoteModelPreference: Codable {
                         if let projectId = initialChat.projectId { fields["projectId"] = .string(projectId) }
                     }
 #if DEBUG
-                    RemoteP2PMessageValidationLog.record("events-started")
+                    RemoteP2PMessageValidationLog.record("events-started-port-\(machines.first { $0.id == current.machine }?.localEndpoint?.port ?? 0)")
 #endif
                     try await RemoteInstanceAPI.shared.events(current.machine, account: owner, token: session.accessToken, fields: fields, local: machines.first { $0.id == current.machine }) { event in
                         guard await self.streamGeneration == streamEpoch else { throw CancellationError() }
