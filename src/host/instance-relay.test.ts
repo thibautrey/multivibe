@@ -222,3 +222,54 @@ test('mobile activity streams before completion, recovers by cursor and survives
  assert.equal(saved.length,4);assert.equal(saved[1].title,'Lire la page');assert.equal(saved[1].status,'success');assert.equal(saved[1].output,'Source vérifiée');
  assert.deepEqual(saved.slice(2).map((v:any)=>v.title),['search','read']);
 });
+
+const durableRequest=()=>({operation:'pair-request',requestId:randomUUID(),deviceToken:randomBytes(32).toString('base64url'),trustToken:randomBytes(32).toString('base64url'),name:'Durable iPhone'});
+test('Mac approval is explicit, idempotent and recovers a lost reply across Host restart',async t=>{
+ const f=await fixture(t),request=durableRequest();
+ assert.equal(JSON.parse(await f.send(request)).state,'pending');
+ assert.equal(JSON.parse(await f.send(request)).state,'pending');
+ assert.equal(f.service.status().requests.length,1);
+ await assert.rejects(f.send({operation:'catalog',deviceId:request.requestId,deviceToken:request.deviceToken}));
+ f.service.decidePairing(request.requestId,true);f.service.decidePairing(request.requestId,true);
+ assert.equal(f.service.status().devices.length,1);
+ const restarted=new InstanceRelay(f.runtime,f.file);
+ const chunks:string[]=[];
+ await restarted.dispatch(f.envelope({...request,operation:'pair-status'}),async data=>{chunks.push(data);},AbortSignal.timeout(3000));
+ assert.equal(JSON.parse(chunks.join('')).state,'approved');
+ const disk=fs.readFileSync(f.file,'utf8');assert.ok(!disk.includes(request.deviceToken));assert.ok(!disk.includes(request.trustToken));
+ assert.equal(JSON.parse(await f.send({operation:'catalog',deviceId:request.requestId,deviceToken:request.deviceToken})).name,'Fixture Mac');
+});
+test('durable trust renews after months, survives a lost renewal reply and remains revocable',async t=>{
+ const f=await fixture(t),request=durableRequest();await f.send(request);f.service.decidePairing(request.requestId,true);
+ f.advance(180*24*3600_000);
+ const renewal={operation:'renew',deviceId:request.requestId,trustToken:request.trustToken,deviceToken:randomBytes(32).toString('base64url')};
+ await f.send(renewal);
+ const restarted=new InstanceRelay(f.runtime,f.file),chunks:string[]=[];
+ await restarted.dispatch(f.envelope(renewal),async data=>{chunks.push(data);},AbortSignal.timeout(3000));
+ assert.equal(JSON.parse(chunks.join('')).deviceToken,renewal.deviceToken);
+ assert.equal(JSON.parse(chunks.join('')).durable,true);
+ assert.equal(f.service.status().devices.length,1);
+ restarted.revokeDevice(request.requestId);
+ await assert.rejects(restarted.dispatch(f.envelope(renewal),async()=>{},AbortSignal.timeout(3000)),/revoked/);
+});
+test('refusal, cancellation, expiry and guessed request proofs cannot grant access',async t=>{
+ const f=await fixture(t),request=durableRequest();await f.send(request);
+ await assert.rejects(f.send({...request,trustToken:randomBytes(32).toString('base64url')}),/mismatch/);
+ await assert.rejects(f.send({...request,accountId:randomUUID()}),/mismatch/);
+ f.service.decidePairing(request.requestId,false);
+ assert.equal(JSON.parse(await f.send(request)).state,'refused');f.service.decidePairing(request.requestId,true);
+ assert.equal(f.service.status().devices.length,0);
+ const other=durableRequest();await f.send(other);f.service.decidePairing(other.requestId,true);
+ assert.equal(JSON.parse(await f.send({...other,operation:'pair-cancel'})).state,'cancelled');
+ await assert.rejects(f.send({operation:'renew',deviceId:other.requestId,trustToken:other.trustToken,deviceToken:other.deviceToken}),/revoked/);
+ const pending=durableRequest();await f.send(pending);f.advance(300_001);
+ assert.equal(JSON.parse(await f.send({...pending,operation:'pair-status'})).state,'expired');
+ assert.throws(()=>f.service.decidePairing(pending.requestId,true),/expired/);
+ assert.equal(f.service.status().requests.length,0);
+});
+test('valid legacy devices can upgrade to durable trust without re-pairing',async t=>{
+ const f=await fixture(t),legacy=await f.pair(),trustToken=randomBytes(32).toString('base64url');
+ const upgraded=JSON.parse(await f.send({...legacy,trustToken,operation:'renew'}));assert.equal(upgraded.durable,true);
+ f.advance(30*24*3600_000);
+ assert.equal(JSON.parse(await f.send({...upgraded,trustToken,operation:'renew'})).deviceId,legacy.deviceId);
+});

@@ -10,6 +10,8 @@ struct NativeInstancePairingView: View {
     @State private var handoff: HarnessJSON = .null
     @State private var error: String?
     @State private var busy = false
+    @State private var advanced = false
+    var close: (() -> Void)? = nil
     private func call(_ path: String = "", method: String = "GET", body: HarnessJSON? = nil) async throws -> HarnessJSON {
         guard let app = NSApp.delegate as? MultiVibeMenuBarApp,
               var request = app.authorizedRequest(path: "/admin/instance-relay/v1" + path, method: method) else { throw DesktopHarnessError.invalidResponse }
@@ -29,9 +31,20 @@ struct NativeInstancePairingView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Utiliser ce Mac depuis votre iPhone").font(.title2.bold())
-            Text("Connectez le même compte MultiVibe sur l’iPhone, puis ouvrez Compte → Instances → Scanner. Vos harness s’exécutent sur ce Mac, avec leurs autorisations habituelles.")
+            Text("Sur l’iPhone, ouvrez Compte → Instances, choisissez ce Mac et touchez Connecter. Autorisez ensuite votre iPhone ici, une seule fois.")
             if status["connected"] == .bool(true) {
                 Label(status["running"] == .bool(true) ? "Relay connecté" : "Connexion Relay en cours", systemImage: "network")
+                ForEach(status["requests"].array, id: \.display) { request in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label((request["name"].string ?? "iPhone") + " souhaite se connecter", systemImage: "iphone")
+                        Text("Autorisez uniquement un appareil que vous reconnaissez. L’accès restera actif jusqu’à révocation.").font(.caption)
+                        HStack {
+                            Button("Autoriser") { perform { status = try await call("/requests/" + (request["id"].string ?? "") + "/approve", method: "POST", body: .object([:])) } }.buttonStyle(.borderedProminent)
+                            Button("Refuser") { perform { status = try await call("/requests/" + (request["id"].string ?? "") + "/refuse", method: "POST", body: .object([:])) } }
+                        }
+                    }.padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+                }
+                DisclosureGroup("Utiliser un QR ou un code", isExpanded: $advanced) {
                 if let uri = handoff["uri"].string, let image = qr(uri) {
                     HStack(spacing: 20) {
                         Image(nsImage: image).interpolation(.none).resizable().scaledToFit().frame(width: 220, height: 220).padding(10).background(.white)
@@ -45,6 +58,7 @@ struct NativeInstancePairingView: View {
                 }
                 Button("Afficher un nouveau code") { perform { handoff = try await call("/pairing", method: "POST", body: .object([:])) } }
                     .disabled(status["running"] != .bool(true))
+                }
                 ForEach(status["devices"].array, id: \.display) { device in
                     HStack { Text(device["name"].string ?? "iPhone"); Spacer(); Button("Révoquer") { perform { status = try await call("/devices/" + (device["id"].string ?? ""), method: "DELETE") } } }
                 }
@@ -58,9 +72,11 @@ struct NativeInstancePairingView: View {
             }
             Text("Transport HTTPS sortant via MultiVibe Relay. Les échanges utilisent le quota Relay du compte. Le Cloud peut lire le contenu transitoire du transport.").font(.caption).foregroundStyle(.secondary)
             if let error { Text(error).foregroundStyle(.red) }
-            HStack { if busy { ProgressView().controlSize(.small) }; Spacer(); Button("Fermer") { dismiss() }.keyboardShortcut(.cancelAction) }
+            HStack { if busy { ProgressView().controlSize(.small) }; Spacer(); Button("Fermer") { if let close { close() } else { dismiss() } }.keyboardShortcut(.cancelAction) }
         }.padding(24).frame(width: 620).disabled(busy)
-        .task { while !Task.isCancelled { do { status = try await call() } catch { self.error = error.localizedDescription }; try? await Task.sleep(for: .seconds(2)) } }
+        .task { while !Task.isCancelled { do { status = try await call(); self.error = nil
+            if case .number(let expiry) = handoff["expiresAt"], expiry <= Date().timeIntervalSince1970 * 1000 { handoff = .null }
+            } catch { self.error = error.localizedDescription }; try? await Task.sleep(for: .seconds(2)) } }
         .onDisappear { handoff = .null; Task { _ = try? await call("/pairing", method: "DELETE") } }
     }
     private func qr(_ value: String) -> NSImage? {

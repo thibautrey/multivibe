@@ -43,21 +43,31 @@ the existing Relay message allowance. The transport is not zero-access: Cloud ca
 read its transient encrypted payloads. It does not export local iPhone history or
 silently fall back to another inference provider.
 
-Pairing uses a random 60-bit, single-use handoff, bound to the account-owned
-machine. It expires after five minutes, eight failed guesses, replacement or
-closing the Desktop sheet. Manual pairing requires selecting the same machine
-from the account directory. The QR contains only its public machine selector and
-ephemeral handoff, using an exact `multivibe-chat://instance/pair` URL. It never
-contains the account session, machine credential, admin key or device credential.
+Pairing v2 starts on iOS: select the account-owned Mac, tap Connect, then
+approve the named iPhone in MultiVibe on the Mac. The menu-bar application checks
+for requests even when no chat window is open and presents the approval window.
+System notifications are supplementary and only used when already authorized.
+Requests expire after five minutes; accept, refuse and cancel are explicit states.
+Repeated submissions use the same request/device ID and proof. Pending request
+secrets are saved in the device-only unlocked Keychain before transmission, so
+lost responses and app/Host restarts do not create duplicate devices. Host stores
+only hashes. No request can select another network origin or filesystem path.
 
-Device credentials expire after 24 hours. iOS stores them in its bundle-scoped,
-device-only, unlocked Keychain and renews before expiry. Host stores only their
-hashes. Rotation retains the prior hash for one minute to recover a lost response;
-the replacement plaintext exists only in bounded process memory. Restarting Host
-invalidates pending handoffs. Revocation denies the next operation and interrupts
-stream delivery. Desktop can revoke an individual device or disable the machine;
-iOS can revoke its device or explicitly revoke the account's whole machine.
-Offline disconnect clears local credentials and reports unconfirmed revocation.
+The association is durable until revocation or account sign-out. Device access
+tokens last 24 hours; a separate durable secret can renew them after inactivity.
+iOS serializes renewal per machine and saves the next token before sending it.
+Host installs its hash idempotently, including after restart. Valid v1 associations
+upgrade during use; expired v1 associations require one final approval. Older
+Hosts retain QR/code pairing and legacy token renewal. The QR fallback remains a
+60-bit, single-use handoff bound to the machine, expiring after five minutes,
+eight failed guesses, replacement or closing its Desktop sheet.
+
+Temporary transport failures retain trust and history. Account-session expiry,
+explicit device revocation and old expired authorizations have separate recovery
+messages. Revocation denies the next operation and interrupts stream delivery.
+Desktop can revoke a device or disable the machine; iOS can revoke its device or
+explicitly revoke the account's whole machine. Offline disconnect reports
+unconfirmed remote revocation. Pending cancellation is retained for retry.
 
 Native harness sessions, model discovery, command fingerprints, receipts and
 event journals all use the same `HostHarnessRuntime` as Desktop. Mobile session

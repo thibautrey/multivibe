@@ -17,9 +17,10 @@ const ORIGIN='https://app.multivibe.cloud';
 const hash=(v:string)=>createHash('sha256').update(v).digest('hex');
 const equal=(a:string,b:string)=>a.length===b.length&&timingSafeEqual(Buffer.from(a),Buffer.from(b));
 const uuid=(v:unknown):v is string=>typeof v==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
-type Device={id:string;name:string;digest:string;expiresAt:number;previous?:{digest:string;expiresAt:number}};
-type State={version:1;machineId:string;name:string;machineToken:string;devices:Device[]};
-type Envelope={version:1;accountId:string;machineId:string;operation:string;deviceId?:string;deviceToken?:string;handoff?:string;name?:string;harnessId?:string;model?:string;provider?:string;effort?:string|null;projectId?:string;conversationId?:string;commandId?:string;text?:string;after?:number;targetId?:string;page?:number;source?:InstanceConversationSource;offset?:number;revision?:string};
+type Device={id:string;name:string;digest:string;expiresAt:number;trustDigest?:string;previous?:{digest:string;expiresAt:number}};
+type PairRequest={id:string;accountId:string;name:string;digest:string;trustDigest:string;expiresAt:number;state:'pending'|'approved'|'refused'|'cancelled'};
+type State={requests?:PairRequest[];version:1;machineId:string;name:string;machineToken:string;devices:Device[]};
+type Envelope={version:1;accountId:string;machineId:string;operation:string;requestId?:string;trustToken?:string;deviceId?:string;deviceToken?:string;handoff?:string;name?:string;harnessId?:string;model?:string;provider?:string;effort?:string|null;projectId?:string;conversationId?:string;commandId?:string;text?:string;after?:number;targetId?:string;page?:number;source?:InstanceConversationSource;offset?:number;revision?:string};
 type Upload=(data:string,terminal?:boolean,status?:number,contentType?:string)=>Promise<void>;
 
 // Relay limits each persisted chunk to 32 KiB. Split at UTF-16 boundaries
@@ -33,6 +34,7 @@ export function instanceRelayChunks(data:string):string[]{
 export class InstanceRelay {
  readonly conversations:InstanceConversations;
  private state?:State;
+ private savedState?:State;
  private controller?:AbortController;
  private handoff?:{digest:string;expiresAt:number;attempts:number};
  private running=false;
@@ -41,11 +43,51 @@ export class InstanceRelay {
  private rotations=new Map<string,{token:string;expiresAt:number}>();
  constructor(private readonly runtime:HostHarnessRuntime,private readonly file:string,private readonly fetcher:typeof fetch=fetch,private readonly clock=Date.now) {
   this.conversations=new InstanceConversations(runtime);
-  try {const s=JSON.parse(fs.readFileSync(file,'utf8'));if(s.version!==1||!uuid(s.machineId)||!/^mvr_[A-Za-z0-9_-]{43}$/.test(s.machineToken)||!Array.isArray(s.devices))throw Error();this.state=s;}
+  try {const s=JSON.parse(fs.readFileSync(file,'utf8'));if(s.version!==1||!uuid(s.machineId)||!/^mvr_[A-Za-z0-9_-]{43}$/.test(s.machineToken)||!Array.isArray(s.devices))throw Error();this.state=s;this.savedState=structuredClone(s);}
   catch(e:any){if(e.code!=='ENOENT')throw new Error('Remote instance configuration is invalid');}
  }
- private persist(){if(!this.state)return;fs.mkdirSync(path.dirname(this.file),{recursive:true,mode:0o700});const temp=this.file+'.'+randomUUID();fs.writeFileSync(temp,JSON.stringify(this.state),{mode:0o600});fs.renameSync(temp,this.file);fs.chmodSync(this.file,0o600);}
- status(){return {connected:!!this.state,running:this.running,name:this.state?.name,error:this.lastError,devices:this.state?.devices.filter(d=>d.expiresAt>this.clock()).map(({id,name,expiresAt})=>({id,name,expiresAt}))??[]};}
+ private persist(){
+  if(!this.state)return;const temp=this.file+'.'+randomUUID();
+  try {
+   fs.mkdirSync(path.dirname(this.file),{recursive:true,mode:0o700});fs.writeFileSync(temp,JSON.stringify(this.state),{mode:0o600});fs.renameSync(temp,this.file);
+   this.savedState=structuredClone(this.state);
+  } catch(error){this.state=this.savedState?structuredClone(this.savedState):undefined;fs.rmSync(temp,{force:true});throw error;}
+ }
+
+ private requests(){
+  if(!this.state)fail('Instance disconnected',401);
+  this.state.requests=(this.state.requests??[]).filter(r=>r.expiresAt>this.clock());return this.state.requests;
+ }
+ decidePairing(id:string,approve:boolean){
+  const r=this.requests().find(r=>r.id===id);if(!r)fail('Pairing request expired',404);
+  if(r.state!=='pending')return this.status();
+  if(approve){
+   if(this.state!.devices.filter(d=>d.trustDigest||d.expiresAt>this.clock()).length>=10)fail('Device limit reached',409);
+   this.state!.devices.push({id:r.id,name:r.name,digest:r.digest,trustDigest:r.trustDigest,expiresAt:this.clock()+24*3600_000});
+  }
+  r.state=approve?'approved':'refused';this.persist();return this.status();
+ }
+ private pairingRequest(e:Envelope){
+  if(!uuid(e.requestId)||!/^[-_A-Za-z0-9]{43}$/.test(e.trustToken??''))fail('Invalid pairing request');
+  const requests=this.requests();let r=requests.find(r=>r.id===e.requestId);
+  const trustDigest=hash(e.trustToken!);
+  if(r&&(r.accountId!==e.accountId||!equal(r.trustDigest,trustDigest)))fail('Pairing request mismatch',403);
+  if(e.operation==='pair-request'&&!r){
+   if(this.state!.devices.some(d=>d.id===e.requestId))fail('Request already used',409);
+   if(requests.length>=20)fail('Too many pairing requests',429);
+   if(!/^[-_A-Za-z0-9]{43}$/.test(e.deviceToken??''))fail('Invalid device token');
+   r={id:e.requestId!,accountId:e.accountId,name:requiredText(e.name,80),digest:hash(e.deviceToken!),trustDigest,expiresAt:this.clock()+5*60_000,state:'pending'};
+   requests.push(r);this.persist();
+  }
+  if(!r)return {state:'expired'};
+  if(e.operation==='pair-cancel'){
+   if(r.state==='approved')this.revokeDevice(r.id);
+   r.state='cancelled';this.persist();
+  }
+  const device=this.state!.devices.find(d=>d.id===r!.id);
+  return {state:r.state==='approved'&&!device?'revoked':r.state,expiresAt:r.expiresAt,...(r.state==='approved'&&device?{deviceId:device.id,authorizationExpiresAt:device.expiresAt}:{}),pairingVersion:2};
+ }
+ status(){return {pairingVersion:2,requests:this.state?this.requests().filter(r=>r.state==='pending').map(({id,name,expiresAt})=>({id,name,expiresAt})):[],connected:!!this.state,running:this.running,name:this.state?.name,error:this.lastError,devices:this.state?.devices.filter(d=>d.trustDigest||d.expiresAt>this.clock()).map(({id,name,expiresAt})=>({id,name,expiresAt}))??[]};}
  private async account(pathname:string,token:string,body?:unknown,method=body===undefined?'GET':'POST',signal?:AbortSignal) {
   const response=await this.fetcher(ORIGIN+pathname,{method,redirect:'error',credentials:'omit',headers:{authorization:'Bearer '+token,'user-agent':'MultiVibe-Host/1.0',...(body===undefined?{}:{'content-type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.any([AbortSignal.timeout(15_000),...(signal?[signal]:[])])});
   const text=await response.text();if(text.length>1_048_576)fail('Relay response exceeds its limit',502);
@@ -85,12 +127,13 @@ export class InstanceRelay {
  start(){if(this.controller||!this.state)return;const controller=new AbortController();this.controller=controller;void this.run(controller.signal).finally(()=>{if(this.controller===controller){this.running=false;this.controller=undefined;}});}
  private async machine(route:string,body:unknown|undefined,signal:AbortSignal){const s=this.state;if(!s)fail('Instance disconnected',401);return this.account('/relay/v1/machine/'+route,s.machineToken,body,body===undefined?'GET':'POST',signal);}
  private async run(signal:AbortSignal){
-  let heartbeatAt=0;
+  let heartbeatAt=0,failures=0;const jobs=new Set<Promise<void>>();
   while(!signal.aborted&&this.state){try{
    if(this.clock()-heartbeatAt>30_000){await this.machine('heartbeat',{models:[{id:INSTANCE_RELAY_MODEL,name:'MultiVibe Host · harness',supportsTools:false}]},signal);heartbeatAt=this.clock();this.running=true;this.lastError=undefined;}
-   const {job}=await this.machine('jobs',undefined,signal);if(job)await this.execute(job,signal);
-  }catch{if(!signal.aborted){this.lastError='Relay indisponible. Reconnexion en cours.';this.running=false;}}
-  try{await delay(1000,undefined,{signal});}catch{break;}}
+   if(jobs.size<4){const {job}=await this.machine('jobs',undefined,signal);if(job){const execution=this.execute(job,signal).catch(()=>{}).finally(()=>jobs.delete(execution));jobs.add(execution);}}
+   failures=0;
+  }catch{if(!signal.aborted){this.lastError='Relay indisponible. Reconnexion en cours.';this.running=false;heartbeatAt=0;failures++;}}
+  try{await delay(failures?Math.min(15_000,1000*2**Math.min(failures-1,4)):1000,undefined,{signal});}catch{break;}}
  }
  private envelope(body:any):Envelope {
   if(body?.model!==INSTANCE_RELAY_MODEL||!Array.isArray(body.messages)||body.messages.length!==1||body.messages[0]?.role!=='user'||typeof body.messages[0]?.content!=='string'||body.messages[0].content.length>131072)fail('Use the MultiVibe instance protocol',400);
@@ -110,10 +153,21 @@ export class InstanceRelay {
    const h=this.handoff;const code=typeof e.handoff==='string'?e.handoff.toUpperCase():'';
    if(!h||h.expiresAt<=this.clock()||++h.attempts>8||!equal(h.digest,hash(code)))fail('Pairing code expired or invalid',403);
    this.handoff=undefined;
-   this.state!.devices=this.state!.devices.filter(d=>d.expiresAt>this.clock());
-   if(this.state!.devices.filter(d=>d.expiresAt>this.clock()).length>=10)fail('Device limit reached',409);
+   this.state!.devices=this.state!.devices.filter(d=>d.trustDigest||d.expiresAt>this.clock());
+   if(this.state!.devices.filter(d=>d.trustDigest||d.expiresAt>this.clock()).length>=10)fail('Device limit reached',409);
    const token=randomBytes(32).toString('base64url'),d:Device={id:randomUUID(),name:requiredText(e.name,80),digest:hash(token),expiresAt:this.clock()+24*3600_000};
    this.state!.devices.push(d);this.persist();return {deviceId:d.id,deviceToken:token,expiresAt:d.expiresAt};
+  }
+  if(e.trustToken!==undefined){
+   const d=this.state!.devices.find(d=>d.id===e.deviceId);
+   if(!d)fail('Device revoked',401);
+   if(d.trustDigest){if(!equal(d.trustDigest,hash(e.trustToken)))fail('Device revoked',401);}
+   else {this.device(e);if(!/^[-_A-Za-z0-9]{43}$/.test(e.trustToken))fail('Invalid trust token');d.trustDigest=hash(e.trustToken);}
+   if(!/^[-_A-Za-z0-9]{43}$/.test(e.deviceToken??''))fail('Invalid device token');
+   // The client saves its next token before sending. Retrying after restart
+   // installs the same digest; no replacement plaintext is persisted by Host.
+   d.digest=hash(e.deviceToken!);d.previous=undefined;d.expiresAt=this.clock()+24*3600_000;
+   this.persist();return {deviceId:d.id,deviceToken:e.deviceToken!,expiresAt:d.expiresAt};
   }
   const d=this.device(e);const previous=this.rotations.get(d.id);
   if(previous&&previous.expiresAt>this.clock()&&d.previous&&equal(d.previous.digest,hash(e.deviceToken!)))return {deviceId:d.id,deviceToken:previous.token,expiresAt:d.expiresAt};
@@ -125,7 +179,9 @@ export class InstanceRelay {
  async dispatch(body:unknown,upload:Upload,signal:AbortSignal){
   const e=this.envelope(body);
   const json=async(value:unknown)=>upload(JSON.stringify({version:1,...value as object}),true,200,'application/json');
-  if(e.operation==='pair'||e.operation==='renew'){const auth=this.authorize(e);await json({...auth,name:this.state!.name,harnesses:await this.runtime.catalog()});return;}
+  if(e.operation==='pair-capabilities'){await json({pairingVersion:2});return;}
+  if(['pair-request','pair-status','pair-cancel'].includes(e.operation)){await json(this.pairingRequest(e));return;}
+  if(e.operation==='pair'||e.operation==='renew'){const auth=this.authorize(e);await json({...auth,pairingVersion:2,durable:!!this.state!.devices.find(d=>d.id===auth.deviceId)?.trustDigest,name:this.state!.name,harnesses:await this.runtime.catalog()});return;}
   const device=this.device(e);
   if(e.operation==='revoke'){this.revokeDevice(device.id);await json({revoked:true});return;}
   if(e.operation==='conversation-targets'){await json({targets:this.conversations.targets()});return;}
@@ -217,7 +273,7 @@ export class InstanceRelay {
   const timer=setInterval(()=>{if(checking)return;checking=true;void this.machine('jobs/'+job.id+'/status',undefined,execution).then(v=>{if(v.state!=='running')local.abort();},()=>{}).finally(()=>{checking=false;});},2000);timer.unref();
   const upload:Upload=async(data,terminal=false,status=200,contentType='application/json')=>{total+=Buffer.byteLength(data);if(total>8*1024*1024)fail('Instance response exceeds limit',413);const chunks=instanceRelayChunks(data);for(const [index,chunk] of chunks.entries()){if(seq>2047)fail('Instance response exceeds limit',413);await this.machine('jobs/'+job.id+'/chunks',{sequence:seq++,data:chunk,terminal:terminal&&index===chunks.length-1,status,contentType},execution);}};
   try{await this.dispatch(job.body,upload,execution);}
-  catch(error:any){if(seq===0&&!execution.aborted)await upload(JSON.stringify({error:'Instance operation refused',status:error.status??502}),true,error.status??502);else await this.machine('jobs/'+job.id+'/fail',{},AbortSignal.timeout(5000)).catch(()=>{});}
+  catch(error:any){if(seq===0&&!execution.aborted)await upload(JSON.stringify({error:'Instance operation refused',code:error.status===401&&/Device/.test(error.message)?'instance_device_revoked':error.status===400?'instance_update_required':'instance_operation_refused',status:error.status??502}),true,error.status??502);else await this.machine('jobs/'+job.id+'/fail',{},AbortSignal.timeout(5000)).catch(()=>{});}
   finally{clearInterval(timer);local.abort();}
  }
 }
@@ -229,6 +285,8 @@ export function instanceRelayRoutes(service?:InstanceRelay,withAccount?:<T>(oper
  router.post('/connect',route(req=>{if(!withAccount)fail('Connect this Host to MultiVibe Cloud first',409);return withAccount(token=>service!.connect(token,req.body.name??os.hostname()));}));
  router.post('/pairing',route(()=>service!.pairing()));
  router.delete('/pairing',route(()=>service!.cancelPairing()));
+ router.post('/requests/:id/approve',route(req=>service!.decidePairing(String(req.params.id),true)));
+ router.post('/requests/:id/refuse',route(req=>service!.decidePairing(String(req.params.id),false)));
  router.delete('/devices/:id',route(req=>service!.revokeDevice(String(req.params.id))));
  router.post('/disconnect',route(()=>{if(!withAccount)fail('Connect this Host to MultiVibe Cloud first',409);return withAccount(token=>service!.disconnect(token));}));
  return router;

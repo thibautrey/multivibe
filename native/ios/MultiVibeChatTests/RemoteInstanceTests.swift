@@ -180,3 +180,28 @@ extension RemoteInstanceTests {
         }
     }
 }
+
+extension RemoteInstanceTests {
+    func testDurableAndPendingCredentialsSurviveKeychainRestoreWithoutPlaintextArchive() throws {
+        let account = UUID().uuidString, machine = UUID().uuidString
+        defer { RemoteAuthorizationStore.clear(account, machine) }
+        var pending = RemoteDeviceAuthorization(deviceId: UUID().uuidString, deviceToken: try RemoteDeviceAuthorization.secret(), expiresAt: 0,
+            trustToken: try RemoteDeviceAuthorization.secret(), pendingUntil: Date().addingTimeInterval(300).timeIntervalSince1970 * 1000, deviceName: "Fixture iPhone")
+        XCTAssertEqual(pending.deviceToken.count, 43)
+        XCTAssertEqual(pending.trustToken?.count, 43)
+        XCTAssertNotEqual(pending.deviceToken, pending.trustToken)
+        try RemoteAuthorizationStore.save(pending, account, machine)
+        XCTAssertEqual(try RemoteAuthorizationStore.load(account, machine)?.trustToken, pending.trustToken)
+        pending.pendingCancelled = true
+        try RemoteAuthorizationStore.save(pending, account, machine)
+        XCTAssertEqual(try RemoteAuthorizationStore.load(account, machine)?.pendingCancelled, true)
+        let legacy = Data(#"{"deviceId":"fixture","deviceToken":"fixture","expiresAt":1}"#.utf8)
+        XCTAssertNil(try JSONDecoder().decode(RemoteDeviceAuthorization.self, from: legacy).trustToken)
+    }
+    func testConnectionErrorsDistinguishRevocationFromTemporaryTransportLoss() {
+        XCTAssertTrue(RemoteInstances.connectionError(APIError.server(401, "instance_device_revoked")).contains("révoqué"))
+        XCTAssertTrue(RemoteInstances.connectionError(APIError.server(401, "instance_session_expired")).contains("compte"))
+        XCTAssertTrue(RemoteInstances.connectionError(URLError(.notConnectedToInternet)).contains("conservée"))
+        XCTAssertTrue(RemoteInstances.connectionError(APIError.server(409, "instance_update_required")).contains("jour"))
+    }
+}
