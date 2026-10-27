@@ -222,7 +222,7 @@ extension RemoteInstanceTests {
         XCTAssertThrowsError(try RemoteInstanceAPI.lanURL(advertised))
     }
 
-    func testOnlineDirectoryRefreshRetainsTheLastPinnedLANEndpoint() {
+    @MainActor func testOnlineDirectoryRefreshRetainsTheLastPinnedLANEndpoint() {
         let id = UUID().uuidString
         var previous = RemoteMachine(id: id, name: "Mac", online: true, models: [])
         previous.lanPublicKey = String(repeating: "A", count: 43); previous.lanHost = "old.local"; previous.lanPort = 42424
