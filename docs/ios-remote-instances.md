@@ -53,6 +53,8 @@ secrets are saved in the device-only unlocked Keychain before transmission, so
 lost responses and app/Host restarts do not create duplicate devices. Host stores
 only hashes. No request can select another network origin or filesystem path.
 
+When iPhone and Mac share a network, the Host opens a TLS 1.3 listener on a random port and publishes only its `.local` DNS name, port and certificate SHA-256 pin in the account-owned machine directory. iOS tries that pinned endpoint first for pairing, control, catalogue, history and streamed turns. Certificate mismatch, DNS failure or an unreachable local socket cannot expose a credential: iOS silently uses the authenticated Relay path instead. Transport choice is never shown in the product UI. The Host certificate and private key remain in the mode-0600 application data directory; the Cloud stores only its public pin. A Host restart retains the certificate and may change the port, which the next heartbeat refreshes.
+
 The association is durable until revocation or account sign-out. Device access
 tokens last 24 hours; a separate durable secret can renew them after inactivity.
 iOS serializes renewal per machine and saves the next token before sending it.

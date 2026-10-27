@@ -67,7 +67,6 @@ struct RemoteInstancesView: View {
                     }
                     }
                     if let error = failure ?? instances.error { Section { MultiVibeStatusMessage(message: error) } }
-                    Section { Text("Accès HTTPS via le Relay MultiVibe et quota Relay du compte. Le contenu transitoire peut être lu par le Cloud.").font(.caption).foregroundStyle(.secondary) }
                 }
             }.navigationTitle("Instances")
             .toolbar {
@@ -134,7 +133,6 @@ private struct RemoteMachineView: View {
         List {
             Section {
                 Label(machine.name, systemImage: "desktopcomputer")
-                Text(instances.transportLabel).font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("remoteTransport")
                 if !currentMachine.online { Text("Mac hors ligne. La connexion reprendra automatiquement ; vos conversations sont conservées.").foregroundStyle(.orange) }
                 if !isPaired {
                     if ["pending", "cancelling"].contains(instances.pairingStates[machine.id] ?? "") {

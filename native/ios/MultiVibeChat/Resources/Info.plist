@@ -31,6 +31,8 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>MultiVibe se connecte directement à votre Mac lorsqu’il est disponible sur le même réseau.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>MultiVibe utilise le micro lorsque vous démarrez une dictée ou une conversation vocale. En conversation vocale, l’audio est transmis temporairement au service sélectionné et n’est pas conservé.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

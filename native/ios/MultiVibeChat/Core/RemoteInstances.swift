@@ -1,13 +1,13 @@
 import Foundation
 import CryptoKit
 import Security
-import Network
 import Observation
 import OSLog
 
 struct RemoteMachine: Codable, Identifiable, Sendable {
     struct Model: Codable, Sendable { let id: String }
     let id: String; let name: String; let online: Bool; let models: [Model]
+    var lanPublicKey: String? = nil; var lanHost: String? = nil; var lanPort: Int? = nil
     var supportsHarness: Bool { models.contains { $0.id == RemoteInstanceAPI.model } }
 }
 struct RemoteHarness: Codable, Identifiable, Sendable {
@@ -97,6 +97,24 @@ enum RemoteAuthorizationStore {
     }
 }
 
+private final class RemoteLANTrust: NSObject, URLSessionDelegate, @unchecked Sendable {
+    let pin: Data
+    init?(_ value: String) { guard let data = Data(base64URLEncoded: value), data.count == 32 else { return nil }; pin = data }
+    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let trust = challenge.protectionSpace.serverTrust,
+              let certificate = SecTrustGetCertificateAtIndex(trust, 0) else { completionHandler(.cancelAuthenticationChallenge, nil); return }
+        let digest = Data(SHA256.hash(data: SecCertificateCopyData(certificate) as Data))
+        guard digest == pin else { completionHandler(.cancelAuthenticationChallenge, nil); return }
+        completionHandler(.useCredential, URLCredential(trust: trust))
+    }
+}
+private extension Data {
+    init?(base64URLEncoded value: String) {
+        var text = value.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        text += String(repeating: "=", count: (4 - text.count % 4) % 4); self.init(base64Encoded: text)
+    }
+}
 actor RemoteInstanceAPI {
     static let shared = RemoteInstanceAPI()
     static let model = "multivibe/host-harness-v1"
@@ -164,7 +182,32 @@ actor RemoteInstanceAPI {
         let data = try JSONEncoder().encode(body); guard data.count <= 1_048_576 else { throw APIError.invalidResponse }
         return try request("completions", token: token, body: data)
     }
-    func control(_ machine: String, account: String, token: String, fields: [String: HistoryJSON]) async throws -> HistoryJSON {
+    static func lanURL(_ machine: RemoteMachine) throws -> URL {
+        guard let host = machine.lanHost, host.hasSuffix(".local"), host.range(of: "^[A-Za-z0-9.-]{1,253}$", options: .regularExpression) != nil,
+              let port = machine.lanPort, (1...65535).contains(port) else { throw URLError(.cannotFindHost) }
+        var components = URLComponents(); components.scheme = "https"; components.host = host; components.port = port; components.path = "/v1"
+        guard let url = components.url else { throw APIError.invalidResponse }; return url
+    }
+    private func lanRequest(_ machine: RemoteMachine, account: String, fields: [String: HistoryJSON], streaming: Bool = false) throws -> (URLRequest, URLSession) {
+        guard let pin = machine.lanPublicKey, let trust = RemoteLANTrust(pin) else { throw URLError(.cannotFindHost) }
+        let url = try Self.lanURL(machine)
+        var e = fields; e["version"] = .number(1); e["accountId"] = .string(account); e["machineId"] = .string(machine.id)
+        let content = String(decoding: try JSONEncoder().encode(HistoryJSON.object(e)), as: UTF8.self)
+        let body = HistoryJSON.object(["model": .string(Self.model), "stream": .bool(true), "messages": .array([.object(["role": .string("user"), "content": .string(content)])])])
+        var request = URLRequest(url: url); request.httpMethod = "POST"; request.httpBody = try JSONEncoder().encode(body); request.timeoutInterval = streaming ? .greatestFiniteMagnitude : 2
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let configuration = URLSessionConfiguration.ephemeral; configuration.waitsForConnectivity = false; configuration.timeoutIntervalForRequest = streaming ? .greatestFiniteMagnitude : 2; configuration.timeoutIntervalForResource = streaming ? .greatestFiniteMagnitude : 2
+        return (request, URLSession(configuration: configuration, delegate: trust, delegateQueue: nil))
+    }
+    private func lanControl(_ machine: RemoteMachine, account: String, fields: [String: HistoryJSON]) async throws -> HistoryJSON {
+        let (request, session) = try lanRequest(machine, account: account, fields: fields); defer { session.invalidateAndCancel() }
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), data.count <= 8_388_608 else { throw URLError(.badServerResponse) }
+        return try JSONDecoder().decode(HistoryJSON.self, from: data)
+    }
+    func control(_ machine: String, account: String, token: String, fields: [String: HistoryJSON], local: RemoteMachine? = nil) async throws -> HistoryJSON {
+        if let local { do { return try await lanControl(local, account: account, fields: fields) } catch { } }
+
         var request = try bridgeRequest(machine, account: account, token: token, fields: fields); request.timeoutInterval = 20
         let (data, response) = try await session.data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode), data.count <= 1_048_576,
@@ -175,9 +218,20 @@ actor RemoteInstanceAPI {
         let result = try JSONDecoder().decode(HistoryJSON.self, from: data)
         guard result.object?["version"]?.number == 1 else { throw APIError.invalidResponse }; return result
     }
-    func events(_ machine: String, account: String, token: String, fields: [String: HistoryJSON], update: @Sendable (HistoryJSON) async throws -> Void) async throws {
+    func events(_ machine: String, account: String, token: String, fields: [String: HistoryJSON], local: RemoteMachine? = nil, update: @Sendable (HistoryJSON) async throws -> Void) async throws {
+        if let local {
+            do {
+                let (request, direct) = try lanRequest(local, account: account, fields: fields, streaming: true); defer { direct.invalidateAndCancel() }
+                let (bytes, response) = try await direct.bytes(for: request)
+                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), http.value(forHTTPHeaderField: "content-type")?.hasPrefix("text/event-stream") == true else { throw URLError(.badServerResponse) }
+                try await readEvents(bytes, update: update); return
+            } catch { }
+        }
         let (bytes, response) = try await session.bytes(for: bridgeRequest(machine, account: account, token: token, fields: fields)); try validate(response)
         guard (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "content-type")?.hasPrefix("text/event-stream") == true else { throw APIError.invalidResponse }
+        try await readEvents(bytes, update: update)
+    }
+    private func readEvents(_ bytes: URLSession.AsyncBytes, update: @Sendable (HistoryJSON) async throws -> Void) async throws {
         var total = 0
         for try await line in bytes.lines {
             try Task.checkCancellation(); total += line.utf8.count
@@ -312,21 +366,8 @@ struct RemoteModelPreference: Codable {
     private var generation = UUID()
     private var streamGeneration = UUID()
     private var task: Task<Void, Never>?
-    private var network = "inconnu"
     private var storageLoaded = false
-    private let monitor = NWPathMonitor()
     private struct Archive: Codable { var chats: [RemoteChat]; var preferences: [String: RemoteModelPreference]; var selection: UUID? = nil; var hiddenSources: Set<String>? = nil }
-    init() {
-        monitor.pathUpdateHandler = { [weak self] path in
-            let label = path.usesInterfaceType(.cellular) ? "Réseau cellulaire" : path.usesInterfaceType(.wifi) ? "Wi-Fi → Relay WAN" : "Relay WAN"
-            Task { @MainActor in
-                guard let self else { return }; self.network = label
-                if path.status == .satisfied { await self.reload() }
-            }
-        }; monitor.start(queue: DispatchQueue(label: NativeApplicationIdentity.identifier("remote-path")))
-    }
-    deinit { monitor.cancel() }
-    var transportLabel: String { network + " · HTTPS" }
     private func archiveURL(_ account: String) -> URL {
         let key = SHA256.hash(data: Data(account.utf8)).map { String(format: "%02x", $0) }.joined()
         return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("RemoteInstances/" + key + ".json")
@@ -355,7 +396,7 @@ struct RemoteModelPreference: Codable {
         guard let owner = account else { throw APIError.authenticationRequired }; let epoch = generation
         let (session, auth) = try await authorizedFields(machine, operation: operation)
         do {
-            let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: auth.merging(values) { _, new in new })
+            let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: auth.merging(values) { _, new in new }, local: machines.first { $0.id == machine })
             try check(owner, epoch); return result
         } catch {
             try check(owner, epoch)
@@ -365,7 +406,7 @@ struct RemoteModelPreference: Codable {
                 let expired = RemoteDeviceAuthorization(deviceId: saved.deviceId, deviceToken: saved.deviceToken, expiresAt: 0, trustToken: saved.trustToken)
                 try RemoteAuthorizationStore.save(expired, owner, machine)
                 let (freshSession, freshAuth) = try await authorizedFields(machine, operation: operation)
-                let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: freshSession.accessToken, fields: freshAuth.merging(values) { _, new in new })
+                let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: freshSession.accessToken, fields: freshAuth.merging(values) { _, new in new }, local: machines.first { $0.id == machine })
                 try check(owner, epoch); return result
             }
             throw error
@@ -527,7 +568,7 @@ struct RemoteModelPreference: Codable {
                     var supportsDurable = original.trustToken != nil
                     if !supportsDurable {
                         do {
-                            let capabilities = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: ["operation": .string("pair-capabilities")])
+                            let capabilities = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: ["operation": .string("pair-capabilities")], local: machines.first { $0.id == machine })
                             supportsDurable = capabilities.object?["pairingVersion"]?.number == 2
                         } catch APIError.server(400, _) { supportsDurable = false }
                         try self.check(owner, epoch)
@@ -538,7 +579,7 @@ struct RemoteModelPreference: Codable {
                         try RemoteAuthorizationStore.save(next, owner, machine)
                         fields = self.credentials(next, operation: "renew"); fields["trustToken"] = .string(trust)
                     }
-                    let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: fields)
+                    let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: fields, local: machines.first { $0.id == machine })
                     try self.check(owner, epoch)
                     var issued = try JSONDecoder().decode(RemoteDeviceAuthorization.self, from: JSONEncoder().encode(result))
                     issued.trustToken = result.object?["durable"] == .bool(true) ? next.trustToken : nil
@@ -595,13 +636,13 @@ struct RemoteModelPreference: Codable {
         let epoch = generation; busy = true; defer { if generation == epoch { busy = false } }
         let session = try await ConversationManager.shared.validSession(); try check(owner, epoch)
         let result = try await RemoteInstanceAPI.shared.control(pairing.machine, account: owner, token: session.accessToken,
-            fields: ["operation": .string("pair"), "handoff": .string(pairing.handoff), "name": .string(name)]); try check(owner, epoch)
+            fields: ["operation": .string("pair"), "handoff": .string(pairing.handoff), "name": .string(name)], local: machines.first { $0.id == pairing.machine }); try check(owner, epoch)
         let auth = try JSONDecoder().decode(RemoteDeviceAuthorization.self, from: JSONEncoder().encode(result))
         guard UUID(uuidString: auth.deviceId) != nil, auth.deviceToken.utf8.count == 43,
               auth.expiresAt > Date().timeIntervalSince1970 * 1000, auth.expiresAt <= Date().addingTimeInterval(25 * 3600).timeIntervalSince1970 * 1000 else { throw APIError.invalidResponse }
         do { try RemoteAuthorizationStore.save(auth, owner, pairing.machine) }
         catch {
-            _ = try? await RemoteInstanceAPI.shared.control(pairing.machine, account: owner, token: session.accessToken, fields: credentials(auth, operation: "revoke")); throw error
+            _ = try? await RemoteInstanceAPI.shared.control(pairing.machine, account: owner, token: session.accessToken, fields: credentials(auth, operation: "revoke"), local: machines.first { $0.id == pairing.machine }); throw error
         }
         harnesses[pairing.machine] = try decodeHarnesses(result); paired.insert(pairing.machine); pendingPairing = nil
     }
@@ -614,7 +655,7 @@ struct RemoteModelPreference: Codable {
         }
         let epoch = generation, session = try await ConversationManager.shared.validSession()
         try check(owner, epoch)
-        let capabilities = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: ["operation": .string("pair-capabilities")])
+        let capabilities = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: ["operation": .string("pair-capabilities")], local: machines.first { $0.id == machine })
         try check(owner, epoch)
         guard capabilities.object?["pairingVersion"]?.number == 2 else { throw APIError.server(409, "instance_update_required") }
         let pending = RemoteDeviceAuthorization(deviceId: UUID().uuidString.lowercased(), deviceToken: try RemoteDeviceAuthorization.secret(), expiresAt: 0,
@@ -640,7 +681,7 @@ struct RemoteModelPreference: Codable {
                 let expired = until <= Date().timeIntervalSince1970 * 1000
                 let result = try await RemoteInstanceAPI.shared.control(machine.id, account: owner, token: session.accessToken, fields: [
                     "operation": .string(auth.pendingCancelled == true ? "pair-cancel" : expired ? "pair-status" : "pair-request"), "requestId": .string(auth.deviceId), "trustToken": .string(trust),
-                    "deviceToken": .string(auth.deviceToken), "name": .string(auth.deviceName ?? "iPhone")])
+                    "deviceToken": .string(auth.deviceToken), "name": .string(auth.deviceName ?? "iPhone")], local: machine)
                 try check(owner, epoch)
                 if auth.pendingCancelled != true, try RemoteAuthorizationStore.load(owner, machine.id)?.pendingCancelled == true { continue }
                 let state = result.object?["state"]?.string ?? "expired"
@@ -655,7 +696,7 @@ struct RemoteModelPreference: Codable {
                     // the request. Prove durable trust before discarding it.
                     if state == "expired" && auth.pendingCancelled != true {
                         let reply = try await RemoteInstanceAPI.shared.control(machine.id, account: owner, token: session.accessToken,
-                            fields: ["operation": .string("renew"), "deviceId": .string(auth.deviceId), "deviceToken": .string(auth.deviceToken), "trustToken": .string(trust)])
+                            fields: ["operation": .string("renew"), "deviceId": .string(auth.deviceId), "deviceToken": .string(auth.deviceToken), "trustToken": .string(trust)], local: machine)
                         try check(owner, epoch)
                         if let expiry = reply.object?["expiresAt"]?.number {
                             auth = RemoteDeviceAuthorization(deviceId: auth.deviceId, deviceToken: auth.deviceToken, expiresAt: expiry, trustToken: trust)
@@ -696,14 +737,14 @@ struct RemoteModelPreference: Codable {
     func catalog(_ machine: String) async throws {
         guard !busy, let owner = account else { return }; let epoch = generation; busy = true; defer { if epoch == generation { busy = false } }
         let (session, fields) = try await authorizedFields(machine, operation: "catalog")
-        let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: fields); try check(owner, epoch)
+        let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: fields, local: machines.first { $0.id == machine }); try check(owner, epoch)
         harnesses[machine] = try decodeHarnesses(result)
     }
     func models(_ machine: String, harness: String) async throws {
         guard !busy, let owner = account else { return }; let epoch = generation; busy = true; defer { if epoch == generation { busy = false } }
         let (session, auth) = try await authorizedFields(machine, operation: "models"); var fields = auth; fields["harnessId"] = .string(harness)
         if let chat = current, chat.machine == machine, let source = chat.source { fields["source"] = source.fields }
-        let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: fields); try check(owner, epoch)
+        let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: fields, local: machines.first { $0.id == machine }); try check(owner, epoch)
         let values = try JSONDecoder().decode([RemoteHarnessModel].self, from: JSONEncoder().encode(result.object?["models"] ?? .array([])))
         modelCatalog[modelKey(machine, harness: harness)] = values
         var preference = preference(machine, harness: harness) ?? .init(harness: harness, model: "")
@@ -717,7 +758,7 @@ struct RemoteModelPreference: Codable {
         let (session, auth) = try await authorizedFields(machine, operation: "effort"); var fields = auth
         fields["harnessId"] = .string(harness); fields["model"] = .string(model); if let provider { fields["provider"] = .string(provider) }
         if let chat = current, chat.machine == machine, chat.harness == harness, (!chat.messages.isEmpty || chat.source != nil) { fields["conversationId"] = .string(chat.id.uuidString.lowercased()); if let source = chat.source { fields["source"] = source.fields } }
-        let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: fields); try check(owner, epoch)
+        let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: fields, local: machines.first { $0.id == machine }); try check(owner, epoch)
         let key = machine + ":" + harness + ":" + model
         if let value = result.object?["effort"], value != .null {
             let effort = try JSONDecoder().decode(RemoteHarnessEffort.self, from: JSONEncoder().encode(value)); effortCatalog[key] = effort
@@ -735,7 +776,7 @@ struct RemoteModelPreference: Codable {
         }
         guard !busy, let owner = account else { return }; let epoch = generation; busy = true; defer { if epoch == generation { busy = false } }
         let (session, auth) = try await authorizedFields(machine, operation: "projects"); var fields = auth; fields["harnessId"] = .string(harness)
-        let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: fields); try check(owner, epoch)
+        let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: fields, local: machines.first { $0.id == machine }); try check(owner, epoch)
         projectCatalog[key] = try JSONDecoder().decode([RemoteHarnessProject].self, from: JSONEncoder().encode(result.object?["projects"] ?? .array([])))
         projectCatalogFetchedAt[key] = Date()
     }
@@ -791,7 +832,7 @@ struct RemoteModelPreference: Codable {
         let machine = chats[index].machine
         let (session, auth) = try await authorizedFields(machine, operation: "configure")
         var fields = auth.merging(pending.fields) { _, new in new }; if let source = chats[index].source { fields["source"] = source.fields }; fields["conversationId"] = .string(id.uuidString.lowercased())
-        let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: fields); try check(owner, epoch)
+        let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: fields, local: machines.first { $0.id == machine }); try check(owner, epoch)
         guard let currentIndex = chats.firstIndex(where: { $0.id == id }) else { throw CancellationError() }
         if result.object?["state"]?.string == "failed" {
             chats[currentIndex].pendingConfiguration = nil; try persist(); throw APIError.server(409, "instance_configuration_refused")
@@ -864,7 +905,7 @@ struct RemoteModelPreference: Codable {
                         if let effort = initialChat.effort { fields["effort"] = .string(effort) }
                         if let projectId = initialChat.projectId { fields["projectId"] = .string(projectId) }
                     }
-                    try await RemoteInstanceAPI.shared.events(current.machine, account: owner, token: session.accessToken, fields: fields) { event in
+                    try await RemoteInstanceAPI.shared.events(current.machine, account: owner, token: session.accessToken, fields: fields, local: machines.first { $0.id == current.machine }) { event in
                         guard await self.streamGeneration == streamEpoch else { throw CancellationError() }
                         try await self.receive(event, chat: id, owner: owner, epoch: epoch)
                     }
@@ -892,7 +933,7 @@ struct RemoteModelPreference: Codable {
         let epoch = generation; busy = true; defer { if epoch == generation { busy = false } }
         let (session, auth) = try await authorizedFields(chat.machine, operation: "interrupt")
         var fields = auth; if let source = chat.source { fields["source"] = source.fields }; fields["conversationId"] = .string(id.uuidString.lowercased()); fields["commandId"] = .string(UUID().uuidString.lowercased())
-        let result = try await RemoteInstanceAPI.shared.control(chat.machine, account: owner, token: session.accessToken, fields: fields); try check(owner, epoch)
+        let result = try await RemoteInstanceAPI.shared.control(chat.machine, account: owner, token: session.accessToken, fields: fields, local: machines.first { $0.id == chat.machine }); try check(owner, epoch)
         guard result.object?["state"]?.string == "completed" else { throw APIError.invalidResponse }
         busy = false; stopFollowing(); send("", chat: id, recover: true)
     }
@@ -947,7 +988,7 @@ struct RemoteModelPreference: Codable {
             try await RemoteInstanceAPI.shared.revokeMachine(machine, token: session.accessToken)
         } else {
             let (session, fields) = try await authorizedFields(machine, operation: "revoke")
-            _ = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: fields); try check(owner, epoch)
+            _ = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: fields, local: machines.first { $0.id == machine }); try check(owner, epoch)
         }
         harnesses[machine] = nil
     }

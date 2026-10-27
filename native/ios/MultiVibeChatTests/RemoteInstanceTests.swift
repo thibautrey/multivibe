@@ -204,4 +204,15 @@ extension RemoteInstanceTests {
         XCTAssertTrue(RemoteInstances.connectionError(URLError(.notConnectedToInternet)).contains("hors ligne"))
         XCTAssertTrue(RemoteInstances.connectionError(APIError.server(409, "instance_update_required")).contains("jour"))
     }
+    func testLANEndpointIsPinnedToLocalDNSAndFixedPath() throws {
+        var machine = RemoteMachine(id: UUID().uuidString, name: "Mac", online: true, models: [])
+        machine.lanPublicKey = String(repeating: "A", count: 43); machine.lanHost = "macbook-pro.local"; machine.lanPort = 42424
+        XCTAssertEqual(try RemoteInstanceAPI.lanURL(machine).absoluteString, "https://macbook-pro.local:42424/v1")
+        for host in ["example.com", "mac.local.evil.test", "../mac.local", ""] {
+            machine.lanHost = host; XCTAssertThrowsError(try RemoteInstanceAPI.lanURL(machine))
+        }
+        machine.lanHost = "mac.local"; machine.lanPort = 0; XCTAssertThrowsError(try RemoteInstanceAPI.lanURL(machine))
+        machine.lanPort = 65536; XCTAssertThrowsError(try RemoteInstanceAPI.lanURL(machine))
+    }
+
 }

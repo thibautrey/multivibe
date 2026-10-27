@@ -5,6 +5,7 @@ import os from 'node:os';
 import {setTimeout as delay} from 'node:timers/promises';
 import express from 'express';
 import {instanceActivities} from './instance-activity.js';
+import {InstanceLANServer,type InstanceLANIdentity} from './instance-lan.js';
 import {InstanceConversations,type InstanceConversationSource} from './instance-conversations.js';
 import type {HostHarnessRuntime} from './harness-runtime/runtime.js';
 import {fail,identifier,requiredText,type HarnessEvent} from './harness-runtime/types.js';
@@ -41,8 +42,10 @@ export class InstanceRelay {
  private connecting=false;
  private lastError?:string;
  private rotations=new Map<string,{token:string;expiresAt:number}>();
+ private readonly lan?:InstanceLANServer;private lanIdentity?:InstanceLANIdentity;
+
  constructor(private readonly runtime:HostHarnessRuntime,private readonly file:string,private readonly fetcher:typeof fetch=fetch,private readonly clock=Date.now) {
-  this.conversations=new InstanceConversations(runtime);
+  this.conversations=new InstanceConversations(runtime);if(fetcher===fetch)this.lan=new InstanceLANServer(this,path.dirname(file));
   try {const s=JSON.parse(fs.readFileSync(file,'utf8'));if(s.version!==1||!uuid(s.machineId)||!/^mvr_[A-Za-z0-9_-]{43}$/.test(s.machineToken)||!Array.isArray(s.devices))throw Error();this.state=s;this.savedState=structuredClone(s);}
   catch(e:any){if(e.code!=='ENOENT')throw new Error('Remote instance configuration is invalid');}
  }
@@ -124,13 +127,14 @@ export class InstanceRelay {
    await this.account('/relay/v1/machines/'+old.machineId,accessToken,undefined,'DELETE');
   } catch {fail('Local access disabled; Cloud revocation could not be confirmed',502);}
  }
- stop(){this.conversations.close();this.controller?.abort();this.controller=undefined;this.running=false;}
+ stop(){this.lan?.stop();this.lanIdentity=undefined;this.conversations.close();this.controller?.abort();this.controller=undefined;this.running=false;}
  start(){if(this.controller||!this.state)return;const controller=new AbortController();this.controller=controller;void this.run(controller.signal).finally(()=>{if(this.controller===controller){this.running=false;this.controller=undefined;}});}
  private async machine(route:string,body:unknown|undefined,signal:AbortSignal){const s=this.state;if(!s)fail('Instance disconnected',401);return this.account('/relay/v1/machine/'+route,s.machineToken,body,body===undefined?'GET':'POST',signal);}
  private async run(signal:AbortSignal){
+  try{this.lanIdentity=await this.lan?.start();}catch{this.lanIdentity=undefined;}
   let heartbeatAt=0,failures=0;const jobs=new Set<Promise<void>>();
   while(!signal.aborted&&this.state){try{
-   if(this.clock()-heartbeatAt>30_000){await this.machine('heartbeat',{models:[{id:INSTANCE_RELAY_MODEL,name:'MultiVibe Host · harness',supportsTools:false}]},signal);heartbeatAt=this.clock();this.running=true;this.lastError=undefined;}
+   if(this.clock()-heartbeatAt>30_000){await this.machine('heartbeat',{models:[{id:INSTANCE_RELAY_MODEL,name:'MultiVibe Host · harness',supportsTools:false}],...(this.lanIdentity?{lanPublicKey:this.lanIdentity.publicKey,lanHost:this.lanIdentity.host,lanPort:this.lanIdentity.port}:{})},signal);heartbeatAt=this.clock();this.running=true;this.lastError=undefined;}
    if(jobs.size<4){const {job}=await this.machine('jobs',undefined,signal);if(job){const execution=this.execute(job,signal).catch(()=>{}).finally(()=>jobs.delete(execution));jobs.add(execution);}}
    failures=0;
   }catch{if(!signal.aborted){this.lastError='Relay indisponible. Reconnexion en cours.';this.running=false;heartbeatAt=0;failures++;}}
