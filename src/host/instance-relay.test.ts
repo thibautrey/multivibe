@@ -298,3 +298,26 @@ test('expired submissions cannot reopen a request and late cancellation revokes 
  const approved=durableRequest();await f.send(approved);f.service.decidePairing(approved.requestId,true);f.advance(300_001);
  assert.equal(JSON.parse(await f.send({...approved,operation:'pair-cancel'})).state,'cancelled');assert.equal(f.service.status().devices.length,0);
 });
+test('a running harness turn does not block a second short pairing operation on Relay',async t=>{
+ let release!:()=>void,entered=false;
+ const gate=new Promise<void>(resolve=>{release=resolve;});
+ const f=await fixture(t,{prompt:async()=>{entered=true;await gate;}}),auth=await f.pair();
+ const slow=randomUUID(),fast=randomUUID();
+ const jobs=[{id:slow,body:f.envelope({operation:'prompt',deviceId:auth.deviceId,deviceToken:auth.deviceToken,harnessId:'pi',model:'fixture/model',conversationId:randomUUID(),commandId:randomUUID(),text:'Wait for test gate'})},{id:fast,body:f.envelope({operation:'pair-capabilities'})}];
+ let completed=false;
+ const fetcher=(async(input:URL|string,options:any)=>{
+  const route=new URL(String(input)).pathname;
+  if(route.endsWith('/heartbeat'))return Response.json({accepted:true});
+  if(route.endsWith('/jobs'))return Response.json({job:jobs.shift()??null});
+  if(route.endsWith('/start'))return Response.json({execute:true});
+  if(route.endsWith('/status'))return Response.json({state:'running'});
+  if(route.endsWith('/'+fast+'/chunks')){const chunk=JSON.parse(options.body);if(chunk.terminal){assert.equal(JSON.parse(chunk.data).pairingVersion,2);completed=true;}}
+  return Response.json({accepted:true});
+ }) as typeof fetch;
+ const service=new InstanceRelay(f.runtime,f.file,fetcher);
+ t.after(()=>{release();service.stop();});service.start();
+ const deadline=Date.now()+5000;
+ while(!completed&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,50));
+ assert.equal(entered,true);assert.equal(completed,true,'short controls must complete before the long turn is released');
+ release();service.stop();
+});
