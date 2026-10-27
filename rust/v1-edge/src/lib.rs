@@ -12831,10 +12831,6 @@ pub fn build_router(state: EdgeState) -> Router {
         )
         .route("/v1/responses/compact", post(inference_handler))
         .route("/v1/chat/completions", post(inference_handler))
-        // Dedicated ingress for clients that cannot present Cloudflare Access
-        // credentials. It retains the same MultiVibe API-key boundary and
-        // inference behavior while allowing edge policy to target it alone.
-        .route("/v1/even/chat/completions", post(inference_handler))
         .route("/v1/images/generations", post(inference_handler))
         .route("/v1/images/edits", post(inference_handler).layer(axum::extract::DefaultBodyLimit::max(state.config.request_body_limit)))
         .route("/v1/embeddings", post(inference_handler))
