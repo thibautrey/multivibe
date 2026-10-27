@@ -81,6 +81,10 @@ struct RemoteInstancesView: View {
                    let machine = instances.machines.first(where: { $0.online && $0.supportsHarness && $0.localEndpoint != nil && !instances.paired.contains($0.id) }) {
                     try? await instances.requestConnection(machine.id, name: UIDevice.current.name)
                 }
+                if ProcessInfo.processInfo.arguments.contains("-remote-instances-message-validation"),
+                   let machine = instances.machines.first(where: { $0.online && $0.localEndpoint != nil && instances.paired.contains($0.id) }) {
+                    await validateDirectMessage(machine)
+                }
 #endif
                 var ticks = 0
                 while !Task.isCancelled {
@@ -121,6 +125,36 @@ struct RemoteInstancesView: View {
             }
         }
     }
+#if DEBUG
+    private func validateDirectMessage(_ machine: RemoteMachine) async {
+        let output = FileManager.default.temporaryDirectory.appendingPathComponent("multivibe-p2p-message-validation.json")
+        var evidence: [String: Any] = ["machine": machine.id, "startedAt": Date().timeIntervalSince1970]
+        do {
+            try await instances.catalog(machine.id)
+            guard let harness = (instances.harnesses[machine.id] ?? []).first(where: { $0.id == "openai-codex" && $0.available })
+                ?? (instances.harnesses[machine.id] ?? []).first(where: { $0.available }) else { throw APIError.noModel }
+            let chat = try instances.newChat(machine.id, harness: harness.id)
+            try await instances.models(machine.id, harness: harness.id)
+            guard let model = instances.modelCatalog[instances.modelKey(machine.id, harness: harness.id)]?.first else { throw APIError.noModel }
+            try await instances.choose(machine.id, harness: harness.id, model: model)
+            guard instances.send("Réponds exactement P2P_OK", chat: chat) else { throw APIError.invalidResponse }
+            let deadline = Date().addingTimeInterval(120)
+            while Date() < deadline {
+                if let value = instances.chats.first(where: { $0.id == chat }), value.command == nil {
+                    evidence["completed"] = true; evidence["harness"] = harness.id; evidence["model"] = model.id
+                    evidence["state"] = value.state; evidence["assistant"] = value.messages.last(where: { $0.role == "assistant" })?.content ?? ""
+                    break
+                }
+                try await Task.sleep(for: .milliseconds(500))
+            }
+            if evidence["completed"] == nil { evidence["completed"] = false; evidence["error"] = "timeout" }
+        } catch {
+            evidence["completed"] = false; evidence["errorType"] = String(reflecting: type(of: error)); evidence["error"] = String(reflecting: error)
+        }
+        evidence["finishedAt"] = Date().timeIntervalSince1970
+        if let data = try? JSONSerialization.data(withJSONObject: evidence, options: [.sortedKeys]) { try? data.write(to: output, options: .atomic) }
+    }
+#endif
 }
 
 private struct RemoteMachineView: View {
