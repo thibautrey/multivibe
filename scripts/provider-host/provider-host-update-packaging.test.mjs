@@ -70,11 +70,11 @@ test("native packages include the updater and platform schedulers", async () => 
   assert.match(packager, /install-docker-updater\.sh/u);
   assert.match(
     packager,
-    /await command\("codesign", \["--verify", "--strict", "--verbose=2", node\]\)/u,
+    /await run\("codesign", \["--verify", "--strict", "--verbose=2", node\]\)/u,
   );
   assert.match(
     packager,
-    /await command\(node, \["--eval", betterSQLiteSmokeTest\]/u,
+    /await run\(node, \["--eval", betterSQLiteSmokeTest\]/u,
   );
   assert.doesNotMatch(
     packager,
