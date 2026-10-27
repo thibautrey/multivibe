@@ -368,7 +368,9 @@ async function allFiles(root, relative = "") {
   return files;
 }
 
-async function signMacApplication(application, identity) {
+export async function signMacApplication(application, identity, { keychain = process.env.SIGNING_KEYCHAIN, run = command } = {}) {
+  const signingArguments = ["--force", "--sign", identity, ...(keychain ? ["--keychain", keychain] : []),
+    "--options", "runtime", "--timestamp"];
   const contents = path.join(application, "Contents");
   const node = path.join(contents, "Frameworks", "node");
   const native = [];
@@ -388,35 +390,35 @@ async function signMacApplication(application, identity) {
   // needs to execute JavaScript. Re-signing it as an ordinary nested binary
   // strips those entitlements and makes it terminate with SIGTRAP on launch.
   // Keep its upstream signature, then verify it before sealing the outer app.
-  await command("codesign", ["--verify", "--strict", "--verbose=2", node]);
+  await run("codesign", ["--verify", "--strict", "--verbose=2", node]);
   for (const binary of new Set([
     ...native,
     path.join(contents, "Helpers", "multivibe-host-updater"),
     path.join(contents, "Helpers", "multivibe-v1-edge"),
     path.join(contents, "MacOS", "multivibe-host"),
   ])) {
-    await command("codesign", ["--force", "--sign", identity, "--options", "runtime", "--timestamp", binary]);
+    await run("codesign", [...signingArguments, binary]);
   }
   const cefFramework = path.join(contents, "Frameworks", "Chromium Embedded Framework.framework");
   const cefHelper = path.join(contents, "Frameworks", "MultiVibe Chromium Helper.app");
-  await command("codesign", ["--force", "--sign", identity, "--options", "runtime", "--timestamp", cefFramework]);
-  await command("codesign", [
-    "--force", "--sign", identity, "--options", "runtime", "--timestamp",
+  await run("codesign", [...signingArguments, cefFramework]);
+  await run("codesign", [
+    ...signingArguments,
     "--entitlements", path.join(repositoryRoot, "packaging", "macos", "chromium", "ChromiumHelper.entitlements"), cefHelper,
   ]);
-  await command("codesign", [
-    "--force", "--sign", identity, "--options", "runtime", "--timestamp",
+  await run("codesign", [
+    ...signingArguments,
     "--entitlements", path.join(repositoryRoot, "packaging", "macos", "share", "Share.entitlements"),
     path.join(contents, "PlugIns", "MultiVibeShare.appex"),
   ]);
-  await command("codesign", [
-    "--force", "--sign", identity, "--options", "runtime", "--timestamp",
+  await run("codesign", [
+    ...signingArguments,
     "--entitlements", path.join(repositoryRoot, "packaging", "macos", "MultiVibe.entitlements"),
     // Signing the bundle signs CFBundleExecutable after its nested extension is sealed.
     application,
   ]);
-  await command("codesign", ["--verify", "--deep", "--strict", "--verbose=2", application]);
-  await command(node, ["--eval", betterSQLiteSmokeTest], {
+  await run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", application]);
+  await run(node, ["--eval", betterSQLiteSmokeTest], {
     cwd: path.join(contents, "Resources", "app"),
   });
 }
