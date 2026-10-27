@@ -83,7 +83,7 @@ struct RemoteInstancesView: View {
                 }
                 if ProcessInfo.processInfo.arguments.contains("-remote-instances-message-validation"),
                    let machine = instances.machines.first(where: { $0.online && $0.localEndpoint != nil && instances.paired.contains($0.id) }) {
-                    await validateDirectMessage(machine)
+                    Task { @MainActor in await validateDirectMessage(machine) }
                 }
 #endif
                 var ticks = 0
@@ -128,6 +128,7 @@ struct RemoteInstancesView: View {
 #if DEBUG
     private func validateDirectMessage(_ machine: RemoteMachine) async {
         let output = FileManager.default.temporaryDirectory.appendingPathComponent("multivibe-p2p-message-validation.json")
+        try? FileManager.default.removeItem(at: output)
         var evidence: [String: Any] = ["machine": machine.id, "startedAt": Date().timeIntervalSince1970]
         do {
             try await instances.catalog(machine.id)
@@ -135,7 +136,7 @@ struct RemoteInstancesView: View {
                 ?? (instances.harnesses[machine.id] ?? []).first(where: { $0.available }) else { throw APIError.noModel }
             let chat = try instances.newChat(machine.id, harness: harness.id)
             try await instances.models(machine.id, harness: harness.id)
-            guard let model = instances.modelCatalog[instances.modelKey(machine.id, harness: harness.id)]?.first else { throw APIError.noModel }
+            guard let model = instances.modelCatalog[instances.modelKey(machine.id, harness: harness.id)]?.first(where: { $0.id == "gpt-6.1-sol" }) else { throw APIError.noModel }
             try await instances.choose(machine.id, harness: harness.id, model: model)
             guard instances.send("Réponds exactement P2P_OK", chat: chat) else { throw APIError.invalidResponse }
             let deadline = Date().addingTimeInterval(120)
