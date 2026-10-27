@@ -1,6 +1,7 @@
 import {createHash,X509Certificate} from 'node:crypto';
 import fs from 'node:fs';
 import https from 'node:https';
+import type {IncomingMessage,ServerResponse} from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import {execFileSync,spawnSync} from 'node:child_process';
@@ -37,7 +38,7 @@ export class InstanceLANServer {
   this.server=server;this.identity={publicKey:pin,host:localLANHost(),port:address.port};return this.identity;
  }
  stop(){this.identity=undefined;this.server?.closeAllConnections();this.server?.close();this.server=undefined;}
- private async handle(request:https.IncomingMessage,response:https.ServerResponse){
+ private async handle(request:IncomingMessage,response:ServerResponse){
   response.setHeader('cache-control','no-store');response.setHeader('x-content-type-options','nosniff');
   try{
    if(request.method!=='POST'||request.url!=='/v1'||request.headers['content-type']!=='application/json')fail('Local instance route not found',404);
