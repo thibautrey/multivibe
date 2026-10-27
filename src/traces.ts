@@ -2230,8 +2230,8 @@ export function createTraceManager(config: TraceManagerConfig) {
         : "missing";
     const costUsd =
       usageStatus === "measured"
-        ? route.includes("/images/")
-        ? estimateImageCostUsd(typeof raw.resolvedModel === "string" ? raw.resolvedModel : model, raw.usage)
+        ? entry.route.includes("/images/")
+        ? estimateImageCostUsd(entry.resolvedModel ?? entry.model, entry.usage)
         : estimateCostUsd(
             entry.model,
             normalizedTokens.tokensInput ?? 0,
