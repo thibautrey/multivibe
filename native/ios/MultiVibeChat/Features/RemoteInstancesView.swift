@@ -6,6 +6,8 @@ struct RemoteInstancesView: View {
     @Environment(ConversationManager.self) private var manager
     @Environment(\.dismiss) private var dismiss
     @State private var instances = RemoteInstances.shared
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var advanced = false
     @State private var scanning = false
     @State private var code = ""
     @State private var selectedMachine = ""
@@ -28,7 +30,7 @@ struct RemoteInstancesView: View {
                                     Image(systemName: "desktopcomputer").font(.title2)
                                     VStack(alignment: .leading) {
                                         Text(machine.name)
-                                        Text(machine.online ? machine.supportsHarness ? "Harness disponibles" : "Instance sans passerelle de harness" : "Indisponible · hors ligne").font(.caption).foregroundStyle(machine.online ? Color.secondary : .orange)
+                                        Text(instances.paired.contains(machine.id) ? (machine.online ? "Connecté" : "Hors ligne · association conservée") : instances.pairingStates[machine.id] == "pending" ? "Validation attendue sur le Mac" : instances.pairingStates[machine.id] == "revoked" ? "Accès révoqué" : machine.online ? "Disponible" : "Hors ligne").font(.caption).foregroundStyle(machine.online ? Color.secondary : .orange)
                                     }
                                     Spacer()
                                     if instances.paired.contains(machine.id) { Image(systemName: "checkmark.shield.fill").foregroundStyle(.green) }
@@ -40,7 +42,8 @@ struct RemoteInstancesView: View {
                                 description: Text("Sur le Mac, ouvrez Actions → Connecter un iPhone à ce Mac, puis activez l’accès."))
                         }
                     } header: { Text("Instances de votre compte") } footer: { Text("L’exécution reste sur l’instance choisie. Vos modèles et conversations sur l’iPhone restent accessibles en fermant cet écran.") }
-                    Section("Appairer une instance") {
+                    Section {
+                        DisclosureGroup("QR et code · options avancées", isExpanded: $advanced) {
                         Button("Scanner le QR du Mac", systemImage: "qrcode.viewfinder") { scanning = true }
                             .disabled(!DataScannerViewController.isSupported || !DataScannerViewController.isAvailable)
                             .accessibilityIdentifier("scanRemoteInstance")
@@ -62,6 +65,7 @@ struct RemoteInstancesView: View {
                         Button("Vérifier l’instance") { confirming = .init(machine: selectedMachine, handoff: normalizedCode) }
                             .disabled(selectedMachine.isEmpty || normalizedCode.count != 12)
                     }
+                    }
                     if let error = failure ?? instances.error { Section { MultiVibeStatusMessage(message: error) } }
                     Section { Text("Accès HTTPS via le Relay MultiVibe et quota Relay du compte. Le contenu transitoire peut être lu par le Cloud.").font(.caption).foregroundStyle(.secondary) }
                 }
@@ -70,7 +74,16 @@ struct RemoteInstancesView: View {
                 ToolbarItem(placement: .topBarLeading) { Button("Actualiser", systemImage: "arrow.clockwise") { Task { await instances.reload() } }.disabled(instances.busy) }
                 ToolbarItem(placement: .topBarTrailing) { Button("Fermer") { dismiss() } }
             }
-            .task(id: manager.session?.accountId) { instances.activate(manager.session?.accountId); await instances.reload(); confirming = instances.pendingPairing }
+            .task(id: "\(manager.session?.accountId ?? "")-\(scenePhase)") {
+                guard scenePhase == .active else { return }
+                instances.activate(manager.session?.accountId); await instances.reload(); confirming = instances.pendingPairing
+                var ticks = 0
+                while !Task.isCancelled {
+                    await instances.pollPairings(); ticks += 1
+                    if ticks % 5 == 0 { await instances.reload() }
+                    do { try await Task.sleep(for: .seconds(2)) } catch { return }
+                }
+            }
             .sheet(isPresented: $scanning) {
                 NavigationStack {
                     InstanceQRScanner { value in
@@ -114,13 +127,35 @@ private struct RemoteMachineView: View {
     @State private var revokeConfirmation = false
     @State private var disconnectConfirmation = false
     private var isPaired: Bool { instances.paired.contains(machine.id) }
+    private var currentMachine: RemoteMachine { instances.machines.first { $0.id == machine.id } ?? machine }
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var connecting = false
     var body: some View {
         List {
             Section {
                 Label(machine.name, systemImage: "desktopcomputer")
                 Text(instances.transportLabel).font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("remoteTransport")
-                if !machine.online { Text("Instance indisponible. Vos conversations sont conservées.").foregroundStyle(.orange) }
-                if !isPaired { Text("Scannez le QR ou saisissez le code affiché par ce Mac pour autoriser cet iPhone.") }
+                if !currentMachine.online { Text("Mac hors ligne. La connexion reprendra automatiquement ; vos conversations sont conservées.").foregroundStyle(.orange) }
+                if !isPaired {
+                    if ["pending", "cancelling"].contains(instances.pairingStates[machine.id] ?? "") {
+                        Label(instances.pairingStates[machine.id] == "cancelling" ? "Annulation en cours" : "Autorisez cet iPhone sur votre Mac", systemImage: "clock")
+                        Text("Une demande apparaît dans MultiVibe sur le Mac. Elle expire après cinq minutes.").font(.caption)
+                        Button("Annuler la demande", role: .cancel) { Task { do { try await instances.cancelConnection(machine.id) } catch { failure = RemoteInstances.connectionError(error) } } }
+                    } else {
+                        if instances.pairingStates[machine.id] == "refused" { Text("La demande a été refusée sur le Mac.") }
+                        if instances.pairingStates[machine.id] == "expired" { Text("La demande a expiré. Vous pouvez réessayer.") }
+                        if instances.pairingStates[machine.id] == "revoked" { Text("L’accès a été révoqué. Une nouvelle autorisation est nécessaire.") }
+                        Button("Connecter cet iPhone", systemImage: "iphone.and.arrow.forward") {
+                            connecting = true
+                            Task {
+                                defer { connecting = false }
+                                do { try await instances.requestConnection(machine.id, name: UIDevice.current.name); failure = nil }
+                                catch { failure = RemoteInstances.connectionError(error) }
+                            }
+                        }.buttonStyle(.borderedProminent).disabled(!currentMachine.online || connecting)
+                        Text("Même compte, une autorisation sur le Mac, puis reconnexion automatique.").font(.caption)
+                    }
+                }
             }
             if isPaired {
                 Section("Harness") {
@@ -138,7 +173,7 @@ private struct RemoteMachineView: View {
                             _ = try instances.newChat(machine.id, harness: harness)
                             openChat()
                         } catch { failure = "Choisissez d’abord un harness disponible." }
-                    }.disabled(harness.isEmpty || !machine.online || instances.busy)
+                    }.disabled(harness.isEmpty || !currentMachine.online || instances.busy)
                     ForEach(instances.chats.filter { $0.machine == machine.id && !$0.messages.isEmpty }.reversed()) { chat in
                         Button(chat.title) { instances.select(chat.id); openChat() }.accessibilityIdentifier("remoteChatRow")
                     }
@@ -152,7 +187,14 @@ private struct RemoteMachineView: View {
             }
             if let failure { MultiVibeStatusMessage(message: failure) }
         }.navigationTitle(machine.name).disabled(instances.busy)
-        .task { harness = instances.preferences[machine.id]?.harness ?? ""; if isPaired && machine.online { do { try await instances.catalog(machine.id) } catch { failure = "Catalogue indisponible ou autorisation expirée. Réappairez l’iPhone si nécessaire." } } }
+        .task(id: "\(isPaired)-\(currentMachine.online)-\(scenePhase)") {
+            guard scenePhase == .active else { return }
+            harness = instances.preferences[machine.id]?.harness ?? ""
+            if isPaired && currentMachine.online {
+                do { try await instances.catalog(machine.id); failure = nil }
+                catch { failure = RemoteInstances.connectionError(error) }
+            }
+        }
         .confirmationDialog("Révoquer cette instance pour tous vos appareils ?", isPresented: $revokeConfirmation, titleVisibility: .visible) {
             Button("Révoquer l’instance", role: .destructive) { Task { do { try await instances.disconnect(machine.id, revokeMachine: true); await instances.reload() } catch { failure = "La révocation de l’instance n’a pas pu être confirmée." } } }
         }

@@ -35,6 +35,9 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
     var providerActivity: ProviderActivity?
     var pollingActivity = false
     var quotaTicks = 0
+    var pairingWindow: NSWindow?
+    var pollingPairing = false
+    var announcedPairings = Set<String>()
 
     var signalSources: [DispatchSourceSignal] = []
     var ownedService: Process?
@@ -93,7 +96,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
             guard let self else { return }
             self.renderQuota()
             self.quotaTicks += 1
-            if self.quotaTicks % 2 == 0 { self.pollProviderActivity() }
+            if self.quotaTicks % 2 == 0 { self.pollProviderActivity(); self.pollInstancePairing() }
         }
         RunLoop.main.add(quotaTimer!, forMode: .common)
         configureTerminationSignals()

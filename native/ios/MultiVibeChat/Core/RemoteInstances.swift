@@ -27,6 +27,16 @@ struct RemoteHarnessProject: Codable, Identifiable, Sendable {
 }
 struct RemoteDeviceAuthorization: Codable, Sendable {
     let deviceId: String; let deviceToken: String; let expiresAt: Double
+    var trustToken: String? = nil
+    var trustPending: Bool? = nil
+    var pendingUntil: Double? = nil
+    var pendingCancelled: Bool? = nil
+    var deviceName: String? = nil
+    static func secret() throws -> String {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else { throw APIError.invalidResponse }
+        return Data(bytes).base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+    }
 }
 struct RemoteVoiceCapabilities: Decodable, Sendable {
     let enabled: Bool; let voices: [VoiceOption]; let llmModel: String
@@ -119,7 +129,8 @@ actor RemoteInstanceAPI {
         }
     }
     func machines(token: String) async throws -> [RemoteMachine] {
-        let (data, response) = try await session.data(for: request("machines", token: token)); try validate(response)
+        var request = try request("machines", token: token); request.timeoutInterval = 20
+        let (data, response) = try await session.data(for: request); try validate(response)
         guard data.count <= 1_048_576 else { throw APIError.invalidResponse }
         struct Reply: Decodable { let data: [RemoteMachine] }
         return try JSONDecoder().decode(Reply.self, from: data).data
@@ -153,7 +164,12 @@ actor RemoteInstanceAPI {
         return try request("completions", token: token, body: data)
     }
     func control(_ machine: String, account: String, token: String, fields: [String: HistoryJSON]) async throws -> HistoryJSON {
-        let (data, response) = try await session.data(for: bridgeRequest(machine, account: account, token: token, fields: fields)); try validate(response)
+        var request = try bridgeRequest(machine, account: account, token: token, fields: fields); request.timeoutInterval = 20
+        let (data, response) = try await session.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode), data.count <= 1_048_576,
+           let reply = try? JSONDecoder().decode(HistoryJSON.self, from: data), let code = reply.object?["code"]?.string,
+           ["instance_device_revoked", "instance_update_required"].contains(code) { throw APIError.server(http.statusCode, code) }
+        try validate(response)
         guard data.count <= 8_388_608 else { throw APIError.invalidResponse }
         let result = try JSONDecoder().decode(HistoryJSON.self, from: data)
         guard result.object?["version"]?.number == 1 else { throw APIError.invalidResponse }; return result
@@ -278,6 +294,10 @@ struct RemoteModelPreference: Codable {
     private(set) var projectCatalog: [String: [RemoteHarnessProject]] = [:]
     private(set) var synchronizationErrors: [String: String] = [:]
     private var synchronizing = false
+    private var renewals: [String: Task<RemoteDeviceAuthorization, Error>] = [:]
+    private(set) var pairingStates: [String: String] = [:]
+    private var pollingPairings = false
+    private var connectionRequests = Set<String>()
     private var hiddenSources: Set<String> = []
     private var projectCatalogFetchedAt: [String: Date] = [:]
     private(set) var chats: [RemoteChat] = []
@@ -298,7 +318,10 @@ struct RemoteModelPreference: Codable {
     init() {
         monitor.pathUpdateHandler = { [weak self] path in
             let label = path.usesInterfaceType(.cellular) ? "Réseau cellulaire" : path.usesInterfaceType(.wifi) ? "Wi-Fi → Relay WAN" : "Relay WAN"
-            Task { @MainActor in self?.network = label }
+            Task { @MainActor in
+                guard let self else { return }; self.network = label
+                if path.status == .satisfied { await self.reload() }
+            }
         }; monitor.start(queue: DispatchQueue(label: NativeApplicationIdentity.identifier("remote-path")))
     }
     deinit { monitor.cancel() }
@@ -315,6 +338,7 @@ struct RemoteModelPreference: Codable {
     }
     func activate(_ account: String?) {
         guard self.account != account else { return }; task?.cancel(); task = nil; generation = UUID(); activeChat = nil; busy = false
+        for renewal in renewals.values { renewal.cancel() }; renewals = [:]; pairingStates = [:]
         self.account = account; synchronizationErrors = [:]; hiddenSources = []; machines = []; harnesses = [:]; modelCatalog = [:]; effortCatalog = [:]; projectCatalog = [:]; projectCatalogFetchedAt = [:]; chats = []; preferences = [:]; paired = []; error = nil; selection = nil; storageLoaded = false
         guard let account else { pendingPairing = nil; return }
         let url = archiveURL(account)
@@ -329,8 +353,14 @@ struct RemoteModelPreference: Codable {
     private func control(_ machine: String, operation: String, values: [String: HistoryJSON] = [:]) async throws -> HistoryJSON {
         guard let owner = account else { throw APIError.authenticationRequired }; let epoch = generation
         let (session, auth) = try await authorizedFields(machine, operation: operation)
-        let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: auth.merging(values) { _, new in new })
-        try check(owner, epoch); return result
+        do {
+            let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: auth.merging(values) { _, new in new })
+            try check(owner, epoch); return result
+        } catch {
+            try check(owner, epoch)
+            if case APIError.server(_, "instance_device_revoked") = error { RemoteAuthorizationStore.clear(owner, machine); paired.remove(machine); pairingStates[machine] = "revoked" }
+            throw error
+        }
     }
     private func decode<T: Decodable>(_ type: T.Type, _ value: HistoryJSON) throws -> T {
         try JSONDecoder().decode(type, from: JSONEncoder().encode(value))
@@ -439,6 +469,7 @@ struct RemoteModelPreference: Codable {
         while !Task.isCancelled {
             if Date() >= nextDirectoryRefresh { await reload(); nextDirectoryRefresh = Date().addingTimeInterval(30) }
             for machine in machines where paired.contains(machine.id) && machine.online && harnesses[machine.id] == nil { try? await catalog(machine.id) }
+            await pollPairings()
             await synchronizeConversations()
             do { try await Task.sleep(for: .seconds(5)) } catch { return }
         }
@@ -465,19 +496,56 @@ struct RemoteModelPreference: Codable {
             let session = try await ConversationManager.shared.validSession(); try check(owner, epoch)
             let result = try await RemoteInstanceAPI.shared.machines(token: session.accessToken); try check(owner, epoch)
             machines = result
-            paired = Set(try result.compactMap { try RemoteAuthorizationStore.load(owner, $0.id) == nil ? nil : $0.id })
+            paired = Set(try result.compactMap { machine in
+                guard let auth = try RemoteAuthorizationStore.load(owner, machine.id), auth.pendingUntil == nil else { return nil }
+                return auth.trustToken != nil || auth.expiresAt > Date().timeIntervalSince1970 * 1000 ? machine.id : nil
+            })
             error = nil
         } catch is CancellationError { } catch { if generation == epoch { self.error = "Instances indisponibles. Vérifiez votre compte et la connexion réseau." } }
     }
     private func authorizedFields(_ machine: String, operation: String) async throws -> (NativeSession, [String: HistoryJSON]) {
         guard let owner = account else { throw APIError.authenticationRequired }; let epoch = generation
         let session = try await ConversationManager.shared.validSession(); try check(owner, epoch)
-        guard var auth = try RemoteAuthorizationStore.load(owner, machine), auth.expiresAt > Date().timeIntervalSince1970 * 1000 else { throw APIError.server(401, "instance_device_expired") }
-        if auth.expiresAt < Date().addingTimeInterval(300).timeIntervalSince1970 * 1000 {
-            let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: credentials(auth, operation: "renew")); try check(owner, epoch)
-            auth = try JSONDecoder().decode(RemoteDeviceAuthorization.self, from: JSONEncoder().encode(result))
-            do { try RemoteAuthorizationStore.save(auth, owner, machine) }
-            catch { RemoteAuthorizationStore.clear(owner, machine); paired.remove(machine); throw error }
+        guard var auth = try RemoteAuthorizationStore.load(owner, machine), auth.pendingUntil == nil else { throw APIError.server(401, "instance_device_expired") }
+        if auth.trustToken == nil || auth.expiresAt < Date().addingTimeInterval(300).timeIntervalSince1970 * 1000 {
+            if auth.trustToken == nil && auth.expiresAt <= Date().timeIntervalSince1970 * 1000 { throw APIError.server(401, "instance_device_expired") }
+            if let renewal = renewals[machine] { auth = try await renewal.value }
+            else {
+                let original = auth
+                let renewal = Task { @MainActor in
+                    var next = original
+                    var fields = self.credentials(original, operation: "renew")
+                    var supportsDurable = original.trustToken != nil
+                    if !supportsDurable {
+                        do {
+                            let capabilities = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: ["operation": .string("pair-capabilities")])
+                            supportsDurable = capabilities.object?["pairingVersion"]?.number == 2
+                        } catch APIError.server(400, _) { supportsDurable = false }
+                        try self.check(owner, epoch)
+                    }
+                    let trust = try original.trustToken ?? RemoteDeviceAuthorization.secret()
+                    if supportsDurable {
+                        next = RemoteDeviceAuthorization(deviceId: original.deviceId, deviceToken: original.trustToken == nil || original.trustPending == true ? original.deviceToken : try RemoteDeviceAuthorization.secret(), expiresAt: 0, trustToken: trust, trustPending: original.trustToken == nil || original.trustPending == true)
+                        try RemoteAuthorizationStore.save(next, owner, machine)
+                        fields = self.credentials(next, operation: "renew"); fields["trustToken"] = .string(trust)
+                    }
+                    let result = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: fields)
+                    try self.check(owner, epoch)
+                    var issued = try JSONDecoder().decode(RemoteDeviceAuthorization.self, from: JSONEncoder().encode(result))
+                    issued.trustToken = result.object?["durable"] == .bool(true) ? next.trustToken : nil
+                    try RemoteAuthorizationStore.save(issued, owner, machine)
+                    return issued
+                }
+                renewals[machine] = renewal
+                defer { if generation == epoch { renewals[machine] = nil } }
+                do { auth = try await renewal.value }
+                catch {
+                    try check(owner, epoch)
+                    if case APIError.server(_, "instance_device_revoked") = error { RemoteAuthorizationStore.clear(owner, machine); paired.remove(machine); pairingStates[machine] = "revoked" }
+                    throw error
+                }
+            }
+            try check(owner, epoch)
         }
         return (session, credentials(auth, operation: operation))
     }
@@ -527,6 +595,86 @@ struct RemoteModelPreference: Codable {
             _ = try? await RemoteInstanceAPI.shared.control(pairing.machine, account: owner, token: session.accessToken, fields: credentials(auth, operation: "revoke")); throw error
         }
         harnesses[pairing.machine] = try decodeHarnesses(result); paired.insert(pairing.machine); pendingPairing = nil
+    }
+    func requestConnection(_ machine: String, name: String) async throws {
+        guard let owner = account else { throw APIError.authenticationRequired }
+        guard connectionRequests.insert(machine).inserted else { return }
+        defer { connectionRequests.remove(machine) }
+        if let existing = try RemoteAuthorizationStore.load(owner, machine), existing.pendingUntil != nil {
+            await pollPairings(); return
+        }
+        let epoch = generation, session = try await ConversationManager.shared.validSession()
+        try check(owner, epoch)
+        let capabilities = try await RemoteInstanceAPI.shared.control(machine, account: owner, token: session.accessToken, fields: ["operation": .string("pair-capabilities")])
+        try check(owner, epoch)
+        guard capabilities.object?["pairingVersion"]?.number == 2 else { throw APIError.server(409, "instance_update_required") }
+        let pending = RemoteDeviceAuthorization(deviceId: UUID().uuidString.lowercased(), deviceToken: try RemoteDeviceAuthorization.secret(), expiresAt: 0,
+            trustToken: try RemoteDeviceAuthorization.secret(), pendingUntil: Date().addingTimeInterval(300).timeIntervalSince1970 * 1000, deviceName: name)
+        try RemoteAuthorizationStore.save(pending, owner, machine)
+        pairingStates[machine] = "pending"
+        await pollPairings()
+    }
+    func cancelConnection(_ machine: String) async throws {
+        guard let owner = account, var auth = try RemoteAuthorizationStore.load(owner, machine), auth.pendingUntil != nil else { return }
+        auth.pendingCancelled = true; try RemoteAuthorizationStore.save(auth, owner, machine)
+        pairingStates[machine] = "cancelling"
+        await pollPairings()
+    }
+    func pollPairings() async {
+        guard let owner = account, !pollingPairings else { return }
+        let epoch = generation; pollingPairings = true
+        defer { pollingPairings = false }
+        for machine in machines {
+            do {
+                guard var auth = try RemoteAuthorizationStore.load(owner, machine.id), let until = auth.pendingUntil, let trust = auth.trustToken else { continue }
+                let session = try await ConversationManager.shared.validSession(); try check(owner, epoch)
+                let expired = until <= Date().timeIntervalSince1970 * 1000
+                let result = try await RemoteInstanceAPI.shared.control(machine.id, account: owner, token: session.accessToken, fields: [
+                    "operation": .string(auth.pendingCancelled == true ? "pair-cancel" : expired ? "pair-status" : "pair-request"), "requestId": .string(auth.deviceId), "trustToken": .string(trust),
+                    "deviceToken": .string(auth.deviceToken), "name": .string(auth.deviceName ?? "iPhone")])
+                try check(owner, epoch)
+                if auth.pendingCancelled != true, try RemoteAuthorizationStore.load(owner, machine.id)?.pendingCancelled == true { continue }
+                let state = result.object?["state"]?.string ?? "expired"
+                pairingStates[machine.id] = state
+                if state == "approved" {
+                    auth = RemoteDeviceAuthorization(deviceId: auth.deviceId, deviceToken: auth.deviceToken,
+                        expiresAt: result.object?["authorizationExpiresAt"]?.number ?? 0, trustToken: trust)
+                    try RemoteAuthorizationStore.save(auth, owner, machine.id); paired.insert(machine.id); error = nil
+                    try? await catalog(machine.id)
+                } else if ["refused", "cancelled", "expired", "revoked"].contains(state) {
+                    // An approval whose acknowledgement was missed may outlive
+                    // the request. Prove durable trust before discarding it.
+                    if state == "expired" && auth.pendingCancelled != true {
+                        let reply = try await RemoteInstanceAPI.shared.control(machine.id, account: owner, token: session.accessToken,
+                            fields: ["operation": .string("renew"), "deviceId": .string(auth.deviceId), "deviceToken": .string(auth.deviceToken), "trustToken": .string(trust)])
+                        try check(owner, epoch)
+                        if let expiry = reply.object?["expiresAt"]?.number {
+                            auth = RemoteDeviceAuthorization(deviceId: auth.deviceId, deviceToken: auth.deviceToken, expiresAt: expiry, trustToken: trust)
+                            try RemoteAuthorizationStore.save(auth, owner, machine.id); paired.insert(machine.id); pairingStates[machine.id] = "approved"; continue
+                        }
+                    }
+                    RemoteAuthorizationStore.clear(owner, machine.id)
+                }
+            } catch is CancellationError { return }
+            catch {
+                if generation == epoch {
+                    self.error = Self.connectionError(error)
+                    if case APIError.server(_, "instance_device_revoked") = error {
+                        let pending = try? RemoteAuthorizationStore.load(owner, machine.id)
+                        pairingStates[machine.id] = (pending?.pendingUntil ?? .greatestFiniteMagnitude) <= Date().timeIntervalSince1970 * 1000 ? "expired" : "revoked"
+                        RemoteAuthorizationStore.clear(owner, machine.id); paired.remove(machine.id)
+                    }
+                }
+            }
+        }
+    }
+    static func connectionError(_ error: Error) -> String {
+        if case APIError.server(_, "instance_update_required") = error { return "Mettez MultiVibe à jour sur le Mac, ou utilisez le QR dans les options avancées." }
+        if case APIError.server(_, "instance_device_revoked") = error { return "L’accès de cet iPhone a été révoqué. Connectez-le à nouveau depuis le Mac." }
+        if case APIError.server(_, "instance_device_expired") = error { return "Cette ancienne association a expiré. Autorisez une dernière fois cet iPhone sur le Mac." }
+        if case APIError.server(_, "instance_session_expired") = error { return "Reconnectez votre compte MultiVibe." }
+        if case APIError.authenticationRequired = error { return "Connectez votre compte MultiVibe." }
+        return "Connexion au Mac interrompue. Reconnexion automatique en cours ; votre association est conservée."
     }
     private func decodeHarnesses(_ value: HistoryJSON) throws -> [RemoteHarness] {
         try JSONDecoder().decode([RemoteHarness].self, from: JSONEncoder().encode(value.object?["harnesses"] ?? .array([])))
