@@ -57,6 +57,7 @@ struct ProviderQuota: Decodable {
     let accounts: [MenuBarAccount]
     let windows: [Window]
     let balance: Balance?
+    let preferBalance: Bool?
 }
 
 struct ProviderActivity: Decodable {

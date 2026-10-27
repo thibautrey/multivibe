@@ -46,6 +46,12 @@ struct HostPopoverLayoutHarness {
         _ = NSApplication.shared
         let screenshotDirectory = CommandLine.arguments.dropFirst().first
 
+        let creditProvider = try! JSONDecoder().decode(ProviderQuota.self, from: Data(#"{"id":"openai","displayName":"OpenAI","accounts":[],"windows":[{"label":"5h","remainingPercent":0,"accountCount":2}],"balance":{"remaining":32.5,"unit":"credits","accountCount":2},"preferBalance":true}"#.utf8))
+        precondition(providerQuotaText(creditProvider) == "32.50 credits")
+        let quotaProvider = try! JSONDecoder().decode(ProviderQuota.self, from: Data(#"{"id":"openai","displayName":"OpenAI","accounts":[],"windows":[{"label":"5h","remainingPercent":25,"accountCount":2}],"balance":{"remaining":32.5,"unit":"credits","accountCount":2}}"#.utf8))
+        precondition(providerQuotaText(quotaProvider) == "5h:25%")
+
+
         let unavailable = decode(#"""
         {
           "operational": true,

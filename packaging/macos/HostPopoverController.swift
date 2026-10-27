@@ -122,7 +122,7 @@ final class HostPopoverController: NSViewController {
         }
         quotaProviders = summary?.providers ?? []
         if quotaProviders.isEmpty, let accounts = summary?.accounts, !accounts.isEmpty {
-            quotaProviders = [ProviderQuota(id: "legacy", displayName: "Accounts", accounts: accounts, windows: [], balance: nil)]
+            quotaProviders = [ProviderQuota(id: "legacy", displayName: "Accounts", accounts: accounts, windows: [], balance: nil, preferBalance: nil)]
         }
         accountSection.orientation = .vertical
         accountSection.alignment = .leading

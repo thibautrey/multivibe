@@ -187,16 +187,7 @@ final class MultiVibeMenuBarApp: NSObject, NSApplicationDelegate, NSPopoverDeleg
         let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
         statusItem.length = NSStatusItem.variableLength
         if operational, let provider = eligible.first(where: { $0.id == quotaSelection.selected }) {
-            let values = provider.windows.map { "\($0.label):\(Int($0.remainingPercent.rounded()))%" }.joined(separator: "  ")
-            // Credit-only providers expose an absolute balance, not a quota window.
-            let quota: String
-            if !values.isEmpty {
-                quota = values
-            } else if let balance = provider.balance {
-                quota = creditBalanceText(remaining: balance.remaining, unit: balance.unit)
-            } else {
-                quota = "Quota unavailable"
-            }
+            let quota = providerQuotaText(provider)
             title = "  " + (now - quotaSelection.changedAt < 3 ? "\(provider.displayName) · " : "") + quota
             tooltip = "\(provider.displayName) — \(quota)"
         } else {
