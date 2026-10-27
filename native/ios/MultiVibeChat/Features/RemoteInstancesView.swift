@@ -85,6 +85,7 @@ struct RemoteInstancesView: View {
                     let output = FileManager.default.temporaryDirectory.appendingPathComponent("multivibe-p2p-message-validation.json")
                     try? FileManager.default.removeItem(at: output)
                     try? Data().write(to: FileManager.default.temporaryDirectory.appendingPathComponent("multivibe-p2p-message-validation-stages.jsonl"), options: .atomic)
+                    try? Data().write(to: FileManager.default.temporaryDirectory.appendingPathComponent("multivibe-p2p-send-stages.jsonl"), options: .atomic)
                     Task { @MainActor in
                         for _ in 0..<20 {
                             if let machine = instances.machines.first(where: { $0.online && $0.localEndpoint != nil && instances.paired.contains($0.id) }) {

@@ -4,6 +4,21 @@ import Security
 import Observation
 import OSLog
 
+#if DEBUG
+enum RemoteP2PMessageValidationLog {
+    static func record(_ stage: String, error: Error? = nil) {
+        guard ProcessInfo.processInfo.arguments.contains("-remote-instances-message-validation") else { return }
+        var value: [String: Any] = ["at": Date().timeIntervalSince1970, "stage": stage]
+        if let error { value["errorType"] = String(reflecting: type(of: error)); value["error"] = String(reflecting: error) }
+        let output = FileManager.default.temporaryDirectory.appendingPathComponent("multivibe-p2p-send-stages.jsonl")
+        guard let data = try? JSONSerialization.data(withJSONObject: value), var line = String(data: data, encoding: .utf8) else { return }
+        line += "\n"
+        if let handle = try? FileHandle(forWritingTo: output) { defer { try? handle.close() }; try? handle.seekToEnd(); try? handle.write(contentsOf: Data(line.utf8)) }
+        else { try? Data(line.utf8).write(to: output, options: .atomic) }
+    }
+}
+#endif
+
 struct RemoteMachine: Codable, Identifiable, Sendable {
     struct Model: Codable, Sendable { let id: String; var name: String? = nil }
     let id: String; let name: String; let online: Bool; let models: [Model]
@@ -899,11 +914,20 @@ struct RemoteModelPreference: Codable {
             defer { if generation == epoch && streamGeneration == streamEpoch { activeChat = nil; task = nil; try? persist() } }
             var operation = recover ? "recover" : "prompt"
             var failures = 0
+#if DEBUG
+            RemoteP2PMessageValidationLog.record("send-task-started")
+#endif
             while generation == epoch && streamGeneration == streamEpoch {
                 do {
                     try check(owner, epoch)
                     guard let current = chats.first(where: { $0.id == id }), let command = current.command else { return }
+#if DEBUG
+                    RemoteP2PMessageValidationLog.record("authorization-started")
+#endif
                     let (session, auth) = try await authorizedFields(current.machine, operation: operation); try check(owner, epoch)
+#if DEBUG
+                    RemoteP2PMessageValidationLog.record("authorization-finished")
+#endif
                     var fields = auth
                     fields["conversationId"] = .string(id.uuidString.lowercased())
                     fields["commandId"] = .string(command)
@@ -915,6 +939,9 @@ struct RemoteModelPreference: Codable {
                         if let effort = initialChat.effort { fields["effort"] = .string(effort) }
                         if let projectId = initialChat.projectId { fields["projectId"] = .string(projectId) }
                     }
+#if DEBUG
+                    RemoteP2PMessageValidationLog.record("events-started")
+#endif
                     try await RemoteInstanceAPI.shared.events(current.machine, account: owner, token: session.accessToken, fields: fields, local: machines.first { $0.id == current.machine }) { event in
                         guard await self.streamGeneration == streamEpoch else { throw CancellationError() }
                         try await self.receive(event, chat: id, owner: owner, epoch: epoch)
@@ -924,6 +951,9 @@ struct RemoteModelPreference: Codable {
                     operation = "recover"
                 } catch is CancellationError { return }
                 catch {
+#if DEBUG
+                    RemoteP2PMessageValidationLog.record("send-attempt-failed", error: error)
+#endif
                     guard generation == epoch, streamGeneration == streamEpoch,
                           chats.first(where: { $0.id == id })?.command != nil else { return }
                     failures += 1
