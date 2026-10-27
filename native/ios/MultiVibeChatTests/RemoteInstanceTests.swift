@@ -198,7 +198,7 @@ extension RemoteInstanceTests {
         let legacy = Data(#"{"deviceId":"fixture","deviceToken":"fixture","expiresAt":1}"#.utf8)
         XCTAssertNil(try JSONDecoder().decode(RemoteDeviceAuthorization.self, from: legacy).trustToken)
     }
-    func testConnectionErrorsDistinguishRevocationFromTemporaryTransportLoss() {
+    @MainActor func testConnectionErrorsDistinguishRevocationFromTemporaryTransportLoss() {
         XCTAssertTrue(RemoteInstances.connectionError(APIError.server(401, "instance_device_revoked")).contains("révoqué"))
         XCTAssertTrue(RemoteInstances.connectionError(APIError.server(401, "instance_session_expired")).contains("compte"))
         XCTAssertTrue(RemoteInstances.connectionError(URLError(.notConnectedToInternet)).contains("conservée"))
