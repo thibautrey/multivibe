@@ -7,6 +7,8 @@ import {randomUUID,randomBytes,createHash} from 'node:crypto';
 import {HostHarnessRuntime} from './harness-runtime/runtime.js';
 import {InstanceConversations} from './instance-conversations.js';
 import {InstanceRelay,INSTANCE_RELAY_MODEL,instanceRelayChunks} from './instance-relay.js';
+import {InstanceLANServer,certificatePin} from './instance-lan.js';
+import https from 'node:https';
 
 async function fixture(t:any,options:{prompt?:(ctx:any)=>Promise<void>}={}){
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'multivibe-instance-')),account=randomUUID(),machine=randomUUID();let now=Date.now(),calls=0;
@@ -320,4 +322,18 @@ test('a running harness turn does not block a second short pairing operation on 
  while(!completed&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,50));
  assert.equal(entered,true);assert.equal(completed,true,'short controls must complete before the long turn is released');
  release();service.stop();
+});
+
+test('pinned HTTPS LAN transport executes control operations without Relay',async t=>{
+ const f=await fixture(t),server=new InstanceLANServer(f.service,path.dirname(f.file));t.after(()=>server.stop());const identity=await server.start();
+ assert.equal(identity.publicKey.length,43);assert.match(identity.host,/^[a-z0-9-]+\.local$/);assert.ok(identity.port>0);
+ const body=f.envelope({operation:'pair-capabilities'});
+ const reply=await new Promise<{status:number;body:string}>((resolve,reject)=>{
+  const request=https.request({hostname:'localhost',port:identity.port,path:'/v1',method:'POST',rejectUnauthorized:false,headers:{'content-type':'application/json'}},response=>{
+   const chunks:Buffer[]=[];response.on('data',chunk=>chunks.push(chunk));response.on('end',()=>resolve({status:response.statusCode!,body:Buffer.concat(chunks).toString()}));
+  });request.on('error',reject);request.end(JSON.stringify(body));
+ });
+ assert.equal(reply.status,200);assert.equal(JSON.parse(reply.body).pairingVersion,2);
+ const certificate=fs.readFileSync(path.join(path.dirname(f.file),'instance-lan-cert.pem'),'utf8');assert.equal(certificatePin(certificate),identity.publicKey);
+ assert.equal(fs.statSync(path.join(path.dirname(f.file),'instance-lan-key.pem')).mode&0o777,0o600);
 });

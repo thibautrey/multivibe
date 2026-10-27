@@ -33,7 +33,7 @@ struct NativeInstancePairingView: View {
             Text("Utiliser ce Mac depuis votre iPhone").font(.title2.bold())
             Text("Sur l’iPhone, ouvrez Compte → Instances, choisissez ce Mac et touchez Connecter. Autorisez ensuite votre iPhone ici, une seule fois.")
             if status["connected"] == .bool(true) {
-                Label(status["running"] == .bool(true) ? "Relay connecté" : "Connexion Relay en cours", systemImage: "network")
+                Label(status["running"] == .bool(true) ? "Mac disponible" : "Connexion en cours", systemImage: "network")
                 ForEach(status["requests"].array, id: \.display) { request in
                     VStack(alignment: .leading, spacing: 8) {
                         Label((request["name"].string ?? "iPhone") + " souhaite se connecter", systemImage: "iphone")
@@ -70,7 +70,6 @@ struct NativeInstancePairingView: View {
                     status = try await call("/connect", method: "POST", body: .object(["name": .string(Host.current().localizedName ?? "Mon Mac")]))
                 } }.buttonStyle(.borderedProminent)
             }
-            Text("Transport HTTPS sortant via MultiVibe Relay. Les échanges utilisent le quota Relay du compte. Le Cloud peut lire le contenu transitoire du transport.").font(.caption).foregroundStyle(.secondary)
             if let error { Text(error).foregroundStyle(.red) }
             HStack { if busy { ProgressView().controlSize(.small) }; Spacer(); Button("Fermer") { if let close { close() } else { dismiss() } }.keyboardShortcut(.cancelAction) }
         }.padding(24).frame(width: 620).disabled(busy)
