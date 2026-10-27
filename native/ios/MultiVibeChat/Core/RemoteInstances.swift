@@ -704,10 +704,10 @@ struct RemoteModelPreference: Codable {
                     // An approval whose acknowledgement was missed may outlive
                     // the request. Prove durable trust before discarding it.
                     if state == "expired" && auth.pendingCancelled != true {
-                        let reply = try await RemoteInstanceAPI.shared.control(machine.id, account: owner, token: session.accessToken,
+                        let reply = try? await RemoteInstanceAPI.shared.control(machine.id, account: owner, token: session.accessToken,
                             fields: ["operation": .string("renew"), "deviceId": .string(auth.deviceId), "deviceToken": .string(auth.deviceToken), "trustToken": .string(trust)], local: machine)
                         try check(owner, epoch)
-                        if let expiry = reply.object?["expiresAt"]?.number {
+                        if let expiry = reply?.object?["expiresAt"]?.number {
                             auth = RemoteDeviceAuthorization(deviceId: auth.deviceId, deviceToken: auth.deviceToken, expiresAt: expiry, trustToken: trust)
                             try RemoteAuthorizationStore.save(auth, owner, machine.id); paired.insert(machine.id); pairingStates[machine.id] = "approved"; continue
                         }
