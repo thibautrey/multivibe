@@ -250,7 +250,11 @@ actor RemoteInstanceAPI {
                 let (bytes, response) = try await direct.bytes(for: request)
                 guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), http.value(forHTTPHeaderField: "content-type")?.hasPrefix("text/event-stream") == true else { throw URLError(.badServerResponse) }
                 try await readEvents(bytes, update: update); return
-            } catch { }
+            } catch {
+#if DEBUG
+                RemoteP2PMessageValidationLog.record("lan-events-failed", error: error)
+#endif
+            }
         }
         let (bytes, response) = try await session.bytes(for: bridgeRequest(machine, account: account, token: token, fields: fields)); try validate(response)
         guard (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "content-type")?.hasPrefix("text/event-stream") == true else { throw APIError.invalidResponse }
