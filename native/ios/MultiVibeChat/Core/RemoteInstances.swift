@@ -5,10 +5,17 @@ import Observation
 import OSLog
 
 struct RemoteMachine: Codable, Identifiable, Sendable {
-    struct Model: Codable, Sendable { let id: String }
+    struct Model: Codable, Sendable { let id: String; var name: String? = nil }
     let id: String; let name: String; let online: Bool; let models: [Model]
     var lanPublicKey: String? = nil; var lanHost: String? = nil; var lanPort: Int? = nil
     var supportsHarness: Bool { models.contains { $0.id == RemoteInstanceAPI.model } }
+    var localEndpoint: (pin: String, host: String, port: Int)? {
+        if let lanPublicKey, let lanHost, let lanPort { return (lanPublicKey, lanHost, lanPort) }
+        guard let value = models.first(where: { $0.id == "multivibe/instance-lan-v1" })?.name else { return nil }
+        let fields = value.split(separator: " ", omittingEmptySubsequences: false)
+        guard fields.count == 3, let port = Int(fields[1]) else { return nil }
+        return (String(fields[0]), String(fields[2]), port)
+    }
 }
 struct RemoteHarness: Codable, Identifiable, Sendable {
     let id: String; let name: String; let available: Bool; let configured: Bool; let reason: String?
@@ -183,13 +190,15 @@ actor RemoteInstanceAPI {
         return try request("completions", token: token, body: data)
     }
     static func lanURL(_ machine: RemoteMachine) throws -> URL {
-        guard let host = machine.lanHost, host.hasSuffix(".local"), host.range(of: "^[A-Za-z0-9.-]{1,253}$", options: .regularExpression) != nil,
-              let port = machine.lanPort, (1...65535).contains(port) else { throw URLError(.cannotFindHost) }
+        guard let endpoint = machine.localEndpoint else { throw URLError(.cannotFindHost) }
+        let host = endpoint.host, port = endpoint.port
+        guard host.hasSuffix(".local"), host.range(of: "^[A-Za-z0-9.-]{1,253}$", options: .regularExpression) != nil,
+              (1...65535).contains(port) else { throw URLError(.cannotFindHost) }
         var components = URLComponents(); components.scheme = "https"; components.host = host; components.port = port; components.path = "/v1"
         guard let url = components.url else { throw APIError.invalidResponse }; return url
     }
     private func lanRequest(_ machine: RemoteMachine, account: String, fields: [String: HistoryJSON], streaming: Bool = false) throws -> (URLRequest, URLSession) {
-        guard let pin = machine.lanPublicKey, let trust = RemoteLANTrust(pin) else { throw URLError(.cannotFindHost) }
+        guard let pin = machine.localEndpoint?.pin, let trust = RemoteLANTrust(pin) else { throw URLError(.cannotFindHost) }
         let url = try Self.lanURL(machine)
         var e = fields; e["version"] = .number(1); e["accountId"] = .string(account); e["machineId"] = .string(machine.id)
         let content = String(decoding: try JSONEncoder().encode(HistoryJSON.object(e)), as: UTF8.self)

@@ -14,6 +14,8 @@ import {fail,identifier,requiredText,type HarnessEvent} from './harness-runtime/
 // transport. Cloud still owns account authentication, ownership, encrypted queues,
 // cancellation, single-use start receipts and allowance. No inbound Host listener.
 export const INSTANCE_RELAY_MODEL='multivibe/host-harness-v1';
+export const INSTANCE_LAN_MODEL='multivibe/instance-lan-v1';
+export const instanceLANModel=(identity:InstanceLANIdentity)=>({id:INSTANCE_LAN_MODEL,name:[identity.publicKey,identity.port,identity.host].join(' '),supportsTools:false});
 const ORIGIN='https://app.multivibe.cloud';
 const hash=(v:string)=>createHash('sha256').update(v).digest('hex');
 const equal=(a:string,b:string)=>a.length===b.length&&timingSafeEqual(Buffer.from(a),Buffer.from(b));
@@ -134,7 +136,7 @@ export class InstanceRelay {
   try{this.lanIdentity=await this.lan?.start();}catch{this.lanIdentity=undefined;}
   let heartbeatAt=0,failures=0;const jobs=new Set<Promise<void>>();
   while(!signal.aborted&&this.state){try{
-   if(this.clock()-heartbeatAt>30_000){await this.machine('heartbeat',{models:[{id:INSTANCE_RELAY_MODEL,name:'MultiVibe Host · harness',supportsTools:false}],...(this.lanIdentity?{lanPublicKey:this.lanIdentity.publicKey,lanHost:this.lanIdentity.host,lanPort:this.lanIdentity.port}:{})},signal);heartbeatAt=this.clock();this.running=true;this.lastError=undefined;}
+   if(this.clock()-heartbeatAt>30_000){await this.machine('heartbeat',{models:[{id:INSTANCE_RELAY_MODEL,name:'MultiVibe Host · harness',supportsTools:false},...(this.lanIdentity?[instanceLANModel(this.lanIdentity)]:[])],...(this.lanIdentity?{lanPublicKey:this.lanIdentity.publicKey,lanHost:this.lanIdentity.host,lanPort:this.lanIdentity.port}:{})},signal);heartbeatAt=this.clock();this.running=true;this.lastError=undefined;}
    if(jobs.size<4){const {job}=await this.machine('jobs',undefined,signal);if(job){const execution=this.execute(job,signal).catch(()=>{}).finally(()=>jobs.delete(execution));jobs.add(execution);}}
    failures=0;
   }catch{if(!signal.aborted){this.lastError='Relay indisponible. Reconnexion en cours.';this.running=false;heartbeatAt=0;failures++;}}

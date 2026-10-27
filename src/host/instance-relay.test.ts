@@ -6,7 +6,7 @@ import path from 'node:path';
 import {randomUUID,randomBytes,createHash} from 'node:crypto';
 import {HostHarnessRuntime} from './harness-runtime/runtime.js';
 import {InstanceConversations} from './instance-conversations.js';
-import {InstanceRelay,INSTANCE_RELAY_MODEL,instanceRelayChunks} from './instance-relay.js';
+import {InstanceRelay,INSTANCE_RELAY_MODEL,instanceLANModel,instanceRelayChunks} from './instance-relay.js';
 import {InstanceLANServer,certificatePin} from './instance-lan.js';
 import https from 'node:https';
 
@@ -336,4 +336,9 @@ test('pinned HTTPS LAN transport executes control operations without Relay',asyn
  assert.equal(reply.status,200);assert.equal(JSON.parse(reply.body).pairingVersion,2);
  const certificate=fs.readFileSync(path.join(path.dirname(f.file),'instance-lan-cert.pem'),'utf8');assert.equal(certificatePin(certificate),identity.publicKey);
  assert.equal(fs.statSync(path.join(path.dirname(f.file),'instance-lan-key.pem')).mode&0o777,0o600);
+});
+
+test('LAN endpoint fits the legacy authenticated machine catalogue',()=>{
+ const model=instanceLANModel({publicKey:'A'.repeat(43),port:65535,host:'m'.repeat(63)+'.local'});
+ assert.equal(model.id,'multivibe/instance-lan-v1');assert.ok(model.name.length<=120);assert.equal(model.supportsTools,false);
 });
