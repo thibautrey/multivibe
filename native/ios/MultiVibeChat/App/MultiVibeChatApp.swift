@@ -5,7 +5,7 @@ import SwiftUI
     @Environment(\.scenePhase) private var scenePhase
     @State private var manager = ConversationManager.shared
     @State private var sdkAuthorization: SDKAuthorizationRequest?
-    @State private var remoteInstancesPresented = false
+    @State private var remoteInstancesPresented = ProcessInfo.processInfo.arguments.contains("-remote-instances-live-validation")
     var body: some Scene {
         WindowGroup {
             ChatEntryView()

@@ -76,6 +76,12 @@ struct RemoteInstancesView: View {
             .task(id: "\(manager.session?.accountId ?? "")-\(scenePhase)") {
                 guard scenePhase == .active else { return }
                 instances.activate(manager.session?.accountId); await instances.reload(); confirming = instances.pendingPairing
+#if DEBUG
+                if ProcessInfo.processInfo.arguments.contains("-remote-instances-live-validation"),
+                   let machine = instances.machines.first(where: { $0.online && $0.supportsHarness && !instances.paired.contains($0.id) }) {
+                    try? await instances.requestConnection(machine.id, name: UIDevice.current.name)
+                }
+#endif
                 var ticks = 0
                 while !Task.isCancelled {
                     await instances.pollPairings(); ticks += 1
