@@ -56,10 +56,10 @@ export class InstanceRelay {
 
  private requests(){
   if(!this.state)fail('Instance disconnected',401);
-  this.state.requests=(this.state.requests??[]).filter(r=>r.expiresAt>this.clock());return this.state.requests;
+  this.state.requests=(this.state.requests??[]).filter(r=>r.expiresAt+24*3600_000>this.clock());return this.state.requests;
  }
  decidePairing(id:string,approve:boolean){
-  const r=this.requests().find(r=>r.id===id);if(!r)fail('Pairing request expired',404);
+  const r=this.requests().find(r=>r.id===id&&r.expiresAt>this.clock());if(!r)fail('Pairing request expired',404);
   if(r.state!=='pending')return this.status();
   if(approve){
    if(this.state!.devices.filter(d=>d.trustDigest||d.expiresAt>this.clock()).length>=10)fail('Device limit reached',409);
@@ -74,7 +74,7 @@ export class InstanceRelay {
   if(r&&(r.accountId!==e.accountId||!equal(r.trustDigest,trustDigest)))fail('Pairing request mismatch',403);
   if(e.operation==='pair-request'&&!r){
    if(this.state!.devices.some(d=>d.id===e.requestId))fail('Request already used',409);
-   if(requests.length>=20)fail('Too many pairing requests',429);
+   if(requests.length>=200||requests.filter(r=>r.state==='pending'&&r.expiresAt>this.clock()).length>=20)fail('Too many pairing requests',429);
    if(!/^[-_A-Za-z0-9]{43}$/.test(e.deviceToken??''))fail('Invalid device token');
    r={id:e.requestId!,accountId:e.accountId,name:requiredText(e.name,80),digest:hash(e.deviceToken!),trustDigest,expiresAt:this.clock()+5*60_000,state:'pending'};
    requests.push(r);this.persist();
@@ -84,10 +84,11 @@ export class InstanceRelay {
    if(r.state==='approved')this.revokeDevice(r.id);
    r.state='cancelled';this.persist();
   }
+  if(r.expiresAt<=this.clock()&&e.operation!=='pair-cancel')return {state:'expired',pairingVersion:2};
   const device=this.state!.devices.find(d=>d.id===r!.id);
   return {state:r.state==='approved'&&!device?'revoked':r.state,expiresAt:r.expiresAt,...(r.state==='approved'&&device?{deviceId:device.id,authorizationExpiresAt:device.expiresAt}:{}),pairingVersion:2};
  }
- status(){return {pairingVersion:2,requests:this.state?this.requests().filter(r=>r.state==='pending').map(({id,name,expiresAt})=>({id,name,expiresAt})):[],connected:!!this.state,running:this.running,name:this.state?.name,error:this.lastError,devices:this.state?.devices.filter(d=>d.trustDigest||d.expiresAt>this.clock()).map(({id,name,expiresAt})=>({id,name,expiresAt}))??[]};}
+ status(){return {pairingVersion:2,requests:this.state?this.requests().filter(r=>r.state==='pending'&&r.expiresAt>this.clock()).map(({id,name,expiresAt})=>({id,name,expiresAt})):[],connected:!!this.state,running:this.running,name:this.state?.name,error:this.lastError,devices:this.state?.devices.filter(d=>d.trustDigest||d.expiresAt>this.clock()).map(({id,name,expiresAt})=>({id,name,expiresAt}))??[]};}
  private async account(pathname:string,token:string,body?:unknown,method=body===undefined?'GET':'POST',signal?:AbortSignal) {
   const response=await this.fetcher(ORIGIN+pathname,{method,redirect:'error',credentials:'omit',headers:{authorization:'Bearer '+token,'user-agent':'MultiVibe-Host/1.0',...(body===undefined?{}:{'content-type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.any([AbortSignal.timeout(15_000),...(signal?[signal]:[])])});
   const text=await response.text();if(text.length>1_048_576)fail('Relay response exceeds its limit',502);
