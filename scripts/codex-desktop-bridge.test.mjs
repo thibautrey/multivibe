@@ -121,3 +121,15 @@ test('keeps inference endpoints on loopback and preserves unrelated Codex settin
   assert.equal(desktopConfig(configured, 1459), configured);
   assert.equal(await readFile(path.join(f.home, 'config.toml'), 'utf8'), f.config);
 });
+
+test('relay identity checks never require sending a credential to the listener', async t => {
+  const f = await fixture(t, (_, res) => res.end('{}'));
+  const { bridgeSignature } = await import('./codex-desktop-bridge.mjs');
+  const challenge = 'a'.repeat(64);
+  const response = await fetch(f.base + '/_multivibe/codex-bridge?challenge=' + challenge);
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.signature, bridgeSignature('mv_fixture', challenge, f.home, `http://127.0.0.1:${f.upstream.address().port}/v1`));
+  assert.doesNotMatch(JSON.stringify(body), /mv_fixture|account-fixture/);
+  assert.equal((await fetch(f.base + '/_multivibe/codex-bridge?challenge=invalid')).status, 401);
+});

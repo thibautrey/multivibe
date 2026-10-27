@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Keep Codex's ChatGPT identity while authenticating inference to MultiVibe.
 import http from 'node:http';
-import { timingSafeEqual } from 'node:crypto';
+import { timingSafeEqual, createHmac } from 'node:crypto';
 import { readFile, writeFile, mkdir, copyFile, chmod, access, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -16,6 +16,19 @@ const blockedRequestHeaders = new Set([
 const allowedPath = /^\/v1\/(?:responses(?:\/compact)?|models(?:\/[^/]+)?)$/;
 const same = (a, b) => typeof a === 'string' && typeof b === 'string' &&
   Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+
+export function bridgeSignature(key, challenge, codexHome, upstream) {
+  return createHmac('sha256', key).update(JSON.stringify([challenge, path.resolve(codexHome), upstream])).digest('hex');
+}
+
+export async function readDesktopAuthStatus(codexHome, now = Date.now()) {
+  try {
+    const auth = JSON.parse(await readFile(path.join(codexHome, 'auth.json'), 'utf8'));
+    if (auth.auth_mode !== 'chatgpt' || !auth.tokens?.access_token || !auth.tokens?.account_id) return 'sign-in-required';
+    const claims = JSON.parse(Buffer.from(auth.tokens.access_token.split('.')[1], 'base64url').toString());
+    return typeof claims.exp === 'number' && claims.exp * 1000 > now ? 'ready' : 'expired';
+  } catch { return 'sign-in-required'; }
+}
 
 export function managedProxyKey(config) {
   let table = '';
@@ -70,7 +83,7 @@ function upstreamHeaders(headers, key, upgrade) {
 
 export function createDesktopBridge({ codexHome, upstream = 'http://127.0.0.1:1455/v1', now = Date.now }) {
   const target = new URL(upstream);
-  if (target.protocol !== 'http:' || target.hostname !== '127.0.0.1' || target.username || target.password ||
+  if (target.protocol !== 'http:' || !['127.0.0.1', '[::1]'].includes(target.hostname) || target.username || target.password ||
       target.search || target.hash || target.pathname.replace(/\/$/, '') !== '/v1') {
     throw new Error('Upstream must be an explicit loopback HTTP /v1 endpoint');
   }
@@ -95,6 +108,18 @@ export function createDesktopBridge({ codexHome, upstream = 'http://127.0.0.1:14
     return { key: managedProxyKey(config), pathname: requested.pathname + requested.search };
   }
   async function forward(request, destination, head) {
+    if (head === undefined && request.method === 'GET' && request.url.startsWith('/_multivibe/codex-bridge?')) {
+      const challenge = new URL(request.url, 'http://127.0.0.1').searchParams.get('challenge');
+      if (request.socket.remoteAddress !== '127.0.0.1' || request.headers.origin || !/^[a-f0-9]{64}$/.test(challenge ?? '')) {
+        reject(destination, 401, 'Invalid relay identity check'); return;
+      }
+      try {
+        const key = managedProxyKey(await readFile(path.join(codexHome, 'config.toml'), 'utf8'));
+        destination.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+        destination.end(JSON.stringify({ signature: bridgeSignature(key, challenge, codexHome, upstream) }));
+      } catch { reject(destination, 503, 'Managed relay configuration is unavailable'); }
+      return;
+    }
     let auth;
     try { auth = await authorize(request); } catch {
       reject(destination, 503, 'Local Codex credentials are unavailable; sign in to ChatGPT and check the bridge configuration'); return;
