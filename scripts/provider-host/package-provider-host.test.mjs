@@ -8,7 +8,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { argumentsFrom, archiveBundle, command, commandInvocation, download, stapleMacArtifact, submitMacNotarization } from "./package-provider-host.mjs";
+import { argumentsFrom, archiveBundle, command, commandInvocation, download, stapleMacArtifact, submitMacNotarization, signMacApplication } from "./package-provider-host.mjs";
 
 const packager = fileURLToPath(new URL("./package-provider-host.mjs", import.meta.url));
 const verifier = fileURLToPath(new URL("./verify-provider-host.mjs", import.meta.url));
@@ -564,4 +564,43 @@ test("notarization retries real subprocess stderr upload failures", async () => 
 test("captured commands bound stderr output", async () => {
   await assert.rejects(command(process.execPath, ["-e", 'process.stderr.write("x".repeat(32));'],
     { capture: true, captureLimit: 16 }), /produced excessive output/);
+});
+
+
+test("all nested and outer app signatures use the job keychain without changing user settings", async () => {
+  const work = await mkdtemp(path.join(tmpdir(), "multivibe-signing-test-"));
+  const application = path.join(work, "MultiVibe.app");
+  const contents = path.join(application, "Contents");
+  const keychain = path.join(work, "release signing.keychain-db");
+  try {
+    await mkdir(path.join(contents, "Resources"), { recursive: true });
+    await writeFile(path.join(contents, "Resources", "native.node"), Buffer.from([0xfe, 0xed, 0xfa, 0xcf]));
+    for (const selectedKeychain of [keychain, ""]) {
+      const calls = [];
+      await signMacApplication(application, "release-identity", {
+        keychain: selectedKeychain,
+        run: async (program, args) => { calls.push({ program, args }); },
+      });
+      const signatures = calls.filter(({ args }) => args.includes("--sign"));
+      assert.equal(signatures.length, 8);
+      for (const { program, args } of signatures) {
+        assert.equal(program, "codesign");
+        assert.equal(args[args.indexOf("--sign") + 1], "release-identity");
+        if (selectedKeychain) assert.equal(args[args.indexOf("--keychain") + 1], keychain);
+        else assert.ok(!args.includes("--keychain"));
+      }
+      assert.ok(signatures.some(({ args }) => args.at(-1).endsWith("native.node")));
+      assert.equal(signatures.at(-1).args.at(-1), application);
+      assert.ok(calls.every(({ program }) => program !== "security"));
+      assert.equal(calls.filter(({ args }) => args.includes("--verify")).length, 2);
+    }
+  } finally { await rm(work, { recursive: true, force: true }); }
+});
+
+test("release workflow never replaces the user's keychain search list or default", async () => {
+  const workflow = await readFile(new URL("../../.github/workflows/provider-host-release.yml", import.meta.url), "utf8");
+  assert.doesNotMatch(workflow, /list-keychains|default-keychain|multivibe-original-keychains/u);
+  assert.match(workflow, /security find-identity -v -p codesigning "\$keychain"/u);
+  assert.match(workflow, /security delete-keychain "\$SIGNING_KEYCHAIN"/u);
+  assert.match(workflow, /SIGNING_KEYCHAIN=%s/u);
 });
