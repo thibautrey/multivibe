@@ -84,6 +84,7 @@ struct RemoteInstancesView: View {
                 if ProcessInfo.processInfo.arguments.contains("-remote-instances-message-validation") {
                     let output = FileManager.default.temporaryDirectory.appendingPathComponent("multivibe-p2p-message-validation.json")
                     try? FileManager.default.removeItem(at: output)
+                    try? Data().write(to: FileManager.default.temporaryDirectory.appendingPathComponent("multivibe-p2p-message-validation-stages.jsonl"), options: .atomic)
                     Task { @MainActor in
                         for _ in 0..<20 {
                             if let machine = instances.machines.first(where: { $0.online && $0.localEndpoint != nil && instances.paired.contains($0.id) }) {
@@ -141,14 +142,22 @@ struct RemoteInstancesView: View {
         let output = FileManager.default.temporaryDirectory.appendingPathComponent("multivibe-p2p-message-validation.json")
         var evidence: [String: Any] = ["machine": machine.id, "startedAt": Date().timeIntervalSince1970]
         do {
+            recordValidationStage("catalog-start")
             try await instances.catalog(machine.id)
+            recordValidationStage("catalog-finished")
             guard let harness = (instances.harnesses[machine.id] ?? []).first(where: { $0.id == "openai-codex" && $0.available })
                 ?? (instances.harnesses[machine.id] ?? []).first(where: { $0.available }) else { throw APIError.noModel }
+            recordValidationStage("chat-start")
             let chat = try instances.newChat(machine.id, harness: harness.id)
+            recordValidationStage("models-start")
             try await instances.models(machine.id, harness: harness.id)
+            recordValidationStage("models-finished")
             guard let model = instances.modelCatalog[instances.modelKey(machine.id, harness: harness.id)]?.first(where: { $0.id == "gpt-6.1-sol" }) else { throw APIError.noModel }
+            recordValidationStage("model-selection-start")
             try await instances.choose(machine.id, harness: harness.id, model: model)
+            recordValidationStage("model-selection-finished")
             guard instances.send("Réponds exactement P2P_OK", chat: chat) else { throw APIError.invalidResponse }
+            recordValidationStage("prompt-started")
             let deadline = Date().addingTimeInterval(120)
             while Date() < deadline {
                 if let value = instances.chats.first(where: { $0.id == chat }), value.command == nil {
@@ -164,6 +173,12 @@ struct RemoteInstancesView: View {
         }
         evidence["finishedAt"] = Date().timeIntervalSince1970
         if let data = try? JSONSerialization.data(withJSONObject: evidence, options: [.sortedKeys]) { try? data.write(to: output, options: .atomic) }
+    }
+    private func recordValidationStage(_ stage: String) {
+        let output = FileManager.default.temporaryDirectory.appendingPathComponent("multivibe-p2p-message-validation-stages.jsonl")
+        guard let data = try? JSONSerialization.data(withJSONObject: ["at": Date().timeIntervalSince1970, "stage": stage]), var line = String(data: data, encoding: .utf8) else { return }
+        line += "\n"
+        if let handle = try? FileHandle(forWritingTo: output) { defer { try? handle.close() }; try? handle.seekToEnd(); try? handle.write(contentsOf: Data(line.utf8)) }
     }
 #endif
 }
