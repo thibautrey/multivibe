@@ -237,6 +237,50 @@ export function createSdkAdapterRouter(options: {
     }
     res.json({object: "list", data: sdkAccountModels(account, live, options.modelsDevCatalog)});
   });
+  // Decisions has its own typed contract; never run it through the chat codec.
+  router.post("/:accountId/v1/decisions", async (req, res) => {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    res.once("close", abort);
+    req.once("aborted", abort);
+    const timeout = setTimeout(abort, 180_000);
+    try {
+      const account = res.locals.sdkAccount as Account;
+      if (account.sdkProvider !== "openai") throw new SdkInputError("Decisions require an OpenAI API account");
+      let model: string;
+      try { model = sdkModelId(account, req.body?.model ?? ""); } catch {
+        res.status(404).json({error: {message: "Model is not enabled for this provider account", type: "invalid_request_error", code: "model_not_found"}});
+        return;
+      }
+      if (model !== "gpt-6-luna") throw new SdkInputError("Decisions currently support gpt-6-luna only");
+      const {input, questions, stream} = req.body;
+      if (!(typeof input === "string" ? input.trim().length : Array.isArray(input) && input.length)
+        || !Array.isArray(questions) || questions.length < 1 || questions.length > 400
+        || (stream !== undefined && stream !== false)) {
+        throw new SdkInputError("Decisions require non-empty input, 1–400 questions and no streaming");
+      }
+      const response = await (options.fetch ?? fetch)(`${sdkAccountBaseUrl(account).replace(/\/+$/, "")}/decisions`, {
+        method: "POST", signal: controller.signal, redirect: "error",
+        headers: {authorization: `Bearer ${account.accessToken}`, "content-type": "application/json"},
+        body: JSON.stringify({...req.body, model}),
+      });
+      res.status(response.status);
+      for (const name of ["content-type", "x-request-id", "retry-after"]) {
+        const value = response.headers.get(name);
+        if (value) res.setHeader(name, value);
+      }
+      // Preserve typed answers, refusals, usage and upstream error envelopes.
+      if (response.body) await pipeline(Readable.fromWeb(response.body as unknown as import("node:stream/web").ReadableStream<Uint8Array>), res);
+      else res.end();
+    } catch (error: unknown) {
+      if (res.destroyed) return;
+      const status = error instanceof SdkInputError ? 400 : controller.signal.aborted ? 504 : 502;
+      if (res.headersSent) res.destroy();
+      else res.status(status).json({error: {message: error instanceof SdkInputError ? error.message : "Decisions provider request failed", type: status === 400 ? "invalid_request_error" : "server_error"}});
+    } finally {
+      clearTimeout(timeout); res.off("close", abort); req.off("aborted", abort);
+    }
+  });
   // Keep image bodies and responses out of the text-model codec. Multipart
   // edits retain every file, mask, filename and field, with a server-bound model.
   router.post(["/:accountId/v1/images/generations", "/:accountId/v1/images/edits"],
