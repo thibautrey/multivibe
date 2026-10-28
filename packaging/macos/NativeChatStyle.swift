@@ -10,8 +10,9 @@ enum ChatPalette {
     static let surface = Color(nsColor: .controlBackgroundColor)
     static let canvas = Color(nsColor: .textBackgroundColor)
     static let elevated = Color(nsColor: .windowBackgroundColor)
-    static let hairline = Color(nsColor: .separatorColor).opacity(0.5)
-    static let subtle = Color.primary.opacity(0.035)
+    static let sidebar = Color(nsColor: .windowBackgroundColor).opacity(0.72)
+    static let hairline = Color(nsColor: .separatorColor).opacity(0.32)
+    static let subtle = Color.primary.opacity(0.045)
     static func motion(_ reduce: Bool) -> Animation? { reduce ? nil : .easeInOut(duration: 0.18) }
 }
 
