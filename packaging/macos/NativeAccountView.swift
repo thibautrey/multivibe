@@ -8,93 +8,43 @@ import SwiftUI
     private var pending: NativeCloudProfile? { identity.profiles.first { $0.id == identity.pendingAccountID } }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 7) {
-                    Text(pending == nil ? "Qui utilise MultiVibe ?" : "Bonjour, \(pending!.displayName)")
-                        .font(.system(size: 24, weight: .semibold))
-                    Text(pending == nil ? "Choisissez votre espace pour continuer." : "Saisissez votre PIN à 4 chiffres pour ouvrir ce compte.")
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                if !identity.requiresSelection {
-                    Button { identity.showsPicker = false } label: { Image(systemName: "xmark") }
-                        .buttonStyle(.plain).accessibilityLabel("Fermer le choix de compte")
-                }
-            }
+        VStack(spacing: 0) {
+            header
+                .padding(.horizontal, 28)
+                .padding(.top, 26)
+                .padding(.bottom, 24)
+
             if identity.scanning {
-                HStack(spacing: 10) {
-                    ProgressView().controlSize(.small)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Je regarde qui est là…").fontWeight(.medium)
-                        Text("La caméra s’éteindra dans quelques secondes.").font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("Choisir moi-même") { identity.openPicker() }.buttonStyle(.borderless)
-                }.padding(13).background(ChatPalette.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                scanningStatus
+                    .padding(.horizontal, 28)
+                    .padding(.bottom, 18)
             }
+
             if let pending {
-                VStack(alignment: .leading, spacing: 12) {
-                    SecureField("PIN à 4 chiffres", text: $pin)
-                        .textFieldStyle(.roundedBorder).frame(width: 180)
-                        .onChange(of: pin) { value in pin = String(value.filter { $0.isASCII && $0.isNumber }.prefix(4)) }
-                        .onSubmit { submitPIN(pending) }
-                    HStack {
-                        Button("Autre compte") { identity.pendingAccountID = nil; identity.error = nil; pin = "" }
-                        Spacer()
-                        Button("Déverrouiller") { submitPIN(pending) }
-                            .buttonStyle(.borderedProminent).disabled(pin.count != 4 || identity.working)
-                    }
-                }
+                pinEntry(for: pending)
+                    .padding(.horizontal, 28)
+                    .padding(.bottom, 28)
             } else {
-                ScrollView {
-                    VStack(spacing: 8) {
-                        ForEach(identity.profiles) { profile in
-                            Button { identity.choose(profile) } label: {
-                                HStack(spacing: 13) {
-                                    avatar(profile.displayName)
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(profile.displayName).font(.system(size: 14, weight: .medium)).foregroundStyle(.primary)
-                                        Text(profile.id == identity.activeProfile?.id ? "Compte ouvert" : "MultiVibe Cloud")
-                                            .font(.caption).foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    if profile.hasPIN { Image(systemName: "lock.fill").font(.caption).foregroundStyle(.secondary).accessibilityLabel("Protégé par PIN") }
-                                    Image(systemName: profile.id == identity.activeProfile?.id ? "checkmark.circle.fill" : "chevron.right")
-                                        .foregroundStyle(profile.id == identity.activeProfile?.id ? ChatPalette.accent : .secondary)
-                                }.padding(13).contentShape(RoundedRectangle(cornerRadius: 12))
-                            }.buttonStyle(.plain)
-                                .background(ChatPalette.subtle, in: RoundedRectangle(cornerRadius: 12))
-                                .accessibilityLabel("Choisir \(profile.displayName)\(profile.hasPIN ? ", PIN requis" : "")")
-                        }
-                    }
-                }.frame(maxHeight: 235)
-                if identity.profiles.isEmpty {
-                    Text("Connectez votre premier compte. Vous pourrez en ajouter d’autres ici.").foregroundStyle(.secondary)
-                }
-                Button { Task { await identity.addAccount() } } label: { Label("Ajouter un compte MultiVibe Cloud", systemImage: "plus.circle") }
-                    .buttonStyle(.borderless)
+                accountList
+                    .padding(.horizontal, 28)
+                    .padding(.bottom, 24)
+
                 if !identity.profiles.isEmpty {
                     Divider()
-                    VStack(alignment: .leading, spacing: 6) {
-                        Toggle("Ask everytime", isOn: Binding(get: { identity.asksEveryTime }, set: { identity.setAsksEveryTime($0) }))
-                            .toggleStyle(.switch)
-                        Text("Demander qui vous êtes au lancement et après 10 minutes sans interaction dans MultiVibe.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+                    askEveryTime
+                        .padding(.horizontal, 28)
+                        .padding(.vertical, 25)
+
                     if let active = identity.activeProfile {
-                        HStack {
-                            Button("Réglages de \(active.displayName)…") { identity.error = nil; settings = true }
-                            Spacer()
-                            Button("Verrouiller") { identity.lock() }
-                        }.buttonStyle(.borderless)
+                        Divider()
+                        accountActions(for: active)
+                            .padding(.horizontal, 28)
+                            .padding(.vertical, 17)
                     }
                 }
             }
-            if identity.working { ProgressView("Ouverture du compte…").controlSize(.small) }
-            if let error = identity.error { Text(error).font(.callout).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
         }
-        .padding(28).frame(width: 490).background(ChatPalette.canvas)
+        .frame(width: 540).background(ChatPalette.canvas)
         .interactiveDismissDisabled(identity.requiresSelection || identity.working)
         .sheet(isPresented: $settings) { NativeAccountSettingsView(identity: identity) }
         .onChange(of: identity.pendingAccountID) { _ in pin = "" }
@@ -106,9 +56,184 @@ import SwiftUI
         let value = pin; pin = ""
         Task { await identity.unlock(profile.id, pin: value) }
     }
+
+    private var header: some View {
+        HStack(alignment: .top, spacing: 20) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Votre espace MultiVibe")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(ChatPalette.accent)
+                    .textCase(.uppercase)
+                    .tracking(1.6)
+                Text(pending == nil ? "Qui utilise MultiVibe ?" : "Bonjour, \(pending!.displayName)")
+                    .font(.system(size: 21, weight: .semibold))
+                Text(pending == nil ? "Choisissez un compte pour continuer." : "Saisissez votre PIN à 4 chiffres pour ouvrir ce compte.")
+                    .font(.system(size: 15))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+            if !identity.requiresSelection {
+                Button { identity.showsPicker = false } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 14, weight: .medium))
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(ChatActionStyle())
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Fermer le choix de compte")
+            }
+        }
+    }
+
+    private var scanningStatus: some View {
+        HStack(spacing: 11) {
+            ProgressView().controlSize(.small)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Je regarde qui est là…").fontWeight(.medium)
+                Text("La caméra s’éteindra dans quelques secondes.").font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Choisir moi-même") { identity.openPicker() }.buttonStyle(.borderless)
+        }
+        .padding(14)
+        .background(ChatPalette.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+    }
+
+    private func pinEntry(for profile: NativeCloudProfile) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SecureField("PIN à 4 chiffres", text: $pin)
+                .textFieldStyle(.roundedBorder)
+                .onChange(of: pin) { value in pin = String(value.filter { $0.isASCII && $0.isNumber }.prefix(4)) }
+                .onSubmit { submitPIN(profile) }
+            HStack {
+                Button("Autre compte") { identity.pendingAccountID = nil; identity.error = nil; pin = "" }
+                Spacer()
+                Button("Déverrouiller") { submitPIN(profile) }
+                    .buttonStyle(.borderedProminent).disabled(pin.count != 4 || identity.working)
+            }
+            operationStatus
+        }
+        .padding(18)
+        .background(ChatPalette.surface, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous).strokeBorder(ChatPalette.hairline, lineWidth: 1))
+    }
+
+    private var accountList: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            if identity.profiles.isEmpty {
+                Text("Connectez votre premier compte. Vous pourrez en ajouter d’autres ici.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ScrollView {
+                    VStack(spacing: 10) {
+                        ForEach(identity.profiles) { profile in accountCard(profile) }
+                    }
+                }
+                .frame(maxHeight: 250)
+            }
+            addAccountButton
+            operationStatus
+        }
+    }
+
+    private func accountCard(_ profile: NativeCloudProfile) -> some View {
+        let active = profile.id == identity.activeProfile?.id
+        return Button { identity.choose(profile) } label: {
+            HStack(spacing: 15) {
+                avatar(profile.displayName)
+                VStack(alignment: .leading, spacing: 7) {
+                    Text(profile.displayName)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.primary)
+                    HStack(spacing: 7) {
+                        Circle().fill(ChatPalette.accent.opacity(0.82)).frame(width: 6, height: 6)
+                        Text("Compte connecté").font(.system(size: 13)).foregroundStyle(.secondary)
+                        if profile.hasPIN {
+                            Image(systemName: "lock.fill")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                                .accessibilityLabel("Protégé par PIN")
+                        }
+                    }
+                }
+                Spacer(minLength: 12)
+                if active {
+                    Text("Compte actuel")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(ChatPalette.accent)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(ChatPalette.accent.opacity(0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ChatPalette.accent.opacity(0.12), lineWidth: 1))
+                }
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(active ? ChatPalette.accent.opacity(0.72) : Color.secondary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 15)
+            .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .background(active ? ChatPalette.accent.opacity(0.065) : ChatPalette.surface, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous).strokeBorder(active ? ChatPalette.accent.opacity(0.20) : ChatPalette.hairline, lineWidth: 1))
+        .accessibilityLabel("Choisir \(profile.displayName)\(active ? ", compte actuel" : "")\(profile.hasPIN ? ", PIN requis" : "")")
+    }
+
+    private var addAccountButton: some View {
+        Button { Task { await identity.addAccount() } } label: {
+            Label("Ajouter un compte MultiVibe Cloud", systemImage: "plus.circle")
+                .font(.system(size: 14, weight: .medium))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 13)
+                .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).strokeBorder(ChatPalette.hairline, style: StrokeStyle(lineWidth: 1, dash: [5, 4])))
+        .accessibilityHint("Ouvre la connexion MultiVibe Cloud")
+    }
+
+    private var operationStatus: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if identity.working { ProgressView("Ouverture du compte…").controlSize(.small) }
+            if let error = identity.error { Text(error).font(.callout).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
+        }
+    }
+
+    private var askEveryTime: some View {
+        HStack(alignment: .top, spacing: 20) {
+            VStack(alignment: .leading, spacing: 9) {
+                Text("Toujours demander le compte").font(.system(size: 14, weight: .semibold))
+                Text("Afficher ce choix au lancement et après 10 minutes d’inactivité. Utile si vous partagez cet appareil.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .lineSpacing(3)
+            }
+            Spacer(minLength: 0)
+            Toggle("", isOn: Binding(get: { identity.asksEveryTime }, set: { identity.setAsksEveryTime($0) }))
+                .labelsHidden()
+                .toggleStyle(.switch)
+        }
+    }
+
+    private func accountActions(for profile: NativeCloudProfile) -> some View {
+        HStack {
+            Button { identity.error = nil; settings = true } label: {
+                Label("Réglages de \(profile.displayName)", systemImage: "gearshape")
+            }
+            Spacer()
+            Button { identity.lock() } label: { Label("Verrouiller", systemImage: "lock") }
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(.secondary)
+    }
+
     private func avatar(_ name: String) -> some View {
-        Text(String(name.prefix(1)).uppercased()).font(.system(size: 18, weight: .medium))
-            .foregroundStyle(ChatPalette.accent).frame(width: 42, height: 42)
+        Text(String(name.prefix(1)).uppercased()).font(.system(size: 19, weight: .semibold))
+            .foregroundStyle(ChatPalette.accent).frame(width: 48, height: 48)
             .background(ChatPalette.accent.opacity(0.12), in: Circle())
     }
 }
