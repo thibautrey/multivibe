@@ -1,6 +1,7 @@
 import { TraceAnalyticsClient } from "./trace-analytics-client.js";
 import {
   estimateCostUsd,
+  estimateImageCostUsd,
   estimateTraceCostUsd,
   estimateCostUsdWithoutCache,
   MODEL_PRICING_VERSION,
@@ -135,6 +136,9 @@ export type TraceEntry = {
 
 function estimateTraceCostWithoutCache(trace: TraceEntry): number | undefined {
   if (trace.costStatus === "unpriced" && typeof trace.costUsd !== "number") return undefined;
+  if (trace.route.includes("/images/")) {
+    return trace.costUsd ?? estimateImageCostUsd(trace.resolvedModel ?? trace.model, trace.usage);
+  }
   const cachedInput = Math.max(0, trace.tokensInputCached ?? 0);
   if (cachedInput === 0 && typeof trace.costUsd === "number") {
     return trace.costUsd;
@@ -577,7 +581,9 @@ export function normalizeTrace(raw: any): TraceEntry | null {
   const preservedCostUsd = legacySyntheticZero ? undefined : storedCostUsd;
   const estimatedCostUsd =
     usageStatus === "measured"
-      ? estimateCostUsd(
+      ? route.includes("/images/")
+        ? estimateImageCostUsd(typeof raw.resolvedModel === "string" ? raw.resolvedModel : model, raw.usage)
+        : estimateCostUsd(
           typeof raw.resolvedModel === "string" && raw.resolvedModel.trim() ? raw.resolvedModel.trim() : model,
           normalizedTokens.tokensInput ?? 0,
           normalizedTokens.tokensOutput ?? 0,
@@ -2227,7 +2233,9 @@ export function createTraceManager(config: TraceManagerConfig) {
         : "missing";
     const costUsd =
       usageStatus === "measured"
-        ? estimateCostUsd(
+        ? entry.route.includes("/images/")
+        ? estimateImageCostUsd(entry.resolvedModel ?? entry.model, entry.usage)
+        : estimateCostUsd(
             entry.model,
             normalizedTokens.tokensInput ?? 0,
             normalizedTokens.tokensOutput ?? 0,
