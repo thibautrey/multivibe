@@ -170,6 +170,7 @@ private struct NativeChatSuggestionEditor: View {
     @State private var selectedImports: Set<UUID> = []
     @State private var search = ""
     @State private var showingArchives = false
+    @State private var navigationVisibility: NavigationSplitViewVisibility = .all
     @AppStorage("assistantConversationListLayout") private var conversationListLayout: SidebarConversationLayout = .flat
     @State private var renameID: UUID?
     @State private var renameTitle = ""
@@ -293,7 +294,7 @@ private struct NativeChatSuggestionEditor: View {
     var body: some View {
         GeometryReader { geometry in
             HSplitView {
-            NavigationSplitView {
+            NavigationSplitView(columnVisibility: $navigationVisibility) {
             VStack(spacing: 0) {
                 sidebarHeader
                 sidebarPrimaryActions
@@ -831,7 +832,9 @@ private struct NativeChatSuggestionEditor: View {
                     .menuStyle(.borderlessButton).fixedSize().help("Options de la conversation").accessibilityLabel("Options de la conversation")
             }
         }
-        .padding(.horizontal, 20).padding(.top, 28).frame(height: 54).background(ChatPalette.canvas)
+        .padding(.leading, NativeChatTitlebarMetrics.leadingInset(for: navigationVisibility))
+        .padding(.trailing, 20).padding(.top, 28).frame(height: 54).background(ChatPalette.canvas)
+        .animation(ChatPalette.motion(reduceMotion), value: navigationVisibility)
         .animation(ChatPalette.motion(reduceMotion), value: conversationState)
     }
     private var showingUtilityPanel: Bool { showingHarnessInspector || browser.isVisible }

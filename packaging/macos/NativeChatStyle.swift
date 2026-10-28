@@ -16,6 +16,16 @@ enum ChatPalette {
     static func motion(_ reduce: Bool) -> Animation? { reduce ? nil : .easeInOut(duration: 0.18) }
 }
 
+enum NativeChatTitlebarMetrics {
+    static let contentLeadingInset: CGFloat = 20
+    // Clears the traffic lights and SwiftUI's sidebar toggle when detail fills the window.
+    static let collapsedSidebarLeadingInset: CGFloat = 132
+
+    static func leadingInset(for visibility: NavigationSplitViewVisibility) -> CGFloat {
+        visibility == .detailOnly ? collapsedSidebarLeadingInset : contentLeadingInset
+    }
+}
+
 /// Hover and press feedback share the same rhythm across the chat and inspector.
 struct ChatActionStyle: ButtonStyle {
     var selected = false

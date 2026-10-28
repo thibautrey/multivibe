@@ -66,5 +66,10 @@ enum NativeChatPresentationHarness {
         precondition(harnessSections.map(\.id) == ["codex", "native"])
         precondition(harnessSections[1].conversations.map(\.title) == ["MultiVibe", "Deuxième"])
         print("PASS conversation harness grouping and stable order")
+
+        precondition(NativeChatTitlebarMetrics.leadingInset(for: .all) == 20)
+        precondition(NativeChatTitlebarMetrics.leadingInset(for: .detailOnly) == 132)
+        precondition(NativeChatTitlebarMetrics.collapsedSidebarLeadingInset > NativeChatTitlebarMetrics.contentLeadingInset)
+        print("PASS collapsed sidebar preserves native titlebar control clearance")
     }
 }
