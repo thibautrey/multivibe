@@ -1235,3 +1235,13 @@ test("external journal waits for complete UTF-8 lines and follows replacement an
   await fs.writeFile(filePath, record("x"));
   assert.equal((await manager.getTraceStats()).stats.totals.tokensTotal, 24);
 });
+
+test("normalizes image edit costs using resolved models and modality details", async () => {
+  const {normalizeTrace} = await import("./traces.js");
+  const raw = {at: Date.now(), route: "POST /v1/images/edits", status: 200, latencyMs: 100,
+    model: "image-alias", resolvedModel: "openai/gpt-image-2.5-flare",
+    usage: {input_tokens: 1000, output_tokens: 2000, input_tokens_details: {image_tokens: 800}}};
+  assert.equal(normalizeTrace(raw)?.costUsd, 0.0674);
+  assert.equal(normalizeTrace({...raw, costUsd: 0.2})?.costUsd, 0.2);
+  assert.equal(normalizeTrace({...raw, usage: undefined})?.costUsd, undefined);
+});

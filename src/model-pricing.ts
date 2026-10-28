@@ -15,7 +15,7 @@ export type ModelPricing = {
   };
 };
 
-export let MODEL_PRICING_VERSION = "2026-10-25";
+export let MODEL_PRICING_VERSION = "2026-10-27";
 let runtimePricing = new Map<string, ModelPricing>();
 // Only origin providers may supply bare model IDs. Gateway prices must retain
 // their provider prefix; otherwise the same model could inherit a reseller rate.
@@ -46,7 +46,7 @@ export function installModelsDevPricing(providers: Record<string, Array<{ id: st
   }
   for (const [id, pricing] of bare) if (pricing) next.set(id, pricing);
   runtimePricing = next;
-  MODEL_PRICING_VERSION = next.size ? `models.dev:${new Date(fetchedAt).toISOString()}` : "2026-10-25";
+  MODEL_PRICING_VERSION = next.size ? `models.dev:${new Date(fetchedAt).toISOString()}` : "2026-10-27";
 }
 
 
@@ -57,6 +57,12 @@ const UNPRICED_MODELS = new Set([
 ]);
 
 const EXACT_PRICING: Record<string, ModelPricing> = {
+  // Image input is priced separately by estimateImageCostUsd.
+  // https://developers.openai.com/api/docs/pricing#image-generation
+  "gpt-image-2": { inputPer1M: 5, cachedInputPer1M: 1.25, outputPer1M: 30 },
+  "gpt-image-2-2026-04-21": { inputPer1M: 5, cachedInputPer1M: 1.25, outputPer1M: 30 },
+  "gpt-image-2.5-flare": { inputPer1M: 5, cachedInputPer1M: 1.25, outputPer1M: 30 },
+  "gpt-image-2.5-flare-2026-09-08": { inputPer1M: 5, cachedInputPer1M: 1.25, outputPer1M: 30 },
   // Standard API token rates: https://developers.openai.com/api/docs/pricing
   "gpt-4o": { inputPer1M: 5.0, outputPer1M: 15.0 },
   "gpt-4o-mini": { inputPer1M: 0.15, outputPer1M: 0.6 },
@@ -212,13 +218,28 @@ export function estimateCostUsdWithoutCache(
   );
 }
 
+/** Direct Images API rates; cached discounts only apply to Responses API tools.
+ * https://developers.openai.com/api/docs/guides/image-generation#cached-input-pricing
+ */
+export function estimateImageCostUsd(model: string | undefined, usage: any): number | undefined {
+  const id = model?.trim().replace(/^openai\//, "");
+  if (!id || !/^gpt-image-(?:2(?:-2026-04-21)?|2\.5-flare(?:-2026-09-08)?)$/.test(id)) return undefined;
+  const input = usage?.input_tokens;
+  const output = usage?.output_tokens;
+  const image = usage?.input_tokens_details?.image_tokens ?? 0;
+  if (![input, output, image].every(n => typeof n === "number" && Number.isFinite(n) && n >= 0) || image > input) return undefined;
+  return ((input - image) * 5 + image * 8 + output * 30) / 1_000_000;
+}
+
 /** Estimate only measured usage, preserving upstream/previously recorded costs. */
 export function estimateTraceCostUsd(trace: {
   model?: string; resolvedModel?: string; usageStatus?: string; costStatus?: string; costUsd?: number;
+  usage?: unknown; route?: string;
   tokensInput?: number; tokensOutput?: number; tokensInputCached?: number; tokensInputCacheWrite?: number;
 }): number | undefined {
   if (typeof trace.costUsd === "number" && Number.isFinite(trace.costUsd)) return trace.costUsd;
   if (trace.usageStatus === "missing" || trace.costStatus === "unpriced") return undefined;
+  if (trace.route?.includes("/images/")) return estimateImageCostUsd(trace.resolvedModel ?? trace.model, trace.usage);
   return estimateCostUsd(trace.resolvedModel ?? trace.model, trace.tokensInput ?? 0, trace.tokensOutput ?? 0,
     trace.tokensInputCached ?? 0, trace.tokensInputCacheWrite ?? 0);
 }

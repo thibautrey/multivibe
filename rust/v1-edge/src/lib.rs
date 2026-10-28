@@ -3917,7 +3917,7 @@ impl SessionAffinityCache {
     }
 }
 
-const TRACE_PRICING_VERSION: &str = "2026-10-25";
+const TRACE_PRICING_VERSION: &str = "2026-10-27";
 
 #[derive(Clone)]
 struct TraceContext {
@@ -4481,7 +4481,9 @@ fn trace_pricing(model: Option<&str>, input: u64) -> Option<(f64, f64, f64, f64)
         return Some(pricing);
     }
     let model = fallback_model;
-    let mut pricing = if model == "gpt-6.1-sol"
+    let mut pricing = if matches!(model, "gpt-image-2" | "gpt-image-2-2026-04-21" | "gpt-image-2.5-flare" | "gpt-image-2.5-flare-2026-09-08") {
+        (5.0, 1.25, 5.0, 30.0)
+    } else if model == "gpt-6.1-sol"
         || model.strip_prefix("gpt-6.1-sol-").is_some_and(|date| {
             date.len() == 10 && date.bytes().all(|b| b.is_ascii_digit() || b == b'-')
         }) {
@@ -4563,6 +4565,25 @@ fn trace_cost(
             + (cache_write as f64 / 1_000_000.0) * cache_write_rate
             + (output as f64 / 1_000_000.0) * output_rate,
     )
+}
+
+// Direct Images API rates, including image inputs for edits. Cache discounts
+// only apply to Responses API tools, not to these endpoints.
+// https://developers.openai.com/api/docs/pricing#image-generation
+fn image_trace_cost(model: Option<&str>, usage: &Value) -> Option<f64> {
+    let model = model?.trim();
+    let model = model.strip_prefix("openai/").unwrap_or(model);
+    if !matches!(model, "gpt-image-2" | "gpt-image-2-2026-04-21" | "gpt-image-2.5-flare" | "gpt-image-2.5-flare-2026-09-08") {
+        return None;
+    }
+    let input = usage["input_tokens"].as_u64()?;
+    let output = usage["output_tokens"].as_u64()?;
+    let image = match usage["input_tokens_details"].get("image_tokens") {
+        Some(value) => value.as_u64()?,
+        None => 0,
+    };
+    let text = input.checked_sub(image)?;
+    Some((text as f64 * 5.0 + image as f64 * 8.0 + output as f64 * 30.0) / 1_000_000.0)
 }
 
 fn usage_from_payload(value: &Value) -> Option<Value> {
@@ -4841,7 +4862,9 @@ impl TraceSink {
             entry["tokensOutput"] = output.into();
             entry["tokensReasoning"] = reasoning.into();
             entry["tokensTotal"] = total.into();
-            let cost = trace_cost(
+            let cost = if context.route.contains("/images/") {
+                image_trace_cost(context.resolved_model.as_deref().or(context.model.as_deref()), usage)
+            } else { trace_cost(
                 context
                     .resolved_model
                     .as_deref()
@@ -4850,7 +4873,7 @@ impl TraceSink {
                 cached,
                 cache_write,
                 output,
-            );
+            ) };
             if let Some(cost) = cost.and_then(serde_json::Number::from_f64) {
                 entry["costUsd"] = Value::Number(cost);
                 entry["pricingVersion"] = Value::String(
@@ -19390,4 +19413,18 @@ fn trace_pricing_sol_standard_and_long_context_fallback() {
     );
     assert_eq!(trace_pricing(Some("openai/gpt-5.3-codex-spark"), 1), None);
     assert_eq!(trace_pricing(Some("gpt-6.1-sol-unpublished"), 1), None);
+}
+
+#[cfg(test)]
+#[test]
+fn image_pricing_separates_input_modalities() {
+    let usage = json!({"input_tokens":1000,"output_tokens":2000,"input_tokens_details":{"text_tokens":200,"image_tokens":800,"cached_tokens":500}});
+    for model in ["gpt-image-2", "openai/gpt-image-2", "openai/gpt-image-2.5-flare", "gpt-image-2.5-flare-2026-09-08"] {
+        assert_eq!(trace_pricing(Some(model), 1000), Some((5.0, 1.25, 5.0, 30.0)));
+        assert_eq!(image_trace_cost(Some(model), &usage), Some(0.0674));
+        assert_eq!(image_trace_cost(Some(model), &json!({})), None);
+        assert_eq!(image_trace_cost(Some(model), &json!({"input_tokens":1,"output_tokens":1,"input_tokens_details":{"image_tokens":2}})), None);
+    }
+    assert_eq!(trace_pricing(Some("gpt-image-2.5-unknown"), 1), None);
+    assert_eq!(image_trace_cost(Some("other/gpt-image-2"), &usage), None);
 }
