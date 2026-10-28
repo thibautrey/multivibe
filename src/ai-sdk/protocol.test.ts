@@ -182,3 +182,16 @@ test("OpenAI image catalog advertises image output instead of chat tools", () =>
   assert.deepEqual(models[0].input_modalities, ["text", "image"]);
   assert.deepEqual(models[4].output_modalities, ["text"]);
 });
+
+
+test("system and developer instructions accept text parts from Responses projection", () => {
+  const options = sdkCallOptions({messages:[
+    {role:"system",content:[{type:"text",text:"First"},{type:"text",text:"Second"}]},
+    {role:"developer",content:[{type:"text",text:"Rules"}]},
+    {role:"user",content:"Hello"}
+  ]}, new AbortController().signal);
+  assert.deepEqual(options.prompt.slice(0,2), [
+    {role:"system",content:"First\nSecond"}, {role:"system",content:"Rules"}
+  ]);
+  assert.throws(() => sdkCallOptions({messages:[{role:"system",content:[{type:"image_url",image_url:{url:"https://example.test/x.png"}}]}]}, new AbortController().signal), /System messages must contain text/);
+});

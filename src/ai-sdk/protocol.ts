@@ -17,8 +17,10 @@ export function sdkCallOptions(body: any, signal: AbortSignal): SdkCallOptions {
     const message = body.messages[messageIndex];
     if (!message || typeof message !== "object") invalid("Invalid message");
     if (message.role === "system" || message.role === "developer") {
-      if (typeof message.content !== "string") invalid("System messages must contain text");
-      prompt.push({ role: "system", content: message.content });
+      const content = typeof message.content === "string" ? message.content
+        : Array.isArray(message.content) && message.content.every((part: any) => part?.type === "text" && typeof part.text === "string")
+          ? message.content.map((part: any) => part.text).join("\n") : invalid("System messages must contain text");
+      prompt.push({ role: "system", content });
     } else if (message.role === "tool") {
       const id = requiredString(message.tool_call_id, "tool_call_id");
       const toolName = toolNames.get(id);
