@@ -284,9 +284,6 @@ private struct NativeChatSuggestionEditor: View {
         let id = store.current?.executionTargetID ?? "local"
         return targets.first { $0.id == id }?.name ?? (id == "local" ? "Ce Mac" : "Machine distante")
     }
-    private var conversationSubtitle: String {
-        cloudMode ? "Hermes · Cloud" : "\(selectedHarness.name) · \(targetName)"
-    }
     private var working: Bool { cloudMode ? cloudSending : store.isGenerating(store.selection) }
     private var conversationState: String? {
         guard !cloudMode else { return cloudSending ? "Hermes travaille…" : nil }
@@ -345,13 +342,12 @@ private struct NativeChatSuggestionEditor: View {
                 Divider()
                 sidebarFooter
             }
-            .background(ChatPalette.elevated)
+            .background(ChatPalette.sidebar)
             .frame(height: geometry.size.height, alignment: .top).clipped()
-            .navigationSplitViewColumnWidth(min: 224, ideal: 252, max: 310)
+            .navigationSplitViewColumnWidth(min: 220, ideal: 244, max: 300)
         } detail: {
             VStack(spacing: 0) {
                 header
-                Divider()
                 Group {
                     if cloudMode { cloudTranscript }
                     else if let conversation = store.current, !conversation.messages.isEmpty { transcript(conversation) }
@@ -584,12 +580,12 @@ private struct NativeChatSuggestionEditor: View {
     }
 
     private var sidebarHeader: some View {
-        HStack(spacing: 10) {
-            HarnessLogo(id: "native", name: "MultiVibe", size: 30)
-            Text("MultiVibe").font(.system(size: 16, weight: .semibold))
+        HStack(spacing: 9) {
+            HarnessLogo(id: "native", name: "MultiVibe", size: 24)
+            Text("MultiVibe").font(.system(size: 15, weight: .semibold))
             Spacer()
             ChatIconButton(title: "Réglages du Host", icon: "gearshape", action: openDashboard)
-        }.padding(.horizontal, 16).padding(.top, 44).padding(.bottom, 18)
+        }.padding(.horizontal, 14).padding(.top, 42).padding(.bottom, 10)
     }
     private var sidebarEmptyState: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -670,7 +666,7 @@ private struct NativeChatSuggestionEditor: View {
             sidebarSearchField
             if !cloudMode { sidebarConversationLayoutPicker }
         }
-        .padding(.horizontal, 16).padding(.top, 18).padding(.bottom, 4)
+        .padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 2)
     }
     private var sidebarSearchField: some View {
         HStack(spacing: 7) {
@@ -682,7 +678,7 @@ private struct NativeChatSuggestionEditor: View {
             }
         }
         .padding(.horizontal, 10).frame(height: 30)
-        .background(ChatPalette.surface, in: RoundedRectangle(cornerRadius: 8))
+        .background(ChatPalette.subtle, in: RoundedRectangle(cornerRadius: 8))
         .frame(maxWidth: .infinity)
     }
     private var sidebarConversationLayoutPicker: some View {
@@ -698,16 +694,13 @@ private struct NativeChatSuggestionEditor: View {
         .help(conversationListLayout == .flat ? "Liste à plat" : "Conversations groupées par harness")
     }
     private var sidebarPrimaryActions: some View {
-        VStack(spacing: 2) {
-            sidebarAction("Nouvelle conversation", systemImage: "square.and.pencil") {
-                if cloudMode { Task { do { cloudSelection = try await agent.newCloudConversation() } catch { agent.error = error.localizedDescription } } }
-                else {
-                    showingArchives = false; store.newConversation()
-                    if store.current?.model.isEmpty == true, let first = models.first { model.wrappedValue = first.id }
-                }
-                composing = true
+        sidebarAction("Nouvelle conversation", systemImage: "square.and.pencil") {
+            if cloudMode { Task { do { cloudSelection = try await agent.newCloudConversation() } catch { agent.error = error.localizedDescription } } }
+            else {
+                showingArchives = false; store.newConversation()
+                if store.current?.model.isEmpty == true, let first = models.first { model.wrappedValue = first.id }
             }
-            sidebarAction("Modèles et fournisseurs", systemImage: "square.grid.2x2") { openDashboard() }
+            composing = true
         }.padding(.horizontal, 8)
     }
     private func sidebarAction(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
@@ -734,16 +727,15 @@ private struct NativeChatSuggestionEditor: View {
                 if agent.busy { ProgressView().controlSize(.mini) }
                 Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
             }.contentShape(Rectangle()) }.buttonStyle(.plain).accessibilityLabel("Compte : \(identity.displayName). Choisir un compte")
-            Button("Connecter un iPhone à ce Mac…") { instancePairing = true }.buttonStyle(.borderless)
-            if agent.accountID == nil {
-                Button("Connecter MultiVibe Cloud") {
-                    Task { await identity.addAccount() }
-                }.buttonStyle(.borderless)
-            } else {
-                HStack {
-                    Button("Gérer le Cloud") { selectedImports = []; cloudConsent = true }.buttonStyle(.borderless)
-                    Spacer()
-                    Menu("Actions") {
+            Menu {
+                Button("Connecter un iPhone à ce Mac…") { instancePairing = true }
+                Divider()
+                if agent.accountID == nil {
+                    Button("Connecter MultiVibe Cloud") { Task { await identity.addAccount() } }
+                } else {
+                    Button("Gérer le Cloud") { selectedImports = []; cloudConsent = true }
+                    Divider()
+                    Group {
                         Button("Synchroniser l’espace Cloud") {
                             Task { do { try await agent.synchronize(); try await agent.recoverRuns() } catch { agent.error = error.localizedDescription } }
                         }.disabled(agent.consent?.cloudEnabled != true)
@@ -756,9 +748,12 @@ private struct NativeChatSuggestionEditor: View {
                         Divider()
                         Button("Changer de compte…") { identity.openPicker() }
                         Button("Verrouiller le compte") { identity.lock() }
-                    }.menuStyle(.borderlessButton)
+                    }
                 }
-            }
+            } label: {
+                Label(agent.accountID == nil ? "Connexions" : "MultiVibe Cloud", systemImage: "link")
+                    .font(.caption).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4)
+            }.menuStyle(.borderlessButton).fixedSize(horizontal: false, vertical: true)
             if let error = agent.error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
         }.padding(.horizontal, 12).padding(.top, 11).padding(.bottom, 16).disabled(agent.busy)
     }
@@ -790,17 +785,17 @@ private struct NativeChatSuggestionEditor: View {
     }
     private var header: some View {
         HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 5) {
+            if cloudMode || store.current?.messages.isEmpty == false {
                 Text(cloudMode ? (agent.cloudConversations.first { $0.id == cloudSelection }?.title ?? "Nouvelle conversation Cloud") : (store.current?.title ?? "Nouvelle conversation"))
-                    .font(.system(size: 14, weight: .semibold)).lineLimit(1)
-                HStack(spacing: 6) {
-                    Text(conversationSubtitle).lineLimit(1)
-                    if let state = conversationState {
-                        Circle().fill(ChatPalette.accent).frame(width: 4, height: 4)
-                        Text(state).lineLimit(1).foregroundStyle(ChatPalette.accent)
-                    }
-                }.font(.system(size: 11)).foregroundStyle(.secondary)
-            }.frame(maxWidth: .infinity, alignment: .leading)
+                    .font(.system(size: 13, weight: .medium)).lineLimit(1)
+            }
+            if let state = conversationState {
+                HStack(spacing: 5) {
+                    Circle().fill(ChatPalette.accent).frame(width: 4, height: 4)
+                    Text(state).lineLimit(1)
+                }.font(.system(size: 10.5)).foregroundStyle(ChatPalette.accent)
+            }
+            Spacer(minLength: 12)
             if cloudMode {
                 Picker("Projet Hermes", selection: Binding(get: { agent.selectedWorkspaceProject(cloudSelection) }, set: { value in
                     do { try agent.selectWorkspaceProject(value, conversation: cloudSelection) } catch { agent.error = error.localizedDescription }
@@ -836,7 +831,7 @@ private struct NativeChatSuggestionEditor: View {
                     .menuStyle(.borderlessButton).fixedSize().help("Options de la conversation").accessibilityLabel("Options de la conversation")
             }
         }
-        .padding(.horizontal, 24).frame(height: 70).background(ChatPalette.canvas)
+        .padding(.horizontal, 20).padding(.top, 28).frame(height: 54).background(ChatPalette.canvas)
         .animation(ChatPalette.motion(reduceMotion), value: conversationState)
     }
     private var showingUtilityPanel: Bool { showingHarnessInspector || browser.isVisible }
@@ -858,38 +853,32 @@ private struct NativeChatSuggestionEditor: View {
         if showingHarnessInspector { selectedUtilityPanel = .conversation }
     }
     private var welcome: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Spacer(minLength: 28)
-            HarnessLogo(id: "native", name: "MultiVibe", size: 52).padding(.bottom, 22)
-            Text("Un espace pour vos idées.")
-                .font(.system(size: 29, weight: .semibold, design: .rounded)).tracking(-0.6).fixedSize(horizontal: false, vertical: true)
-            Text("Explorez, écrivez et avancez avec votre assistant.")
-                .font(.system(size: 14)).foregroundStyle(.secondary).padding(.top, 10).padding(.bottom, 28)
+        VStack(spacing: 0) {
+            Spacer(minLength: 24)
+            HarnessLogo(id: "native", name: "MultiVibe", size: 38).opacity(0.72).padding(.bottom, 20)
+            Text("Que souhaitez-vous faire ?")
+                .font(.system(size: 24, weight: .medium, design: .rounded)).tracking(-0.35).fixedSize(horizontal: false, vertical: true)
             ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) { welcomeSuggestions }
+                HStack(spacing: 8) { welcomeSuggestions }
                 VStack(spacing: 8) { welcomeSuggestions }
-            }
+            }.padding(.top, 24)
             if !loading && models.isEmpty && harness.wrappedValue == "native" {
                 Button { openDashboard() } label: { Label("Connecter un modèle pour commencer", systemImage: "plus.circle") }
                     .buttonStyle(.borderless).font(.callout).padding(.top, 20)
             }
             Spacer(minLength: 28)
-        }.frame(maxWidth: 660, alignment: .leading).padding(32).frame(maxWidth: .infinity, maxHeight: .infinity)
+        }.frame(maxWidth: 620).padding(28).frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     @ViewBuilder private var welcomeSuggestions: some View {
         ForEach(suggestionCards) { suggestion in suggestionCard(suggestion) }
     }
     private func suggestionCard(_ suggestion: NativeChatSuggestion) -> some View {
         Button { draft.wrappedValue = suggestion.text; composing = true } label: {
-            VStack(alignment: .leading, spacing: 10) {
-                Image(systemName: suggestion.systemImage).font(.system(size: 16)).foregroundStyle(ChatPalette.accent)
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(suggestion.title).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                    Text(suggestion.subtitle).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
-                }
-            }.frame(minWidth: 152, maxWidth: .infinity, alignment: .leading).padding(14)
-                .background(ChatPalette.subtle, in: RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(ChatPalette.hairline, lineWidth: 0.5))
+            HStack(spacing: 7) {
+                Image(systemName: suggestion.systemImage).font(.system(size: 12)).foregroundStyle(.secondary)
+                Text(suggestion.title).font(.system(size: 12, weight: .medium)).lineLimit(1)
+            }.frame(minWidth: 132, maxWidth: .infinity).padding(.horizontal, 12).frame(height: 36)
+                .background(ChatPalette.subtle, in: Capsule())
         }
         .buttonStyle(ChatActionStyle())
         .background(SecondaryClickAction { editingWelcomeSuggestion = suggestion })
@@ -908,11 +897,11 @@ private struct NativeChatSuggestionEditor: View {
     private func transcript(_ conversation: NativeChatConversation) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 30) {
+                LazyVStack(alignment: .leading, spacing: 28) {
                     ForEach(conversation.messages) { message in messageRow(message, conversation: conversation).id(message.id) }
                     NativeHarnessTimeline(events: unmatchedRuntimeEvents(in: conversation), sessionID: conversation.runtimeSessionID, target: conversation.executionTargetID ?? "local", running: store.isGenerating(conversation.id))
                     Color.clear.frame(height: 1).id("end")
-                }.padding(.horizontal, 28).padding(.vertical, 28).frame(maxWidth: 820).frame(maxWidth: .infinity)
+                }.padding(.horizontal, 28).padding(.vertical, 30).frame(maxWidth: 760).frame(maxWidth: .infinity)
                     .background(ChatScrollPositionReader { followsTranscript = $0 })
             }
             .overlay(alignment: .bottom) {
@@ -937,9 +926,7 @@ private struct NativeChatSuggestionEditor: View {
         let hasInlineActivity = !HarnessPresentation.activities(turnEvents).isEmpty
         HStack(alignment: .top, spacing: 12) {
             if isUser { Spacer(minLength: 48) }
-            if !isUser { HarnessLogo(id: conversation.harnessID ?? "native", name: selectedHarness.name, size: 26).padding(.top, 1) }
             VStack(alignment: isUser ? .trailing : .leading, spacing: 10) {
-                if !isUser { Text(selectedHarness.name).font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary) }
                 if message.content.isEmpty && streaming && !isUser && !hasInlineActivity {
                     HStack(spacing: 9) { ProgressView().controlSize(.small); Text("Préparation de la réponse…").font(.callout).foregroundStyle(.secondary) }.padding(.vertical, 4)
                 } else if isUser {
@@ -1082,7 +1069,7 @@ private struct NativeChatSuggestionEditor: View {
         } catch { if store.selection == id { store.error = error.localizedDescription } }
     }
     private var composer: some View {
-        VStack(spacing: 9) {
+        VStack(spacing: 7) {
             VStack(alignment: .leading, spacing: 10) {
                 TextField(working ? "Ajouter un message à la file…" : "Écrivez votre message…", text: draft, axis: .vertical)
                     .textFieldStyle(.plain).font(.system(size: 15)).lineLimit(2...8)
@@ -1103,22 +1090,16 @@ private struct NativeChatSuggestionEditor: View {
                     composerActions
                 }.padding(.horizontal, 9).padding(.bottom, 9)
             }
-            .background(ChatPalette.elevated, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(composing ? ChatPalette.accent.opacity(0.6) : ChatPalette.hairline, lineWidth: 1))
-            .shadow(color: .black.opacity(composing ? 0.07 : 0.035), radius: 12, y: 4)
+            .background(ChatPalette.surface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(composing ? ChatPalette.accent.opacity(0.42) : ChatPalette.hairline, lineWidth: 0.75))
+            .shadow(color: .black.opacity(composing ? 0.06 : 0.025), radius: 9, y: 3)
             .animation(ChatPalette.motion(reduceMotion), value: composing)
             .animation(ChatPalette.motion(reduceMotion), value: working)
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 14) {
-                    Label(composerPrivacyText, systemImage: composerPrivacyIcon)
-                    Spacer(minLength: 0)
-                    Text("⌘ ↵ Nouvelle ligne").help("Commande + Entrée insère un retour à la ligne")
-                }
-                Label(composerPrivacyText, systemImage: composerPrivacyIcon)
-            }.font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1).padding(.horizontal, 3)
+            Label(composerPrivacyText, systemImage: composerPrivacyIcon)
+                .font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1).padding(.horizontal, 5)
         }
-        .frame(maxWidth: 764).frame(maxWidth: .infinity)
-        .padding(.horizontal, 28).padding(.top, 12).padding(.bottom, 20)
+        .frame(maxWidth: 640).frame(maxWidth: .infinity)
+        .padding(.horizontal, 28).padding(.top, 10).padding(.bottom, 16)
     }
     @ViewBuilder private var composerActions: some View {
         if cloudMode {
