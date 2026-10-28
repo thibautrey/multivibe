@@ -6,6 +6,7 @@ import { capabilities, fail, supported, unsupported, type AdapterContext, type H
 // LibreChat protects browser-session agent routes with ua-parser-js and returns an SSE
 // "Illegal request" event for the default Node/Undici identity, even though the status is 200.
 const LIBRECHAT_BROWSER_USER_AGENT="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) MultiVibe/0.2 Chrome/140.0.0.0 Safari/537.36";
+const LIBRECHAT_AGENT_CATALOG_ROUTE="/agents/v1/agents?limit=100";
 
 export type RemoteChatConnection = {endpoint:string;apiKey:string;agentId:string;userId?:string;userToken?:string;cookies?:string};
 export const remoteConnectionId=(v:RemoteChatConnection)=>createHash("sha256").update(v.endpoint+"\0"+(v.userId??v.apiKey)).digest("hex");
@@ -89,7 +90,7 @@ export class RemoteChatConfiguration {
 
   async models(){
     if(this.service.id==="librechat" && this.read()?.userToken){
-      const catalog=await this.json("/agents?limit=100");const rows=Array.isArray(catalog)?catalog:catalog.data;
+      const catalog=await this.json(LIBRECHAT_AGENT_CATALOG_ROUTE);const rows=Array.isArray(catalog)?catalog:catalog.data;
       if(!Array.isArray(rows))fail("Invalid LibreChat agent catalog",502);
       return rows.map((v:any)=>({id:v.id,name:v.name??v.id}));
     }
@@ -119,14 +120,14 @@ export class RemoteChatConfiguration {
       const body={tempToken:input.twoFactorToken,...(input.twoFactorBackupCode?{backupCode:input.twoFactorBackupCode}:{token:input.twoFactorCode})};
       let response:Response;try{response=await fetch(base+"/auth/2fa/verify-temp",{method:"POST",headers:{"content-type":"application/json",accept:"application/json",origin:new URL(base).origin},body:JSON.stringify(body),redirect:"error",signal:AbortSignal.timeout(15_000)});}catch{return fail("LibreChat two-factor verification failed",422);}
       if(!response.ok){await response.body?.cancel();fail(response.status===401?"The LibreChat authentication code is invalid or expired. Try again or restart sign-in.":"LibreChat two-factor verification was refused.",422);}
-      const result=await boundedJson(response);
+      const result=await boundedJson(response,"LibreChat two-factor verification");
       if(typeof result.token!=="string" || !result.user?.id)fail("Invalid LibreChat two-factor verification response",502);
       connection={...connection,userToken:result.token,userId:result.user.id,cookies:this.cookies(response)};
     }else if(this.service.id==="librechat" && input.email && input.password){
       const base=endpoint.replace(/\/api\/agents\/v1$/u,"/api");
       let response:Response;try{response=await fetch(base+"/auth/login",{method:"POST",headers:{"content-type":"application/json",accept:"application/json",origin:new URL(base).origin},body:JSON.stringify({email:input.email,password:input.password}),redirect:"error",signal:AbortSignal.timeout(15_000)});}catch{return fail("LibreChat sign-in failed",422);}
       if(!response.ok){await response.body?.cancel();fail("LibreChat sign-in refused. Check your account credentials.",422);}
-      const result=await boundedJson(response);
+      const result=await boundedJson(response,"LibreChat sign-in");
       if(result.twoFAPending===true){
         if(result.twoFASetupRequired===true)fail("LibreChat requires two-factor enrollment in its web interface before this account can connect.",422);
         if(typeof result.tempToken!=="string" || !result.tempToken || result.tempToken.length>16_384 || /[\r\n\0]/u.test(result.tempToken))fail("Invalid LibreChat two-factor challenge",502);
@@ -137,16 +138,16 @@ export class RemoteChatConfiguration {
     }
     if(this.service.id==="librechat" && input.userToken){
       connection={...connection,userToken:input.userToken,cookies:undefined};
-      const user=await boundedJson(await this.requestWith(connection,"/user",undefined,"GET"));
+      const user=await boundedJson(await this.requestWith(connection,"/user",undefined,"GET"),"LibreChat user session");
       if(typeof user.id!=="string")fail("Invalid LibreChat user session",422);connection.userId=user.id;
     }
     let agents:Agent[];
     if(this.service.id==="librechat" && connection.userToken){
-      const catalog=await boundedJson(await this.requestWith(connection,"/agents?limit=100",undefined,"GET"));
+      const catalog=await boundedJson(await this.requestWith(connection,LIBRECHAT_AGENT_CATALOG_ROUTE,undefined,"GET"),"LibreChat agent catalog");
       const rows=Array.isArray(catalog)?catalog:catalog.data;
       if(!Array.isArray(rows))fail("Invalid LibreChat agent catalog",502);
       agents=rows.map((v:any)=>({id:v.id,name:v.name??v.id}));
-      await boundedJson(await this.requestWith(connection,"/convos?limit=1",undefined,"GET"));
+      await boundedJson(await this.requestWith(connection,"/convos?limit=1",undefined,"GET"),"LibreChat conversation catalog");
     }else {
       if(!connection.apiKey)fail(`Enter the ${this.service.name} API key`);
       agents=await remoteChatModels(connection,this.service.name);
