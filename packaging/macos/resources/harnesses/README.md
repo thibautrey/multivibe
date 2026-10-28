@@ -11,5 +11,6 @@ These files are unmodified product artwork used only to identify a harness selec
 - `pi.svg`: Pi official mark from `https://pi.dev/logo-auto.svg`, referenced by the installed `@earendil-works/pi-coding-agent` README. Pi is MIT licensed; its pinned notice is in `native/ios/AgentHarness/licenses/pi.txt`.
 - `goose.svg`: goose official logo from `documentation/static/img/logo.svg` at block/goose commit `2b17adc33a7176e701c2fef9578a5fc5834ea89a` (Apache-2.0).
 - `openhands.svg`: OpenHands app icon from `public/favicon.svg` at All-Hands-AI/OpenHands commit `b7fdc6c312039a0b840fdcd34a5c23ca7e65c218` (MIT).
+- `librechat.svg`: official `client/public/assets/logo.svg` from `LibreChat-AI/LibreChat`, retrieved 2026-10-26 from the upstream `main` branch (MIT).
 
 Do not redraw, recolor, or substitute these marks with SF Symbols.

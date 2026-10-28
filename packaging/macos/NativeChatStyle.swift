@@ -90,6 +90,7 @@ struct HarnessLogo: View {
         case "pi": return ("pi", "svg")
         case "goose": return ("goose", "svg")
         case "openhands": return ("openhands", "svg")
+        case "librechat": return ("librechat", "svg")
         default: return nil
         }
     }
