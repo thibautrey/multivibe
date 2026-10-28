@@ -25,7 +25,11 @@ import Foundation
         let (data, response) = try await session.data(for: request)
         guard data.count <= 32 * 1024 * 1024, let http = response as? HTTPURLResponse else { throw DesktopHarnessError.invalidResponse }
         let value = try JSONDecoder().decode(HarnessJSON.self, from: data)
-        guard (200..<300).contains(http.statusCode) else { throw DesktopHarnessError.rejected(value["error"].string ?? "Le Host a refusé la demande (\(http.statusCode)).") }
+        guard (200..<300).contains(http.statusCode) else {
+            let message = value["error"].string ?? "Le Host a refusé la demande (\(http.statusCode))."
+            if http.statusCode == 404 { throw DesktopHarnessError.notFound(message) }
+            throw DesktopHarnessError.rejected(message)
+        }
         return value
     }
     func events(sessionID: String, target: String, after: Int, update: @MainActor @escaping (DesktopHarnessEvent) -> Void) async throws {
