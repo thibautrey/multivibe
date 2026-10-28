@@ -72,6 +72,28 @@ test('mobile turns use desktop receipts, recover without dispatch and keep other
  await assert.rejects(f.send({...auth,deviceId:randomUUID(),operation:'recover',conversationId,commandId}),/expired or revoked/);
  assert.equal(f.urls.filter(u=>u.includes('native/v1/auth/session')).length,0);
 });
+test('mobile conversation titles synchronize across devices and legacy generic titles self-repair',async t=>{
+ const f=await fixture(t),first=await f.pair(),auth={deviceId:first.deviceId,deviceToken:first.deviceToken};
+ const second={operation:'pair-request',requestId:randomUUID(),deviceToken:randomBytes(32).toString('base64url'),trustToken:randomBytes(32).toString('base64url'),name:'Second iPhone'};
+ await f.send(second);f.service.decidePairing(second.requestId,true);
+ const other={deviceId:second.requestId,deviceToken:second.deviceToken};
+ const conversationId=randomUUID(),title='Vérifier la synchronisation des titres entre appareils';
+ await f.send({...auth,operation:'prompt',harnessId:'pi',model:'fixture/model',conversationId,commandId:randomUUID(),text:'  Vérifier\n la   synchronisation des titres entre appareils  '});
+ const firstCatalog=JSON.parse(await f.send({...auth,operation:'conversations'}));
+ const otherCatalog=JSON.parse(await f.send({...other,operation:'conversations'}));
+ const firstRow=firstCatalog.conversations.find((row:any)=>row.conversationId===conversationId);
+ const otherRow=otherCatalog.conversations.find((row:any)=>row.source.id===firstRow.source.id);
+ assert.equal(firstRow.title,title);assert.equal(otherRow.title,title);assert.equal(otherRow.conversationId,undefined);
+
+ const legacy=await f.runtime.create({harnessId:'pi',model:'fixture/model',title:'iPhone · Old iPhone'});
+ legacy.configuration={mobileDeviceId:first.deviceId,mobileConversationId:randomUUID()};f.runtime.store.save(legacy);
+ const legacyUpdatedAt=legacy.updatedAt;
+ f.runtime.store.event(legacy.id,'message.user',{parts:[{type:'text',text:'  Restaurer\n le   titre historique  '}]},randomUUID());
+ const repairedCatalog=JSON.parse(await f.send({...other,operation:'conversations'}));
+ assert.equal(repairedCatalog.conversations.find((row:any)=>row.source.id===legacy.id).title,'Restaurer le titre historique');
+ const repaired=f.runtime.store.session(legacy.id);
+ assert.equal(repaired.title,'Restaurer le titre historique');assert.equal(repaired.updatedAt,legacyUpdatedAt);assert.equal(repaired.configuration?.mobileTitleSource,'first-message');
+});
 test('mobile turn tracking remains attached beyond the former Host deadline',async t=>{
  let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});
  const f=await fixture(t,{prompt:()=>gate}),a=await f.pair(),auth={deviceId:a.deviceId,deviceToken:a.deviceToken};

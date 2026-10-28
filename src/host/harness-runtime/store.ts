@@ -28,8 +28,8 @@ export class HarnessRuntimeStore {
     return row ? JSON.parse(row.value) : fail("Session not found", 404);
   }
   sessions(): HarnessSession[] { return this.db.prepare("SELECT value FROM sessions").all().map((r: any) => JSON.parse(r.value)).sort((a: HarnessSession,b: HarnessSession)=>b.updatedAt-a.updatedAt); }
-  save(session: HarnessSession) {
-    session.revision++; session.updatedAt = Date.now();
+  save(session: HarnessSession, touch = true) {
+    session.revision++; if (touch) session.updatedAt = Date.now();
     this.db.prepare("INSERT INTO sessions VALUES(?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value").run(session.id, JSON.stringify(session));
   }
   event(sessionId: string, type: string, payload: unknown, turnId?: string, itemId?: string): HarnessEvent {

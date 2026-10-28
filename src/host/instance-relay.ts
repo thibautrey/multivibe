@@ -6,7 +6,7 @@ import {setTimeout as delay} from 'node:timers/promises';
 import express from 'express';
 import {instanceActivities} from './instance-activity.js';
 import {InstanceLANServer,type InstanceLANIdentity} from './instance-lan.js';
-import {InstanceConversations,type InstanceConversationSource} from './instance-conversations.js';
+import {InstanceConversations,mobileConversationTitle,type InstanceConversationSource} from './instance-conversations.js';
 import type {HostHarnessRuntime} from './harness-runtime/runtime.js';
 import {fail,identifier,requiredText,type HarnessEvent} from './harness-runtime/types.js';
 
@@ -216,6 +216,7 @@ export class InstanceRelay {
   const source=e.source?this.conversations.source(e.source):undefined,targetId=source?.targetId??'local';
   const sessionId=source?await this.conversations.attach(source,mobileSessionId,device.id,e.conversationId,e.model??'',e.provider):mobileSessionId;
   const command=async(value:any)=>(await this.conversations.command(targetId,sessionId,value)).receipt;
+  const promptText=e.operation==='prompt'?requiredText(e.text,32000):undefined;
   if(e.operation==='configure'||e.operation==='interrupt'){
    const value:Record<string,unknown>={};
    if(e.operation==='configure'){
@@ -237,8 +238,8 @@ export class InstanceRelay {
     const project=this.runtime.projects({harnessId,targetId:'local'}).projects.find(value=>value.id===e.projectId);
     if(!project)fail('The selected project is unavailable on this Host',409);workspace=project.path;
    }
-   const created=await this.runtime.create({id:sessionId,harnessId,targetId:'local',authMode:'native',model:requiredText(e.model,256),...(e.provider?{nativeProvider:requiredText(e.provider,256)}:{}),...(e.effort?{effort:requiredText(e.effort,64)}:{}),...(workspace?{workspace}:{}),title:'iPhone · '+device.name});
-   created.configuration={...created.configuration,mobileDeviceId:device.id,mobileConversationId:e.conversationId};this.runtime.store.save(created);
+   const created=await this.runtime.create({id:sessionId,harnessId,targetId:'local',authMode:'native',model:requiredText(e.model,256),...(e.provider?{nativeProvider:requiredText(e.provider,256)}:{}),...(e.effort?{effort:requiredText(e.effort,64)}:{}),...(workspace?{workspace}:{}),title:mobileConversationTitle(promptText!)});
+   created.configuration={...created.configuration,mobileDeviceId:device.id,mobileConversationId:e.conversationId,mobileTitleSource:'first-message'};this.runtime.store.save(created);
   }
   if(source)await upload('data: '+JSON.stringify({type:'conversation.bound',source:{targetId,kind:'session',id:sessionId,harnessId:source.harnessId}})+'\n\n',false,200,'text/event-stream');
   const emit=async(event:HarnessEvent)=>{
@@ -254,7 +255,7 @@ export class InstanceRelay {
    // Repeated IDs use the desktop runtime's receipt/fingerprint protection.
    const session=(await this.conversations.snapshot(targetId,sessionId)).session;
    if(session.queuePaused&&session.state==='interrupted')await command({id:e.commandId!+'-resume',type:'resume_queue'});
-   await command({id:e.commandId!,type:'prompt',parts:[{type:'text',text:requiredText(e.text,32000)}]});
+   await command({id:e.commandId!,type:'prompt',parts:[{type:'text',text:promptText!}]});
   }
   let approvalPending=false;
   while(true){signal.throwIfAborted();this.device(e);
