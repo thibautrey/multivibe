@@ -137,6 +137,15 @@ enum HostAssistantError: Error { case emptyReply }
         precondition(NativeChatStore(file: file, defaults: defaults).conversations.first { $0.id == second }?.workspace == selectedWorkspace)
         precondition(store.current?.harnessSessionID == "session-fixture")
         precondition(store.current?.messages.last?.content == "Réponse du harness")
+        let recoveredMessageCount = store.current!.messages.count
+        store.edit { $0.runtimeSessionID = "missing-runtime"; $0.draft = "Brouillon à conserver" }
+        store.send()
+        while store.generating != nil { try await Task.sleep(nanoseconds: 10_000_000) }
+        precondition(store.error == nil)
+        precondition(store.current?.runtimeSessionID == second.uuidString.lowercased())
+        precondition(store.current?.pendingSubmissions?.isEmpty != false)
+        precondition(store.current?.messages.count == recoveredMessageCount + 2)
+        precondition(store.current?.messages.suffix(2).map(\.content) == ["Brouillon à conserver", "Réponse du harness"])
         store.delete(first)
         precondition(store.conversations.count == 1)
         let runtimeSessionID = store.current!.runtimeSessionID!

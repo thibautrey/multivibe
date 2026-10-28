@@ -1,8 +1,13 @@
 import Foundation
 
 enum DesktopHarnessError: LocalizedError {
-    case rejected(String), invalidResponse
-    var errorDescription: String? { switch self { case .rejected(let message): return message; case .invalidResponse: return "Réponse invalide du runtime de harness." } }
+    case rejected(String), notFound(String), invalidResponse
+    var errorDescription: String? {
+        switch self {
+        case .rejected(let message), .notFound(let message): return message
+        case .invalidResponse: return "Réponse invalide du runtime de harness."
+        }
+    }
 }
 
 indirect enum HarnessJSON: Codable, Equatable, Sendable {

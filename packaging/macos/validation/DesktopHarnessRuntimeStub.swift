@@ -31,6 +31,7 @@ import Foundation
             sessions[id] = session; return .object(["session": session])
         }
         let components = route.split(separator: "/"); let id = String(components[1])
+        guard sessions[id] != nil else { throw DesktopHarnessError.notFound("Session not found") }
         if route.hasSuffix("/commands") {
             let commandID = body["id"].string!
             let harness = sessions[id]!["harnessId"].string!

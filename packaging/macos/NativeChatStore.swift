@@ -395,7 +395,15 @@ private struct NativeChatModelPreference: Codable {
     }
     private func ensureRuntime(_ id: UUID) async throws -> String {
         guard let i = conversations.firstIndex(where: { $0.id == id }), let harness = conversations[i].harnessID else { throw DesktopHarnessError.invalidResponse }
-        if let sessionID = conversations[i].runtimeSessionID { try await ensureDesktop(id); return sessionID }
+        if let sessionID = conversations[i].runtimeSessionID {
+            do {
+                _ = try await runtime.call("/sessions/\(sessionID)", method: "GET", target: conversations[i].executionTargetID ?? "local", body: nil)
+                try await ensureDesktop(id)
+                return sessionID
+            } catch DesktopHarnessError.notFound {
+                resetMissingRuntime(id)
+            }
+        }
         let conversation = conversations[i]
         var body: [String: HarnessJSON] = ["id": .string(id.uuidString.lowercased()), "harnessId": .string(harness), "targetId": .string(conversation.executionTargetID ?? "local"), "authMode": .string(conversation.authMode ?? "native"), "title": .string(conversation.title)]
         if conversation.authMode == "multivibe", !conversation.model.isEmpty { body["model"] = .string(conversation.model) }
@@ -423,6 +431,23 @@ private struct NativeChatModelPreference: Codable {
         conversations[current].harnessSessionID = session.nativeSessionId; bindRemoteSession(session, at: current); save(); attachRuntime(id)
         try await ensureDesktop(id)
         return session.id
+    }
+    private func resetMissingRuntime(_ id: UUID) {
+        desktopConnecting.removeValue(forKey: id)?.cancel()
+        desktopWorkers.removeValue(forKey: id)?.cancel()
+        desktopActions.removeValue(forKey: id)?.cancel()
+        subscriptions.removeValue(forKey: id)?.cancel()
+        desktopLeases.removeValue(forKey: id)
+        computer.releaseExternal(conversation: id)
+        runtimeQueues.removeValue(forKey: id)
+        runtimeInteractions.removeValue(forKey: id)
+        guard let index = conversations.firstIndex(where: { $0.id == id }) else { return }
+        conversations[index].runtimeSessionID = nil
+        conversations[index].runtimeSession = nil
+        conversations[index].harnessSessionID = nil
+        conversations[index].runtimeCursor = nil
+        conversations[index].runtimeEvents = nil
+        save()
     }
     /// Long polling runs independently from execution so a cancelled tool or turn
     /// can dismiss an approval immediately, without replaying a delivered action.
