@@ -8,6 +8,10 @@ import {fail,identifier,requiredText,redact,type HarnessSession} from './harness
 export type InstanceConversationSource={targetId:string;kind:'session'|'native'|'server';id:string;harnessId:string;connectionId?:string};
 const digest=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const enc=encodeURIComponent;
+export function mobileConversationTitle(value:string):string {
+ const collapsed=value.trim().split(/\s+/u).join(' ');
+ return Array.from(new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(collapsed),part=>part.segment).slice(0,70).join('');
+}
 /** Same Host readers/bridges as Desktop, projected to the paired-device protocol. */
 export class InstanceConversations {
  constructor(private runtime:HostHarnessRuntime,private remotes=new RemoteHarnessHosts()){}
@@ -24,6 +28,16 @@ export class InstanceConversations {
   if(target.kind!=='local')fail('This environment requires a Host bridge',422);
   return local();
  }
+ private repairLegacyMobileTitle(session:HarnessSession){
+  if(typeof session.configuration?.mobileConversationId!=='string' || session.configuration?.mobileTitleSource==='first-message' || !session.title.startsWith('iPhone · '))return;
+  const first=this.runtime.store.events(session.id,0,500).find(event=>event.type==='message.user');
+  const parts=(first?.payload as any)?.parts;
+  if(!Array.isArray(parts))return;
+  const text=parts.filter((part:any)=>part?.type==='text'&&typeof part.text==='string').map((part:any)=>part.text).join('\n');
+  const title=mobileConversationTitle(text);if(!title)return;
+  session.title=title;session.configuration={...session.configuration,mobileTitleSource:'first-message'};
+  this.runtime.store.save(session,false);
+ }
  async catalog(targetId:string,page:number,deviceId:string){
   if(!Number.isSafeInteger(page)||page<0||page>1000)fail('Invalid catalog page');
   const target=this.runtime.store.target(targetId);
@@ -32,6 +46,7 @@ export class InstanceConversations {
    return {sessions:this.runtime.store.sessions().filter(s=>s.targetId===targetId),nativeSessions:native.flatMap(v=>v.sessions),nextPage:native.some(v=>v.hasMore)?page+1:null};
   });
   const sessions=result.sessions as HarnessSession[];
+  if(target.kind==='local' || target.kind==='container'&&!target.bridgePath)for(const session of sessions)this.repairLegacyMobileTitle(session);
   const supervised=new Set(sessions.flatMap(s=>[s.configuration?.sourceId,s.nativeSessionId].filter(Boolean).map(id=>s.harnessId+':'+id)));
   const summary=(source:InstanceConversationSource,title:string,updatedAt:number,model?:string,canContinue=true,extra={})=>({source,title:String(redact(title)),updatedAt,model,canContinue,...extra});
   const conversations=[...sessions.map(s=>summary({targetId,kind:'session',id:s.id,harnessId:s.harnessId},s.title,s.updatedAt,s.model,true,{
