@@ -170,7 +170,6 @@ private struct NativeChatSuggestionEditor: View {
     @State private var selectedImports: Set<UUID> = []
     @State private var search = ""
     @State private var showingArchives = false
-    @State private var navigationVisibility: NavigationSplitViewVisibility = .all
     @AppStorage("assistantConversationListLayout") private var conversationListLayout: SidebarConversationLayout = .flat
     @State private var renameID: UUID?
     @State private var renameTitle = ""
@@ -224,6 +223,7 @@ private struct NativeChatSuggestionEditor: View {
     @State private var showingHarnessInspector = false
     @State private var inspectorSubject = "capabilities"
     @State private var selectedUtilityPanel: NativeChatUtilityPanel = .conversation
+    @State private var showingSidebar = true
     @State private var deleteID: UUID?
     @State private var speech = AVSpeechSynthesizer()
     @State private var suggestionCards = NativeChatSuggestionStore.load()
@@ -293,8 +293,13 @@ private struct NativeChatSuggestionEditor: View {
     }
     var body: some View {
         GeometryReader { geometry in
+            let contentHeight = max(0, geometry.size.height - 70)
+            VStack(spacing: 0) {
+                topBar(width: geometry.size.width)
+                Divider()
+                HSplitView {
             HSplitView {
-            NavigationSplitView(columnVisibility: $navigationVisibility) {
+            if showingSidebar {
             VStack(spacing: 0) {
                 sidebarHeader
                 sidebarPrimaryActions
@@ -344,11 +349,10 @@ private struct NativeChatSuggestionEditor: View {
                 sidebarFooter
             }
             .background(ChatPalette.sidebar)
-            .frame(height: geometry.size.height, alignment: .top).clipped()
-            .navigationSplitViewColumnWidth(min: 220, ideal: 244, max: 300)
-        } detail: {
+            .frame(height: contentHeight, alignment: .top).clipped()
+            .frame(width: 244)
+            }
             VStack(spacing: 0) {
-                header
                 Group {
                     if cloudMode { cloudTranscript }
                     else if let conversation = store.current, !conversation.messages.isEmpty { transcript(conversation) }
@@ -385,7 +389,7 @@ private struct NativeChatSuggestionEditor: View {
                 if !cloudMode { NativeHarnessConversationControls(store: store).frame(maxWidth: 820).frame(maxWidth: .infinity) }
                 composer.fixedSize(horizontal: false, vertical: true).layoutPriority(2)
             }.background(ChatPalette.canvas)
-            .frame(maxWidth: .infinity, minHeight: geometry.size.height, maxHeight: geometry.size.height, alignment: .top).clipped()
+            .frame(maxWidth: .infinity, minHeight: contentHeight, maxHeight: contentHeight, alignment: .top).clipped()
             .animation(ChatPalette.motion(reduceMotion), value: store.error != nil)
             .onDrop(of: [UTType.fileURL], isTargeted: $fileDropTargeted, perform: importDroppedFiles)
             .overlay {
@@ -402,7 +406,7 @@ private struct NativeChatSuggestionEditor: View {
                 }
             }
         }
-        .frame(minWidth: 680, minHeight: geometry.size.height, maxHeight: geometry.size.height)
+        .frame(minWidth: 680, minHeight: contentHeight, maxHeight: contentHeight)
         if showingUtilityPanel {
             NativeChatUtilityPanelView(
                 store: store,
@@ -414,6 +418,8 @@ private struct NativeChatSuggestionEditor: View {
                 closeBrowser: closeBrowserPanel
             )
         }
+                }
+                .frame(width: geometry.size.width, height: contentHeight)
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
         }
@@ -586,7 +592,7 @@ private struct NativeChatSuggestionEditor: View {
             Text("MultiVibe").font(.system(size: 15, weight: .semibold))
             Spacer()
             ChatIconButton(title: "Réglages du Host", icon: "gearshape", action: openDashboard)
-        }.padding(.horizontal, 14).padding(.top, 42).padding(.bottom, 10)
+        }.padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 10)
     }
     private var sidebarEmptyState: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -696,12 +702,7 @@ private struct NativeChatSuggestionEditor: View {
     }
     private var sidebarPrimaryActions: some View {
         sidebarAction("Nouvelle conversation", systemImage: "square.and.pencil") {
-            if cloudMode { Task { do { cloudSelection = try await agent.newCloudConversation() } catch { agent.error = error.localizedDescription } } }
-            else {
-                showingArchives = false; store.newConversation()
-                if store.current?.model.isEmpty == true, let first = models.first { model.wrappedValue = first.id }
-            }
-            composing = true
+            openNewTab(fullView: false)
         }.padding(.horizontal, 8)
     }
     private func sidebarAction(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
@@ -784,18 +785,65 @@ private struct NativeChatSuggestionEditor: View {
             }
         }.padding(24).frame(width: 520)
     }
-    private var header: some View {
+    private var activeTabTitle: String {
+        if cloudMode {
+            return agent.cloudConversations.first { $0.id == cloudSelection }?.title ?? "Nouvel onglet Cloud"
+        }
+        return store.current?.title ?? "Nouvel onglet"
+    }
+    private func topBar(width: CGFloat) -> some View {
         HStack(spacing: 12) {
-            if cloudMode || store.current?.messages.isEmpty == false {
-                Text(cloudMode ? (agent.cloudConversations.first { $0.id == cloudSelection }?.title ?? "Nouvelle conversation Cloud") : (store.current?.title ?? "Nouvelle conversation"))
-                    .font(.system(size: 13, weight: .medium)).lineLimit(1)
+            HStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    HarnessLogo(id: cloudMode ? "hermes-agent" : (store.current?.harnessID ?? "native"), name: cloudMode ? "Hermes" : selectedHarness.name, size: 19)
+                    Text(activeTabTitle)
+                        .font(.system(size: 14, weight: .medium))
+                        .lineLimit(1)
+                    if let state = conversationState {
+                        Circle().fill(ChatPalette.accent).frame(width: 5, height: 5)
+                            .help(state).accessibilityLabel(state)
+                    }
+                    Spacer(minLength: 6)
+                }
+                .padding(.leading, 14)
+                Button { openNewTab(fullView: !showingSidebar) } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 38, height: 40)
+                }
+                .buttonStyle(.plain)
+                .help("Fermer cet onglet")
+                .accessibilityLabel("Fermer cet onglet")
             }
-            if let state = conversationState {
-                HStack(spacing: 5) {
-                    Circle().fill(ChatPalette.accent).frame(width: 4, height: 4)
-                    Text(state).lineLimit(1)
-                }.font(.system(size: 10.5)).foregroundStyle(ChatPalette.accent)
+            .frame(width: min(420, max(250, width * 0.38)), height: 40)
+            .background(ChatPalette.surface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(ChatPalette.hairline, lineWidth: 0.5))
+
+            Menu {
+                Button {
+                    openNewTab(fullView: false)
+                } label: {
+                    Label("Nouvel onglet", systemImage: "plus")
+                }
+                .keyboardShortcut("b", modifiers: [.command, .shift])
+                Button {
+                    openNewTab(fullView: true)
+                } label: {
+                    Label("Nouvel onglet en plein écran", systemImage: "arrow.up.left.and.arrow.down.right")
+                }
+                .keyboardShortcut("f", modifiers: [.command, .shift])
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 18, weight: .regular))
+                    .frame(width: 34, height: 40)
             }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Nouvel onglet")
+            .accessibilityLabel("Créer un onglet")
+
             Spacer(minLength: 12)
             if cloudMode {
                 Picker("Projet Hermes", selection: Binding(get: { agent.selectedWorkspaceProject(cloudSelection) }, set: { value in
@@ -811,31 +859,71 @@ private struct NativeChatSuggestionEditor: View {
                 Picker("Exécution", selection: $cloudMode) {
                     Label("Mac", systemImage: "desktopcomputer").tag(false)
                     Label("Cloud", systemImage: "cloud").tag(true)
-                }.labelsHidden().pickerStyle(.segmented).frame(width: 134).disabled(cloudSending || store.isGenerating(store.selection))
+                }.labelsHidden().pickerStyle(.segmented).frame(width: 118).disabled(cloudSending || store.isGenerating(store.selection))
             }
-            if !cloudMode {
-                Button(action: openHarnessInspector) {
-                    Image(systemName: "gearshape")
-                        .font(.system(size: 13, weight: .medium))
-                        .frame(width: 30, height: 30)
-                }
-                .buttonStyle(ChatActionStyle(selected: showingHarnessInspector && selectedUtilityPanel == .conversation))
-                .foregroundStyle(.secondary)
-                .help("Réglages de la conversation")
-                .accessibilityLabel("Réglages de la conversation")
-                Menu {
-                    Toggle("Réponses interactives", isOn: $interactiveAnswers)
-                    Divider()
-                    Button("Réglages de la conversation") { openHarnessInspector() }
-                    Button("Réglages du Host") { openDashboard() }
-                } label: { Image(systemName: "ellipsis").frame(width: 24, height: 30) }
-                    .menuStyle(.borderlessButton).fixedSize().help("Options de la conversation").accessibilityLabel("Options de la conversation")
+            Button { toggleFullView() } label: {
+                Image(systemName: showingSidebar ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left")
+                    .font(.system(size: 13, weight: .medium))
+                    .frame(width: 38, height: 38)
+            }
+            .buttonStyle(ChatActionStyle(selected: !showingSidebar))
+            .foregroundStyle(.secondary)
+            .help(showingSidebar ? "Afficher en plein écran" : "Quitter le plein écran")
+            .accessibilityLabel(showingSidebar ? "Afficher en plein écran" : "Quitter le plein écran")
+
+            Button { toggleConversationPanel() } label: {
+                Image(systemName: "rectangle.split.2x1")
+                    .font(.system(size: 14, weight: .medium))
+                    .frame(width: 38, height: 38)
+            }
+            .buttonStyle(ChatActionStyle(selected: showingHarnessInspector && selectedUtilityPanel == .conversation))
+            .foregroundStyle(.secondary)
+            .background(ChatPalette.subtle, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            .help("Afficher les réglages de la conversation")
+            .accessibilityLabel("Afficher les réglages de la conversation")
+            .contextMenu {
+                Toggle("Réponses interactives", isOn: $interactiveAnswers)
+                Divider()
+                Button("Réglages du Host") { openDashboard() }
             }
         }
-        .padding(.leading, NativeChatTitlebarMetrics.leadingInset(for: navigationVisibility))
-        .padding(.trailing, 20).padding(.top, 28).frame(height: 54).background(ChatPalette.canvas)
-        .animation(ChatPalette.motion(reduceMotion), value: navigationVisibility)
+        .padding(.leading, 78).padding(.trailing, 12).padding(.top, 24).padding(.bottom, 6)
+        .frame(height: 70)
+        .background(ChatPalette.elevated)
         .animation(ChatPalette.motion(reduceMotion), value: conversationState)
+    }
+    private func openNewTab(fullView: Bool) {
+        showingArchives = false
+        if cloudMode {
+            Task {
+                do { cloudSelection = try await agent.newCloudConversation() }
+                catch { agent.error = error.localizedDescription }
+            }
+        } else {
+            store.newConversation()
+            if store.current?.model.isEmpty == true, let first = models.first { model.wrappedValue = first.id }
+        }
+        if fullView {
+            showingSidebar = false
+            if showingHarnessInspector { closeHarnessInspector() }
+            if browser.isVisible { closeBrowserPanel() }
+        } else {
+            showingSidebar = true
+        }
+        composing = true
+    }
+    private func toggleFullView() {
+        withAnimation(ChatPalette.motion(reduceMotion)) {
+            showingSidebar.toggle()
+            if !showingSidebar {
+                if showingHarnessInspector { closeHarnessInspector() }
+                if browser.isVisible { closeBrowserPanel() }
+            }
+        }
+    }
+    private func toggleConversationPanel() {
+        if showingHarnessInspector && selectedUtilityPanel == .conversation { closeHarnessInspector() }
+        else { openHarnessInspector() }
     }
     private var showingUtilityPanel: Bool { showingHarnessInspector || browser.isVisible }
     private func openHarnessInspector() {
