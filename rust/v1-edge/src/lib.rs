@@ -5664,6 +5664,20 @@ fn prepared_payload(
     if let Some(object) = payload.as_object_mut() {
         object.insert("model".to_owned(), Value::String(route.model.clone()));
     }
+    // ChatGPT's Codex Responses transport accepts developer instructions,
+    // but rejects the public Responses API's system message role.
+    if !sends_chat && normalize_provider(account) == "openai"
+        && account.multivibe_cloud != Some(true) {
+        if let Some(input) = payload.get_mut("input").and_then(Value::as_array_mut) {
+            for item in input {
+                let message = item.get("type").and_then(Value::as_str)
+                    .is_none_or(|kind| kind == "message");
+                if message && item.get("role").and_then(Value::as_str) == Some("system") {
+                    item["role"] = Value::String("developer".to_owned());
+                }
+            }
+        }
+    }
     filter_unsupported_tools(&mut payload, &normalize_provider(account));
     if sends_chat
         && (normalize_provider(account) == "openai-compatible"
@@ -14685,6 +14699,27 @@ mod tests {
         // Reads do not renew the TTL: app-one was inserted at 1,000 and is
         // expired at 1,100 even though it was recently read.
         assert_eq!(cache.get("app-one", "thread", "openai", 1_100), None);
+    }
+
+    #[test]
+    fn codex_responses_maps_system_messages_only_at_subscription_boundary() {
+        let body = json!({"model":"gpt-6.1-sol", "instructions":"Base",
+            "input":[{"role":"system","content":"Be concise"},
+                {"type":"message","role":"system","content":[{"type":"input_text","text":"Rules"}]},
+                {"role":"developer","content":"Developer"},
+                {"role":"user","content":"Hello"}]});
+        let route = RouteCandidate { requested_model:"gpt-6.1-sol".into(), model:"gpt-6.1-sol".into(), provider:None, account_ids:vec![] };
+        let prepare = |a: &Account| prepared_payload(&body, "/v1/responses", a, &route, None, false, false, &EdgeConfig::default());
+        let subscription = account("subscription");
+        let actual = prepare(&subscription);
+        let mut expected = body["input"].clone();
+        expected[0]["role"] = json!("developer"); expected[1]["role"] = json!("developer");
+        assert_eq!(actual["input"], expected);
+        assert_eq!(actual["instructions"], "Base");
+        let mut api = subscription.clone(); api.provider = Some("openai-compatible".into()); api.compatibility_mode = Some("responses".into());
+        assert_eq!(prepare(&api)["input"], body["input"]);
+        let mut cloud = subscription; cloud.multivibe_cloud = Some(true);
+        assert_eq!(prepare(&cloud)["input"], body["input"]);
     }
 
     #[test]
