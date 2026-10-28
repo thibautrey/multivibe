@@ -4862,7 +4862,11 @@ impl TraceSink {
             entry["tokensOutput"] = output.into();
             entry["tokensReasoning"] = reasoning.into();
             entry["tokensTotal"] = total.into();
-            let cost = if context.route.contains("/images/") {
+            // Decisions pricing is endpoint-specific (including free output).
+            // Do not apply the model's text-generation pricing to these calls.
+            let cost = if context.route.ends_with("/decisions") {
+                None
+            } else if context.route.contains("/images/") {
                 image_trace_cost(context.resolved_model.as_deref().or(context.model.as_deref()), usage)
             } else { trace_cost(
                 context
@@ -5598,7 +5602,7 @@ fn prepared_payload(
     claude_code: bool,
     config: &EdgeConfig,
 ) -> Value {
-    if path.ends_with("/embeddings") || images::is_image_path(path) {
+    if path.ends_with("/embeddings") || path.ends_with("/decisions") || images::is_image_path(path) {
         let mut payload = body.clone();
         payload["model"] = Value::String(route.model.clone());
         return payload;
@@ -6121,7 +6125,7 @@ fn transform_for(
     client_stream: bool,
     content_type: &str,
 ) -> StreamTransform {
-    if images::is_image_path(path) { return StreamTransform::None; }
+    if images::is_image_path(path) || path.ends_with("/decisions") { return StreamTransform::None; }
     let client_chat = path.contains("chat/completions");
     let upstream_sse = content_type
         .to_ascii_lowercase()
@@ -6191,7 +6195,8 @@ async fn proxy_inference(
     let catalog = exposed_models(state, &store, false).await;
     let embeddings_route = path.ends_with("/embeddings");
     let image_route = images::is_image_path(path);
-    let routing_model = if embeddings_route || image_route {
+    let decisions_route = path.ends_with("/decisions");
+    let routing_model = if embeddings_route || image_route || decisions_route {
         routing_model
     } else {
         image_aware_routing_model(&store, &catalog, body, &routing_model)
@@ -6239,6 +6244,15 @@ async fn proxy_inference(
                 accounts.retain(|account| {
                     normalize_provider(account) == "openai-compatible"
                         && !account_is_confidential(account)
+                });
+            }
+            if decisions_route {
+                accounts.retain(|account| {
+                    !account_is_confidential(account) && account.multivibe_cloud != Some(true)
+                        && ((normalize_provider(account) == "ai-sdk"
+                            && account.sdk_provider.as_deref() == Some("openai"))
+                            || normalize_provider(account) == "openai-compatible")
+                        && route.model.strip_prefix("openai/").unwrap_or(&route.model) == "gpt-6-luna"
                 });
             }
             if image_route {
@@ -6397,7 +6411,7 @@ async fn proxy_inference(
                         }
                     }
                 }
-                let sends_chat = !embeddings_route && !image_route
+                let sends_chat = !embeddings_route && !image_route && !decisions_route
                     && resolve_upstream_mode(
                         &account,
                         &route.model,
@@ -6440,6 +6454,8 @@ async fn proxy_inference(
                 let url = if image_route {
                     format!("{}/images/{}", model_discovery_url(&account, &state.config).trim_end_matches("/models"),
                         if path.ends_with("/edits") { "edits" } else { "generations" })
+                } else if decisions_route {
+                    format!("{}/decisions", model_discovery_url(&account, &state.config).trim_end_matches("/models"))
                 } else if embeddings_route {
                     format!(
                         "{}/embeddings",
@@ -7121,7 +7137,7 @@ fn render_buffered_success(
     mut upstream_headers: Vec<(String, String)>,
     chat_tools: &chat_tools::ChatTools,
 ) -> BufferedReply {
-    if path.ends_with("/embeddings") || images::is_image_path(path) {
+    if path.ends_with("/embeddings") || path.ends_with("/decisions") || images::is_image_path(path) {
         return BufferedReply {
             status: StatusCode::OK,
             headers: upstream_headers,
@@ -9923,6 +9939,22 @@ async fn inference_handler(State(state): State<EdgeState>, req: Request<Body>) -
         }
     };
     headers.remove("x-multivibe-internal-trace-redact");
+    if path.ends_with("/decisions") {
+        let valid_input = match body.get("input") {
+            Some(Value::String(input)) => !input.trim().is_empty(),
+            Some(Value::Array(input)) => !input.is_empty(),
+            _ => false,
+        };
+        if value_string(body.get("model")).is_none() || !valid_input
+            || !body.get("questions").and_then(Value::as_array).is_some_and(|q| (1..=400).contains(&q.len()))
+            || body.get("stream").is_some_and(|v| v != &Value::Bool(false))
+            || header_value(&headers, "x-multivibe-execution").as_deref() == Some("defer")
+        {
+            return error_response(StatusCode::BAD_REQUEST,
+                "Decisions require an explicit model, non-empty input, 1–400 questions and synchronous execution without streaming.",
+                "invalid_request_error");
+        }
+    }
     if path.ends_with("/embeddings") {
         let valid_input = match body.get("input") {
             Some(Value::String(input)) => !input.trim().is_empty(),
@@ -12829,6 +12861,7 @@ pub fn build_router(state: EdgeState) -> Router {
         .route("/chat/completions", post(inference_handler))
         .route("/images/generations", post(inference_handler))
         .route("/images/edits", post(inference_handler).layer(axum::extract::DefaultBodyLimit::max(state.config.request_body_limit)))
+        .route("/decisions", post(inference_handler))
         .route("/embeddings", post(inference_handler))
         .route("/messages", post(inference_handler))
         .route("/realtime/calls", post(realtime_call_handler))
@@ -12856,6 +12889,7 @@ pub fn build_router(state: EdgeState) -> Router {
         .route("/v1/chat/completions", post(inference_handler))
         .route("/v1/images/generations", post(inference_handler))
         .route("/v1/images/edits", post(inference_handler).layer(axum::extract::DefaultBodyLimit::max(state.config.request_body_limit)))
+        .route("/v1/decisions", post(inference_handler))
         .route("/v1/embeddings", post(inference_handler))
         .route("/v1/messages", post(inference_handler))
         .route("/v1/realtime/calls", post(realtime_call_handler))
@@ -12888,6 +12922,60 @@ pub fn build_router(state: EdgeState) -> Router {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn decisions_preserve_typed_contract_and_require_api_accounts() {
+        let payload = json!({"model":"openai/gpt-6-luna", "input":[{"role":"user","content":[{"type":"input_json","data":{"status":"paid"}}]}],
+            "questions":[{"type":"predicate","name":"paid","instructions":"Is it paid?"},
+                {"type":"choice","name":"category","instructions":"Classify","choices":[{"value":"a"},{"value":"b"}]},
+                {"type":"score","name":"severity","instructions":"Rate","levels":[{"label":"low"},{"label":"high"}]}],
+            "prompt_cache_key":"shared", "prompt_cache_options":{"mode":"explicit"}});
+        let expected_body = payload.clone();
+        let answer = json!({"id":"dec_test","object":"decision","model":"gpt-6-luna","answers":[
+            {"type":"predicate","name":"paid","probability":0.9},
+            {"type":"choice","name":"category","choice":"a","probabilities":[{"value":"a","probability":1.0}],"confidence":1.0},
+            {"type":"score","name":"severity","score":0.5,"confidence":0.5},
+            {"type":"refusal","name":"refused"}],
+            "usage":{"input_tokens":1200,"output_tokens":0,"input_tokens_details":{"cached_tokens":1024,"cache_write_tokens":0}}});
+        let expected_answer = answer.clone();
+        let runtime = Router::new()
+            .route("/internal/ai-sdk/api/v1/models", get(|| async { Json(json!({"data":[{"id":"openai/gpt-6-luna"}]})) }))
+            .route("/internal/ai-sdk/api/v1/decisions", post(move |headers: HeaderMap, Json(body): Json<Value>| {
+                let expected_body = expected_body.clone(); let answer = answer.clone();
+                async move {
+                    assert_eq!(headers["authorization"], "Bearer internal-secret");
+                    assert_eq!(body, expected_body);
+                    Json(answer)
+                }
+            }));
+        let (runtime_url, runtime_task) = start_server(runtime).await;
+        let mut api = account("api");
+        api.provider = Some("ai-sdk".to_owned()); api.sdk_provider = Some("openai".to_owned());
+        api.sdk_models = Some(vec!["gpt-6-luna".to_owned()]);
+        let store_path = temporary_path("decisions-store"); let jobs_path = temporary_path("decisions-jobs");
+        fs::write(&store_path, serde_json::to_vec(&store_with_accounts(vec![api])).unwrap()).await.unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone(); config.jobs_path = jobs_path.clone();
+        config.node_control_plane_url = runtime_url;
+        config.internal_job_token = Some("internal-secret".to_owned());
+        config.configured_api_keys = vec![("test".to_owned(),"secret".to_owned())];
+        let (url, edge_task) = start_server(build_router(EdgeState::new(config).await.unwrap())).await;
+        let client = reqwest::Client::new();
+        for path in ["/decisions", "/v1/decisions"] {
+            let result = client.post(format!("{url}{path}")).bearer_auth("secret").json(&payload).send().await.unwrap();
+            assert_eq!(result.status(), StatusCode::OK);
+            assert_eq!(result.json::<Value>().await.unwrap(), expected_answer);
+        }
+        assert_eq!(client.post(format!("{url}/v1/decisions")).json(&payload).send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
+        for patch in [json!({"model":null}), json!({"input":[]}), json!({"questions":[]}), json!({"questions":vec![json!({"type":"predicate"});401]}), json!({"stream":true})] {
+            let mut invalid = payload.clone();
+            for (key, value) in patch.as_object().unwrap() { invalid[key] = value.clone(); }
+            assert_eq!(client.post(format!("{url}/v1/decisions")).bearer_auth("secret").json(&invalid).send().await.unwrap().status(), StatusCode::BAD_REQUEST);
+        }
+        assert_eq!(client.post(format!("{url}/v1/decisions")).bearer_auth("secret").header("x-multivibe-execution","defer").json(&payload).send().await.unwrap().status(), StatusCode::BAD_REQUEST);
+        runtime_task.abort(); edge_task.abort();
+        let _ = fs::remove_file(store_path).await; let _ = fs::remove_file(jobs_path).await;
+    }
+
     #[tokio::test]
     async fn images_route_json_and_multipart_without_text_conversion() {
         let response = json!({"created":123,"data":[{"b64_json":"aW1hZ2U="}],"usage":{"total_tokens":7}});
