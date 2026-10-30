@@ -57,10 +57,12 @@ test("native packages include the updater and platform schedulers", async () => 
   assert.match(packager, /minimum: macOSMinimumVersion/u);
   assert.match(await read("scripts/provider-host/build-macos-native.mjs"), /apple-macos\$\{minimum\}/u);
   assert.match(macosInfo, /<key>LSMinimumSystemVersion<\/key>\s*<string>__MULTIVIBE_MACOS_MINIMUM_VERSION__<\/string>/u);
+  assert.match(macosInfo, /<key>NSLocalNetworkUsageDescription<\/key>\s*<string>[^<]*réseau local[^<]*<\/string>/u);
   assert.match(verifier, /minimumSystemVersion !== "13\.0"/u);
   assert.match(packager, /buildGo\(path\.join\(repositoryRoot, "host", "updater"\)/u);
   assert.match(packager, /buildRustEdge\(edgeDestination\)/u);
   assert.match(packager, /path\.join\(contents, "Helpers", "multivibe-v1-edge"\)/u);
+  assert.match(packager, /packaging", "macos", "Edge\.entitlements"/u);
   assert.match(packager, /buildGo\(\s*path\.join\(repositoryRoot, "host", "menu"\)/u);
   assert.match(packager, /CGO_ENABLED: selectedTarget\.goos === "linux" \? "1" : "0"/u);
   assert.match(packager, /favicon-1024\.png/u);

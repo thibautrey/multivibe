@@ -391,14 +391,21 @@ export async function signMacApplication(application, identity, { keychain = pro
   // strips those entitlements and makes it terminate with SIGTRAP on launch.
   // Keep its upstream signature, then verify it before sealing the outer app.
   await run("codesign", ["--verify", "--strict", "--verbose=2", node]);
+  const edge = path.join(contents, "Helpers", "multivibe-v1-edge");
   for (const binary of new Set([
     ...native,
     path.join(contents, "Helpers", "multivibe-host-updater"),
-    path.join(contents, "Helpers", "multivibe-v1-edge"),
     path.join(contents, "MacOS", "multivibe-host"),
   ])) {
     await run("codesign", [...signingArguments, binary]);
   }
+  // The edge is a separate network client. Give it the Local Network usage
+  // entitlement explicitly instead of relying on the outer app's grant.
+  await run("codesign", [
+    ...signingArguments,
+    "--entitlements", path.join(repositoryRoot, "packaging", "macos", "Edge.entitlements"),
+    edge,
+  ]);
   const cefFramework = path.join(contents, "Frameworks", "Chromium Embedded Framework.framework");
   const cefHelper = path.join(contents, "Frameworks", "MultiVibe Chromium Helper.app");
   await run("codesign", [...signingArguments, cefFramework]);

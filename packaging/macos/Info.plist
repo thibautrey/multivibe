@@ -54,5 +54,7 @@
   <true/>
   <key>NSCameraUsageDescription</key>
   <string>MultiVibe peut reconnaître votre compte sur ce Mac, si vous activez cette option. La caméra ne s’allume que quelques secondes et aucune photo n’est conservée ni envoyée.</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>MultiVibe utilise le réseau local pour joindre vos serveurs d’inférence privés.</string>
 </dict>
 </plist>
