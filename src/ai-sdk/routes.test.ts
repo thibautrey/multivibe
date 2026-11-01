@@ -259,3 +259,42 @@ test("image adapter honors its dedicated deadline and rejects invalid timer valu
     }
   }
 });
+
+test("Decisions forwards its native contract and errors without the chat codec", async () => {
+  const account: Account = {id: "decisions", provider: "ai-sdk", sdkProvider: "openai", sdkModels: ["gpt-6-luna"], accessToken: "provider-secret", enabled: true};
+  const calls: Array<{url: string; body: any}> = [];
+  const answer = {id: "dec_test", object: "decision", answers: [{type: "predicate", name: "paid", probability: 0.9}, {type: "choice", choice: "billing"}, {type: "score", score: 1.1}, {type: "refusal", name: "unsafe"}], usage: {input_tokens: 1200, input_tokens_details: {cached_tokens: 1024, cache_write_tokens: 0}}};
+  let status = 200;
+  const app = express(); app.use(express.json());
+  app.use(createSdkAdapterRouter({store: {listAccounts: async () => [account]}, internalToken: "internal-secret", fetch: async (url, init) => {
+    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer provider-secret");
+    calls.push({url: String(url), body: JSON.parse(String(init?.body))});
+    return Response.json(status === 200 ? answer : {error: {message: "Too many requests", type: "rate_limit_error", code: "rate_limit_exceeded"}}, {status, headers: {"x-request-id": "request-test", "retry-after": "2"}});
+  }}));
+  const listener = app.listen(0, "127.0.0.1");
+  await new Promise<void>(resolve => listener.once("listening", resolve));
+  const url = `http://127.0.0.1:${(listener.address() as AddressInfo).port}/decisions/v1/decisions`;
+  const body = {model: "openai/gpt-6-luna", input: [{role: "user", content: [{type: "input_json", data: {paid: true}}, {type: "input_image", image_url: "https://example.com/photo.png"}]}], questions: [{type: "predicate", name: "paid", instructions: "Is it paid?"}], prompt_cache_key: "shared", prompt_cache_options: {mode: "explicit"}};
+  const post = (value: unknown, headers = auth) => fetch(url, {method: "POST", headers, body: JSON.stringify(value)});
+  try {
+    const result = await post(body);
+    assert.equal(result.status, 200); assert.deepEqual(await result.json(), answer);
+    assert.equal(result.headers.get("x-request-id"), "request-test");
+    assert.deepEqual(calls, [{url: "https://api.openai.com/v1/decisions", body: {...body, model: "gpt-6-luna"}}]);
+    assert.equal((await post(body, {...auth, authorization: "Bearer provider-secret"})).status, 401);
+    for (const patch of [{stream: true}, {questions: []}, {questions: Array(401).fill(body.questions[0])}, {input: []}, {model: "openai/gpt-6-sol"}]) {
+      assert.ok([400, 404].includes((await post({...body, ...patch})).status));
+    }
+    assert.equal(calls.length, 1);
+    status = 429;
+    const failure = await post(body);
+    assert.equal(failure.status, 429); assert.equal(failure.headers.get("retry-after"), "2");
+    assert.equal((await failure.json() as any).error.code, "rate_limit_exceeded");
+    account.sdkProvider = "anthropic";
+    assert.equal((await post(body)).status, 400);
+    account.enabled = false;
+    assert.equal((await post(body)).status, 404);
+  } finally {
+    listener.closeAllConnections(); await new Promise<void>(resolve => listener.close(() => resolve()));
+  }
+});
