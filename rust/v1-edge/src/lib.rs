@@ -5683,10 +5683,14 @@ fn prepared_payload(
         && (normalize_provider(account) == "openai-compatible"
             || normalize_provider(account) == "opencode")
     {
-        let bonsai_effort = (route.model == "bonsai-2-27b")
+        // These known local runtimes implement reasoning_effort. Keep the
+        // client's explicit choice after sanitization; an absent value must
+        // still leave the runtime's default alone. Other generic endpoints
+        // continue to reject unsupported reasoning fields as before.
+        let native_effort = matches!(route.model.as_str(), "bonsai-2-27b" | "deepseek-v4.1-flash")
             .then(|| payload.get("reasoning_effort").cloned()).flatten();
         payload = sanitize_generic_chat_payload(&payload);
-        if let Some(effort) = bonsai_effort {
+        if let Some(effort) = native_effort {
             payload["reasoning_effort"] = effort;
         }
     }
@@ -7258,11 +7262,13 @@ struct ChatResponseStreamState {
     chat_tools: chat_tools::ChatTools,
     response_id: String,
     output_item_id: String,
+    reasoning_item_id: String,
     model: String,
     created: u64,
     content: String,
     reasoning: String,
     created_sent: bool,
+    reasoning_started: bool,
     content_started: bool,
     completed_sent: bool,
     finish_pending: bool,
@@ -7275,6 +7281,7 @@ impl ChatResponseStreamState {
         Self {
             response_id: new_id("resp"),
             output_item_id: new_id("msg"),
+            reasoning_item_id: new_id("rs"),
             model: model.to_owned(),
             created: now_ms() / 1000,
             ..Default::default()
@@ -7309,7 +7316,7 @@ impl ChatResponseStreamState {
         self.completed_sent = true;
         let mut output = Vec::new();
         if !self.reasoning.is_empty() {
-            output.push(json!({"id": new_id("rs"), "type": "reasoning", "summary": [], "encrypted_content": encode_reasoning_content(&self.reasoning)}));
+            output.push(json!({"id": self.reasoning_item_id, "type": "reasoning", "status": "completed", "summary": [], "encrypted_content": encode_reasoning_content(&self.reasoning)}));
         }
         if !self.content.is_empty() {
             output.push(json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": self.content}]}));
@@ -7335,10 +7342,12 @@ impl ChatResponseStreamState {
         let mut out = String::new();
         if !self.reasoning.is_empty() {
             let item = output.first().cloned().unwrap_or_else(|| json!({}));
-            out.push_str(&sse_frame(
-                "response.output_item.added",
-                &json!({"type": "response.output_item.added", "output_index": 0, "item": item}),
-            ));
+            if !self.reasoning_started {
+                out.push_str(&sse_frame(
+                    "response.output_item.added",
+                    &json!({"type": "response.output_item.added", "output_index": 0, "item": item}),
+                ));
+            }
             out.push_str(&sse_frame(
                 "response.output_item.done",
                 &json!({"type": "response.output_item.done", "output_index": 0, "item": item}),
@@ -7629,6 +7638,17 @@ impl SseStreamTransformer {
             return self.chat_response.finish_if_ready(output);
         };
         if let Some(delta) = choice.get("delta") {
+            if let Some(reasoning) =
+                raw_string(delta.get("reasoning_content")).filter(|text| !text.is_empty())
+            {
+                if !self.chat_response.reasoning_started {
+                    self.chat_response.reasoning_started = true;
+                    // Announce progress immediately without disclosing private
+                    // reasoning text or inventing a model-generated summary.
+                    output.push_str(&sse_frame("response.output_item.added", &json!({"type": "response.output_item.added", "output_index": 0, "item": {"id": self.chat_response.reasoning_item_id, "type": "reasoning", "status": "in_progress", "summary": []}})));
+                }
+                self.chat_response.reasoning.push_str(&reasoning);
+            }
             if let Some(content) =
                 raw_string(delta.get("content")).filter(|content| !content.is_empty())
             {
@@ -7639,11 +7659,6 @@ impl SseStreamTransformer {
                 }
                 self.chat_response.content.push_str(&content);
                 output.push_str(&sse_frame("response.output_text.delta", &json!({"type": "response.output_text.delta", "item_id": self.chat_response.output_item_id, "output_index": usize::from(!self.chat_response.reasoning.is_empty()), "content_index": 0, "delta": content})));
-            }
-            if let Some(reasoning) =
-                raw_string(delta.get("reasoning_content")).filter(|text| !text.is_empty())
-            {
-                self.chat_response.reasoning.push_str(&reasoning);
             }
             if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
                 for call in calls {
@@ -15146,6 +15161,62 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         let result = responses_to_chat_completions(&json!({"input":"hello"}), false, false);
         assert!(result.get("reasoning_effort").is_none());
         assert!(result.get("stream_options").is_none());
+    }
+
+    #[test]
+    fn native_deepseek_receives_the_requested_effort_after_generic_sanitization() {
+        let mut provider = account("spark");
+        provider.provider = Some("openai-compatible".into());
+        for route_name in ["/v1/responses", "/v1/chat/completions"] {
+            for model in ["deepseek-v4.1-flash", "unrelated-local-model"] {
+                let route = RouteCandidate {requested_model:model.into(), model:model.into(), provider:Some("openai-compatible".into()), account_ids:vec!["spark".into()]};
+                for effort in ["none", "low", "medium", "high", "xhigh"] {
+                    let body = if route_name.ends_with("responses") {
+                        json!({"model": model, "input":"hello", "reasoning":{"effort":effort}, "include":["reasoning.encrypted_content"]})
+                    } else {
+                        json!({"model": model, "messages":[{"role":"user","content":"hello"}], "reasoning_effort":effort})
+                    };
+                    let result = prepared_payload(&body, route_name, &provider, &route, None, true, false, &EdgeConfig::default());
+                    if model == "deepseek-v4.1-flash" {
+                        assert_eq!(result["reasoning_effort"], effort);
+                    } else {
+                        assert!(result.get("reasoning_effort").is_none());
+                    }
+                    assert!(result.get("reasoning").is_none());
+                    assert!(result.get("include").is_none());
+                }
+                let result = prepared_payload(&json!({"model":model,"input":"hello"}), "/v1/responses", &provider, &route, None, true, false, &EdgeConfig::default());
+                assert!(result.get("reasoning_effort").is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn reasoning_progress_is_immediate_private_and_has_one_stable_lifecycle() {
+        let mut converter = SseStreamTransformer::new(StreamTransform::ChatToResponse, "deepseek-v4.1-flash");
+        let first = converter.transform_chat_chunk(&json!({"object":"chat.completion.chunk","choices":[{"delta":{"reasoning_content":"private one"},"finish_reason":null}]}));
+        let first_events = parse_sse_events(&first);
+        let added = first_events.iter().find(|(_, e)| e["type"] == "response.output_item.added").unwrap();
+        assert_eq!(added.1["item"]["type"], "reasoning");
+        assert_eq!(added.1["item"]["status"], "in_progress");
+        let id = added.1["item"]["id"].clone();
+        assert!(!first.contains("private one"));
+        assert!(!first.contains("encrypted_content"));
+        assert!(!first.contains("response.completed"));
+        let mixed = converter.transform_chat_chunk(&json!({"object":"chat.completion.chunk","choices":[{"delta":{"reasoning_content":" plus two", "content":"answer"},"finish_reason":"stop"}]}));
+        assert!(!mixed.contains("private one"));
+        assert!(!mixed.contains("plus two"));
+        assert!(parse_sse_events(&mixed).iter().any(|(_, e)| e["type"] == "response.output_text.delta" && e["output_index"] == 1));
+        let terminal = converter.finish();
+        let all = format!("{first}{mixed}{terminal}");
+        let events = parse_sse_events(&all);
+        assert_eq!(events.iter().filter(|(_, e)| e["type"] == "response.output_item.added" && e["item"]["type"] == "reasoning").count(), 1);
+        let done = events.iter().find(|(_, e)| e["type"] == "response.output_item.done" && e["item"]["type"] == "reasoning").unwrap();
+        assert_eq!(done.1["item"]["id"], id);
+        assert_eq!(decode_reasoning_content(done.1["item"].get("encrypted_content")).as_deref(), Some("private one plus two"));
+        let completed = events.iter().find(|(_, e)| e["type"] == "response.completed").unwrap();
+        assert_eq!(completed.1["response"]["output"][0]["id"], id);
+        assert_eq!(completed.1["response"]["output"][1]["content"][0]["text"], "answer");
     }
 
     #[test]
