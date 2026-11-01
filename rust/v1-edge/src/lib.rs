@@ -15215,8 +15215,10 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         assert_eq!(done.1["item"]["id"], id);
         assert_eq!(decode_reasoning_content(done.1["item"].get("encrypted_content")).as_deref(), Some("private one plus two"));
         let completed = events.iter().find(|(_, e)| e["type"] == "response.completed").unwrap();
-        assert_eq!(completed.1["response"]["output"][0]["id"], id);
-        assert_eq!(completed.1["response"]["output"][1]["content"][0]["text"], "answer");
+        // The existing terminal sanitizer intentionally omits reasoning from
+        // response.completed; the opaque continuation arrives in item.done.
+        assert_eq!(completed.1["response"]["output"][0]["content"][0]["text"], "answer");
+        assert!(!terminal.contains("private one"));
     }
 
     #[test]
