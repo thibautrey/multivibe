@@ -4,7 +4,7 @@ import { ChatGPTDeviceGuide } from "../ChatGPTDeviceGuide";
 import type { ModelRoute } from "../../lib/modelCatalog";
 import { findAvailableCount } from "../../lib/resetCredits";
 import ModalPortal from "../ModalPortal";
-import type { Account, ProviderId, StoreSettings, TraceStats } from "../../types";
+import type { Account, ExposedModel, ProviderId, StoreSettings, TraceStats } from "../../types";
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { fmt, maskEmail, maskId, usd } from "../../lib/ui";
 import { ApiError } from "../../lib/api";
@@ -22,6 +22,8 @@ import { tracksSubscriptionQuota } from "../../lib/accountQuota";
 import { providerAccess } from "../../lib/providerAccess";
 import { providerAccountTarget, type OpenAIConnectionMode } from "../../lib/providerConnection";
 
+import { modelsExposedByAccount } from "../../lib/modelCatalog";
+import { AccountModelsSection } from "../AccountModelsSection";
 import { ProviderPicker, ProviderMark, SETUP_PROVIDERS, type SetupProvider, type CloudProvider } from "../ProviderPicker";
 import { ProviderModelPicker, type ProviderModelOption, type ProviderModelsLive } from "../ProviderModelPicker";
 import { Metric } from "../Metric";
@@ -33,6 +35,8 @@ const CODEX_QUOTA_RESET_FORECAST_URL = "https://www.willcodexquotareset.com/";
 type Props = {
   traceStats: TraceStats;
   accounts: Account[];
+  /** Exposed catalog of the workspace, used to list what each account serves. */
+  models?: ExposedModel[];
   multivibeCloud: MultivibeCloudProvider;
   usageCacheTtlMs: number;
   settings: StoreSettings;
@@ -58,6 +62,8 @@ type Props = {
   pollDeviceOAuth: (flowId: string) => Promise<any>;
   completeOAuth: (flowId: string, input: string) => Promise<any>;
   oauthRedirectUri: string;
+  /** Forces a fresh upstream discovery round before the catalog is re-read. */
+  onRefreshModels?: () => Promise<void>;
   providerSetupRequest?: number;
   modelSetupTarget?: ModelRoute;
   onModelSetupConsumed?: () => void;
@@ -233,6 +239,7 @@ export function AccountsTab(props: Props) {
   const {
     traceStats,
     accounts,
+    models = [],
     multivibeCloud,
     usageCacheTtlMs,
     settings,
@@ -257,7 +264,15 @@ export function AccountsTab(props: Props) {
     onboardingProviderSetup = false,
     onProviderSetupClosed,
     onSkipOnboarding,
+    onRefreshModels,
   } = props;
+  // The routing catalog already tags every model with the account it was
+  // discovered from, so these per-provider lists need no extra request.
+  const modelsByAccount = React.useMemo(() => {
+    const grouped = new Map<string, ExposedModel[]>();
+    for (const account of accounts) grouped.set(account.id, modelsExposedByAccount(models, account));
+    return grouped;
+  }, [accounts, models]);
   const [resetCredits, setResetCredits] = useState<Record<string, number | undefined>>({});
   const [resetCreditRefresh, setResetCreditRefresh] = useState(0);
   const resetCreditAccounts = JSON.stringify(
@@ -1662,6 +1677,13 @@ export function AccountsTab(props: Props) {
                     </>
                   )}
                 </div>}
+                {(!isCloud || (modelsByAccount.get(a.id)?.length ?? 0) > 0) && (
+                  <AccountModelsSection
+                    accountLabel={runtimeIdentity.label}
+                    models={modelsByAccount.get(a.id) ?? []}
+                    onRefresh={onRefreshModels}
+                  />
+                )}
                 {modelBlocks.length > 0 && (
                   <div className="state-stack provider-card-blocks">
                     {modelBlocks.map(([model, block]) => (

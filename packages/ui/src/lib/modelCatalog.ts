@@ -85,6 +85,30 @@ export function modelLogo(id: string, ...authorHints: Array<string | undefined>)
   return familyOwner ? MODEL_OWNER_ICONS[familyOwner] : undefined;
 }
 
+// The router tags every discovered model with the accounts it was listed from.
+// Provider identity is the fallback for catalog entries published without
+// discovery metadata: proxy models, aliases and local runtimes.
+function modelMatchesAccount(model: ExposedModel, account: Account) {
+  if (model.metadata?.account_ids?.length) return model.metadata.account_ids.includes(account.id);
+  const candidates = model.metadata?.provider_candidates ?? (model.metadata?.provider ? [model.metadata.provider] : []);
+  return candidates.includes(account.provider ?? 'openai')
+    && (account.provider !== 'ai-sdk' || account.sdkProvider === model.metadata?.sdk_provider)
+    && (account.provider !== 'openai-compatible' || account.localRuntime?.confirmedModelIds.includes(model.metadata?.upstream_model_id ?? model.id));
+}
+
+/** The models one connected account exposes, trimmed to the allow-list it declares.
+ * An empty selection means the whole provider listing, matching the account editor. */
+export function modelsExposedByAccount(models: ExposedModel[], account: Account): ExposedModel[] {
+  const selection = account.sdkModels?.length ? new Set(account.sdkModels) : undefined;
+  const prefix = account.sdkProvider ? `${account.sdkProvider}/` : '';
+  const listed = (model: ExposedModel) => {
+    if (!selection) return true;
+    const id = prefix && model.id.startsWith(prefix) ? model.id.slice(prefix.length) : model.id;
+    return selection.has(model.id) || selection.has(id);
+  };
+  return models.filter(model => modelMatchesAccount(model, account) && listed(model));
+}
+
 export function aggregateModels(models: ExposedModel[], accounts: Account[], cloud: CloudModel[], providers: CloudProvider[], now = Date.now()): CatalogEntry[] {
   const entries = new Map<string, CatalogEntry>();
   const aliases = new Map<string, string>();
@@ -116,10 +140,7 @@ export function aggregateModels(models: ExposedModel[], accounts: Account[], clo
     const candidates = model.metadata?.provider_candidates ?? (model.metadata?.provider ? [model.metadata.provider] : []);
     const authorHints = [model.metadata?.model_author, model.owned_by, ...candidates];
     const label = model.name?.trim() || model.id;
-    const matching = accounts.filter(account => model.metadata?.account_ids?.length
-      ? model.metadata.account_ids.includes(account.id)
-      : candidates.includes(account.provider ?? 'openai') && (account.provider !== 'ai-sdk' || account.sdkProvider === model.metadata?.sdk_provider)
-        && (account.provider !== 'openai-compatible' || account.localRuntime?.confirmedModelIds.includes(model.metadata?.upstream_model_id ?? model.id)));
+    const matching = accounts.filter(account => modelMatchesAccount(model, account));
     for (const account of matching) {
       const source = (account.multivibeCloud || account.id === 'multivibe-cloud') ? 'cloud' : account.localRuntime || account.location === 'local' ? 'local' : 'provider';
       add(model.id, label, { source, label: source === 'cloud' ? 'MultiVibe Cloud' : account.localRuntime?.adapter ?? account.sdkProvider ?? account.provider ?? 'OpenAI',
