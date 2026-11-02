@@ -543,6 +543,12 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
     setBaseLoaded(true);
   };
 
+  // Re-ask every active upstream for its model list, then re-read the catalog.
+  const refreshProviderModels = async () => {
+    await fetch("/v1/models?refresh=true").then((response) => response.json())
+      .then((result) => setModels((result.data ?? []) as ExposedModel[]));
+  };
+
   const mergeDiscoveredAccounts = (discovered: Account[]) => {
     if (!discovered.length) return;
     setAccounts((current) => {
@@ -1531,6 +1537,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
           <AccountsTab
             traceStats={filteredTraceStats}
             accounts={accounts}
+            models={models}
             multivibeCloud={multivibeCloud}
             usageCacheTtlMs={usageCacheTtlMs}
             settings={settings}
@@ -1553,6 +1560,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
             pollDeviceOAuth={pollDeviceOAuth}
             completeOAuth={completeOAuth}
             oauthRedirectUri={oauthRedirectUri}
+            onRefreshModels={refreshProviderModels}
             providerSetupRequest={providerSetupRequest}
             modelSetupTarget={modelSetupTarget}
             onModelSetupConsumed={() => { setModelSetupTarget(undefined); setProviderSetupRequest(0); }}

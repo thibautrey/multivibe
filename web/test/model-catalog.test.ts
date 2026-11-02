@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { aggregateModels, mergeCloudModelPage, modelLogo } from '../../packages/ui/src/lib/modelCatalog.js';
+import { aggregateModels, mergeCloudModelPage, modelLogo, modelsExposedByAccount } from '../../packages/ui/src/lib/modelCatalog.js';
 import type { Account } from '../../packages/ui/src/types.js';
 
 const accounts: Account[] = [{ id: 'disabled', provider: 'mistral', enabled: false }, { id: 'working', provider: 'mistral', enabled: true }];
@@ -159,4 +159,26 @@ test('catalog search combines terms, sorts deterministically, and handles no mat
     [{ id: 'cloud-connection', enabled: true, multivibeCloud: true }], [], []);
   assert.equal(model.routes[0].source, 'cloud');
   assert.equal(model.routes[0].ready, true);
+});
+
+test('per-account listings follow discovery tags and skip accounts without them', () => {
+  const models = [
+    { id: 'gpt-5-codex', metadata: { provider: 'openai', account_ids: ['sub'] } },
+    { id: 'glm-4.6', metadata: { provider: 'zai', account_ids: ['zai-1'] } },
+    { id: 'whisper-1', metadata: { provider: 'openai' } },
+  ];
+  const sub: Account = { id: 'sub', provider: 'openai', enabled: true };
+  const zai: Account = { id: 'zai-1', provider: 'zai', enabled: true };
+  assert.deepEqual(modelsExposedByAccount(models, sub).map((model) => model.id), ['gpt-5-codex', 'whisper-1']);
+  assert.deepEqual(modelsExposedByAccount(models, zai).map((model) => model.id), ['glm-4.6']);
+});
+
+test('an account model selection trims its listing to the selected ids', () => {
+  const models = [
+    { id: 'anthropic/claude-opus', name: 'Claude Opus', metadata: { provider: 'ai-sdk', sdk_provider: 'anthropic', account_ids: ['anthropic-1'] } },
+    { id: 'anthropic/claude-haiku', metadata: { provider: 'ai-sdk', sdk_provider: 'anthropic', account_ids: ['anthropic-1'] } },
+  ];
+  const selected: Account = { id: 'anthropic-1', provider: 'ai-sdk', sdkProvider: 'anthropic', sdkModels: ['claude-opus'], enabled: true };
+  assert.deepEqual(modelsExposedByAccount(models, selected).map((model) => model.id), ['anthropic/claude-opus']);
+  assert.deepEqual(modelsExposedByAccount(models, { ...selected, sdkModels: ['claude-missing'] }), []);
 });
