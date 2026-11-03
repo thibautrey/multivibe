@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { responsesToChatCompletionsPayload } from "./payloads.js";
+import { foldSystemMessages, responsesToChatCompletionsPayload } from "./payloads.js";
 
 test("keeps tool output images as image parts instead of base64 tool text", () => {
   const base64 = "A".repeat(4096);
@@ -149,4 +149,66 @@ test("repairs malformed tool arguments before forwarding", () => {
   assert.doesNotThrow(() =>
     JSON.parse(objectArguments.messages[0].tool_calls[0].function.arguments),
   );
+});
+
+test("folds codex instructions and developer blocks into one leading system message", () => {
+  const converted = responsesToChatCompletionsPayload({
+    model: "qwen3.8-flash-next",
+    stream: false,
+    instructions: "You are Codex.",
+    input: [
+      { role: "developer", content: [{ type: "input_text", text: "<permissions>Rules</permissions>" }] },
+      { role: "user", content: "ping" },
+      { role: "assistant", content: "pong" },
+      { role: "developer", content: "Memory summary." },
+      { role: "user", content: "again" },
+    ],
+  });
+
+  assert.deepEqual(converted.messages, [
+    {
+      role: "system",
+      content: "You are Codex.\n\n<permissions>Rules</permissions>\n\nMemory summary.",
+    },
+    { role: "user", content: "ping" },
+    { role: "assistant", content: "pong" },
+    { role: "user", content: "again" },
+  ]);
+
+  // One leading system message is already what a strict template accepts.
+  const untouched = responsesToChatCompletionsPayload({
+    model: "qwen3.8-flash-next",
+    stream: false,
+    instructions: "You are Codex.",
+    input: [{ role: "user", content: "ping" }],
+  });
+  assert.deepEqual(untouched.messages, [
+    { role: "system", content: "You are Codex." },
+    { role: "user", content: "ping" },
+  ]);
+});
+
+test("keeps media parts while folding a system message that carries them", () => {
+  const messages: any[] = [
+    { role: "user", content: "ping" },
+    {
+      role: "system",
+      content: [
+        { type: "image_url", image_url: { url: "https://example.test/rules.png" } },
+        { type: "text", text: "Read the chart." },
+      ],
+    },
+    { role: "developer", content: "Trailing guidance." },
+  ];
+
+  foldSystemMessages(messages);
+
+  assert.equal(messages.length, 2);
+  assert.equal(messages[0].role, "system");
+  assert.deepEqual(messages[0].content, [
+    { type: "image_url", image_url: { url: "https://example.test/rules.png" } },
+    { type: "text", text: "Read the chart." },
+    { type: "text", text: "Trailing guidance." },
+  ]);
+  assert.deepEqual(messages[1], { role: "user", content: "ping" });
 });
