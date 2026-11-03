@@ -12898,7 +12898,15 @@ async fn handle_websocket(
 ) {
     let mut conversation = WsConversation::default();
     let mut last_response: Option<Value> = None;
-    while let Some(Ok(message)) = socket.next().await {
+    let mut queued_message = None;
+    loop {
+        let message = match queued_message.take() {
+            Some(message) => message,
+            None => {
+                let Some(Ok(message)) = socket.next().await else { break; };
+                message
+            }
+        };
         match message {
             Message::Text(text) => {
                 let Ok(mut frame) = serde_json::from_str::<Value>(&text) else {
@@ -12970,6 +12978,13 @@ async fn handle_websocket(
                                                 });
                                                 break;
                                             }
+                                        } else if control["type"] == "response.create" && last_response.as_ref().is_some_and(|response| {
+                                            matches!(response["status"].as_str(), Some("completed" | "incomplete" | "failed"))
+                                        }) {
+                                            // The client can continue immediately after the
+                                            // terminal event, before the HTTP stream reaches EOF.
+                                            queued_message = Some(Message::Text(text));
+                                            break;
                                         } else if !ws_send_json(&mut socket, json!({"type":"error","status":400,"error":{"type":"invalid_request_error","code":"response_in_progress","message":"a response is already in progress"}})).await { return; }
                                     }
                                     Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
