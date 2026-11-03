@@ -2899,20 +2899,32 @@ fn responses_to_anthropic(response: &Value, requested_model: &str) -> Value {
     })
 }
 
+/// Responses item IDs and tool call IDs are separate identities. Chat providers
+/// may use arbitrary call IDs; keep those for results while emitting portable,
+/// stable item IDs that also survive provider switches and history replay.
+fn normalize_response_tool_item_id(item: &mut Value) {
+    let prefix = match item["type"].as_str() {
+        Some("function_call") => "fc_",
+        Some("custom_tool_call") => "ctc_",
+        _ => return,
+    };
+    let Some(id) = item.get("id").and_then(Value::as_str) else {
+        return;
+    };
+    if id.starts_with(prefix) {
+        return;
+    }
+    let digest = Sha256::digest(id.as_bytes());
+    item["id"] = json!(format!("{prefix}{}", hex_bytes(&digest[..16])));
+}
+
 fn sanitize_response(value: &Value) -> Value {
     let mut output = object_value(value);
     output.remove("reasoning");
     if let Some(items) = output.get_mut("output").and_then(Value::as_array_mut) {
         items.retain(|item| item.get("type").and_then(Value::as_str) != Some("reasoning"));
         for item in items {
-            if item.get("type").and_then(Value::as_str) == Some("function_call")
-                && item
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .is_some_and(|name| name.to_ascii_lowercase().starts_with("functions."))
-            {
-                *item = json!({"type": "message", "role": "assistant", "content": []});
-            }
+            normalize_response_tool_item_id(item);
         }
     }
     Value::Object(output)
@@ -2921,21 +2933,6 @@ fn sanitize_response(value: &Value) -> Value {
 fn sanitize_chat(value: &Value) -> Value {
     let mut output = object_value(value);
     output.remove("reasoning");
-    if let Some(choices) = output.get_mut("choices").and_then(Value::as_array_mut) {
-        for choice in choices {
-            if let Some(message) = choice.get_mut("message").and_then(Value::as_object_mut) {
-                if let Some(calls) = message.get_mut("tool_calls").and_then(Value::as_array_mut) {
-                    calls.retain(|call| {
-                        !call
-                            .get("function")
-                            .and_then(|function| function.get("name"))
-                            .and_then(Value::as_str)
-                            .is_some_and(|name| name.to_ascii_lowercase().starts_with("functions."))
-                    });
-                }
-            }
-        }
-    }
     Value::Object(output)
 }
 
@@ -2990,6 +2987,9 @@ fn chat_to_response(value: &Value, fallback_model: &str) -> Value {
     if output.is_empty() {
         output.push(json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": ""}]}));
     }
+    for item in &mut output {
+        normalize_response_tool_item_id(item);
+    }
     let usage = value.get("usage").cloned().unwrap_or_else(|| json!({}));
     json!({
         "id": new_id("resp"),
@@ -3029,12 +3029,10 @@ fn response_to_chat(value: &Value, model: &str) -> Value {
                 Some("function_call") => {
                     let name =
                         value_string(item.get("name")).unwrap_or_else(|| "unknown".to_owned());
-                    if !name.to_ascii_lowercase().starts_with("functions.") {
-                        let id = value_string(item.get("call_id"))
-                            .or_else(|| value_string(item.get("id")))
-                            .unwrap_or_else(|| new_id("call"));
-                        tool_calls.push(json!({"id": id, "type": "function", "function": {"name": name, "arguments": item.get("arguments").map(|value| value.as_str().map(str::to_owned).unwrap_or_else(|| json_string(value))).unwrap_or_else(|| "{}".to_owned())}}));
-                    }
+                    let id = value_string(item.get("call_id"))
+                        .or_else(|| value_string(item.get("id")))
+                        .unwrap_or_else(|| new_id("call"));
+                    tool_calls.push(json!({"id": id, "type": "function", "function": {"name": name, "arguments": item.get("arguments").map(|value| value.as_str().map(str::to_owned).unwrap_or_else(|| json_string(value))).unwrap_or_else(|| "{}".to_owned())}}));
                 }
                 _ => {}
             }
@@ -5777,6 +5775,13 @@ fn prepared_payload(
             }
         }
     }
+    if !sends_chat {
+        if let Some(items) = payload.get_mut("input").and_then(Value::as_array_mut) {
+            for item in items {
+                normalize_response_tool_item_id(item);
+            }
+        }
+    }
     filter_unsupported_tools(&mut payload, &normalize_provider(account));
     if sends_chat
         && (normalize_provider(account) == "openai-compatible"
@@ -7767,12 +7772,13 @@ impl SseStreamTransformer {
                         .unwrap_or(self.chat_response.tool_calls.len() as u64)
                         as usize;
                     while self.chat_response.tool_calls.len() <= index {
-                        self.chat_response.tool_calls.push(json!({"type": "function_call", "id": new_id("call"), "call_id": new_id("call"), "name": "unknown", "arguments": ""}));
+                        self.chat_response.tool_calls.push(json!({"type": "function_call", "id": new_id("fc"), "call_id": new_id("call"), "name": "unknown", "arguments": ""}));
                     }
                     let state = &mut self.chat_response.tool_calls[index];
                     if let Some(id) = value_string(call.get("id")) {
                         state["id"] = Value::String(id.clone());
                         state["call_id"] = Value::String(id);
+                        normalize_response_tool_item_id(state);
                     }
                     if let Some(function) = call.get("function") {
                         if let Some(name) = value_string(function.get("name")) {
@@ -12761,10 +12767,22 @@ fn capture_ws_event(conversation: &mut WsConversation, event: &Value) {
                 .and_then(|response| response.get("output"))
                 .and_then(Value::as_array)
             {
-                // The terminal payload is the authoritative output list; it
-                // replaces the incrementally collected items rather than
-                // adding to them.
-                conversation.pending = items.clone();
+                // Prefer the terminal representation, but never erase a tool
+                // the client already received through output_item.done. Some
+                // providers omit it from the terminal output list; its result
+                // still needs the corresponding call on the next replay.
+                let mut completed = items.clone();
+                for item in &conversation.pending {
+                    if matches!(item["type"].as_str(), Some("function_call" | "custom_tool_call"))
+                        && !completed.iter().any(|other| {
+                            item.get("call_id").is_some_and(|id| !id.is_null() && other.get("call_id") == Some(id))
+                                || item.get("id").is_some_and(|id| !id.is_null() && other.get("id") == Some(id))
+                        })
+                    {
+                        completed.push(item.clone());
+                    }
+                }
+                conversation.pending = completed;
             }
         }
         _ => {}
@@ -15111,6 +15129,82 @@ mod tests {
     }
 
     #[test]
+    fn tool_history_bridge_uses_portable_ids_and_preserves_dotted_names() {
+        let id = "chatcmpl-tool-aaa6e59f130ced44";
+        let chat = json!({"object":"chat.completion", "choices":[{"message":{
+            "tool_calls":[{"id":id,"function":{"name":"functions.update_goal","arguments":"{}"}}]
+        }}]});
+        let buffered = chat_to_response(&chat, "qwen");
+        let call = &buffered["output"][0];
+        assert_eq!(call["call_id"], id);
+        assert!(call["id"].as_str().unwrap().starts_with("fc_"));
+        assert_ne!(call["id"], call["call_id"]);
+        assert_eq!(call["id"], chat_to_response(&chat, "qwen")["output"][0]["id"]);
+        let mut converter = SseStreamTransformer::new(StreamTransform::ChatToResponse, "qwen");
+        let mut wire = converter.transform_chat_chunk(&json!({"object":"chat.completion.chunk",
+            "choices":[{"delta":{"tool_calls":[{"index":0,"id":id,
+                "function":{"name":"functions.update_goal","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}));
+        wire.push_str(&converter.finish());
+        let events = parse_sse_events(&wire);
+        let streamed = response_from_sse(&wire, "qwen");
+        assert_eq!(streamed["output"][0], *call);
+        for (_, event) in &events {
+            if event["item"]["type"] == "function_call" {
+                assert_eq!(event["item"]["id"], call["id"]);
+                assert_eq!(event["item"]["call_id"], id);
+            }
+        }
+        let round_trip = response_to_chat(&buffered, "qwen");
+        assert_eq!(round_trip["choices"][0]["message"]["tool_calls"][0]["id"], id);
+        assert_eq!(round_trip["choices"][0]["message"]["tool_calls"][0]["function"]["name"], "functions.update_goal");
+    }
+
+    #[test]
+    fn tool_history_native_requests_repair_legacy_ids_without_changing_call_ids() {
+        let provider = account("openai-history");
+        let route = RouteCandidate { requested_model: "qwen".into(), model: "gpt-vision".into(),
+            provider: Some("openai".into()), account_ids: vec![] };
+        let body = json!({"model":"qwen", "input":[
+            {"type":"function_call","id":"chatcmpl-tool-old","call_id":"chatcmpl-tool-old","name":"js","arguments":"{}"},
+            {"type":"function_call_output","call_id":"chatcmpl-tool-old","output":"ok"},
+            {"type":"custom_tool_call","id":"chatcmpl-tool-custom","call_id":"custom-old","name":"exec","input":"42"},
+            {"type":"custom_tool_call_output","call_id":"custom-old","output":"42"},
+            {"type":"function_call","id":"fc_existing","call_id":"call_existing","name":"check","arguments":"{}"},
+            {"type":"message","id":"msg_existing","role":"user","content":"next"}
+        ]});
+        let prepared = prepared_payload(&body, "/v1/responses", &provider, &route, None, true, false, &EdgeConfig::default());
+        assert!(prepared["input"][0]["id"].as_str().unwrap().starts_with("fc_"));
+        assert!(prepared["input"][2]["id"].as_str().unwrap().starts_with("ctc_"));
+        for i in [0,1,2,3] { assert_eq!(prepared["input"][i]["call_id"], body["input"][i]["call_id"]); }
+        for i in [1,3,4,5] { assert_eq!(prepared["input"][i], body["input"][i]); }
+        assert_eq!(prepared, prepared_payload(&prepared, "/v1/responses", &provider, &route, None, true, false, &EdgeConfig::default()));
+    }
+
+    #[test]
+    fn tool_history_websocket_keeps_calls_when_terminal_output_omits_them() {
+        for custom in [false, true] {
+            for omitted in [false, true] {
+                let mut conversation = WsConversation::default();
+                let mut first = json!({"type":"response.create", "input":[{"role":"user","content":"hello"}]});
+                fold_ws_frame(&mut conversation, &mut first);
+                let call = if custom {
+                    json!({"type":"custom_tool_call","id":"ctc_one","call_id":"call_one","name":"exec","namespace":"functions","input":"42"})
+                } else {
+                    json!({"type":"function_call","id":"fc_one","call_id":"call_one","name":"functions.update_goal","arguments":"{}"})
+                };
+                capture_ws_event(&mut conversation, &json!({"type":"response.output_item.done","item":call}));
+                let terminal = sanitize_response(&json!({"output":if omitted { vec![] } else { vec![call.clone()] }}));
+                capture_ws_event(&mut conversation, &json!({"type":"response.completed","response":terminal}));
+                commit_ws_response(&mut conversation);
+                let result = json!({"type":if custom {"custom_tool_call_output"} else {"function_call_output"},"call_id":"call_one","output":"ok"});
+                let mut next = json!({"type":"response.create","previous_response_id":"resp_one","input":[result]});
+                fold_ws_frame(&mut conversation, &mut next);
+                assert_eq!(next["input"], json!([{"role":"user","content":"hello"},call,result]));
+            }
+        }
+    }
+
+    #[test]
     fn responses_chat_bridge_round_trips_reasoning_with_parallel_tools() {
         let chat = json!({
             "id": "chat-1",
@@ -15558,6 +15652,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         assert_eq!(result["output"][0]["type"], "custom_tool_call");
         assert_eq!(result["output"][0]["input"], "print( 42)");
         assert_eq!(result["output"][0]["call_id"], "call_exec");
+        assert!(result["output"][0]["id"].as_str().unwrap().starts_with("ctc_"));
     }
 
     #[test]
@@ -18689,6 +18784,83 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
             let _ = fs::remove_file(store_path).await;
             let _ = fs::remove_file(jobs_path).await;
         }
+    }
+
+    #[tokio::test]
+    async fn tool_history_websocket_image_switches_from_qwen_to_native_responses() {
+        let seen = Arc::new(StdMutex::new(Vec::new()));
+        let capture = seen.clone();
+        let upstream = Router::new()
+            .route("/v1/models", get(|| async { Json(json!({"data":[{"id":"qwen3.8-flash-next"}]})) }))
+            .route("/backend-api/codex/models", get(|| async { Json(json!({"models":[{"slug":"gpt-5.6-sol"}]})) }))
+            .route("/v1/chat/completions", post(|| async {
+                let wire = format!("data: {}\n\ndata: [DONE]\n\n", json!({"object":"chat.completion.chunk",
+                    "choices":[{"delta":{"tool_calls":[{"index":0,"id":"chatcmpl-tool-qwen",
+                        "function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}));
+                Response::builder().header(header::CONTENT_TYPE,"text/event-stream").body(Body::from(wire)).unwrap()
+            }))
+            .route("/backend-api/codex/responses", post(move |Json(body):Json<Value>| {
+                let capture=capture.clone();
+                async move {
+                    let input=body["input"].as_array().unwrap();
+                    // Behave like a strict Responses upstream: reject foreign
+                    // item IDs and results whose generating call was lost.
+                    for item in input {
+                        if item["type"]=="function_call" {
+                            assert!(item["id"].as_str().unwrap().starts_with("fc_"), "{item}");
+                        }
+                        if item["type"]=="function_call_output" {
+                            assert!(input.iter().any(|call|call["type"]=="function_call" && call["call_id"]==item["call_id"]), "orphan result: {item}");
+                        }
+                    }
+                    let final_turn=input.iter().any(|item|item["call_id"]=="call_gpt" && item["type"]=="function_call_output");
+                    capture.lock().unwrap().push(body);
+                    let mut wire=sse_frame("response.created", &json!({"type":"response.created","response":{"id":"resp_gpt","model":"gpt-5.6-sol","status":"in_progress"}}));
+                    if !final_turn {
+                        wire.push_str(&sse_frame("response.output_item.done",&json!({"type":"response.output_item.done","item":{
+                            "type":"function_call","id":"fc_gpt","call_id":"call_gpt","name":"functions.update_goal","arguments":"{}"}})));
+                    }
+                    // Deliberately omit item.done from the terminal list.
+                    wire.push_str(&sse_frame("response.completed",&json!({"type":"response.completed","response":{
+                        "id":"resp_gpt","model":"gpt-5.6-sol","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}})));
+                    Response::builder().header(header::CONTENT_TYPE,"text/event-stream").body(Body::from(wire)).unwrap()
+                }
+            }));
+        let (upstream_url, upstream_task)=start_server(upstream).await;
+        let mut qwen=account("qwen-image-switch");
+        qwen.provider=Some("openai-compatible".into());qwen.base_url=Some(upstream_url.clone());qwen.upstream_mode=Some("chat/completions".into());
+        let mut store=store_with_accounts(vec![qwen,account("gpt-image-switch")]);
+        store.settings.image_request_model_override=Some("gpt-5.6-sol".into());
+        let store_path=temporary_path("tool-history-image-store");let jobs_path=temporary_path("tool-history-image-jobs");
+        fs::write(&store_path,serde_json::to_vec(&store).unwrap()).await.unwrap();
+        let mut config=EdgeConfig::default();config.store_path=store_path.clone();config.jobs_path=jobs_path.clone();config.legacy_jobs_db_path=None;
+        config.chatgpt_base_url=upstream_url;config.configured_api_keys=vec![("test".into(),"test-key".into())];
+        let (edge_url,edge_task)=start_server(build_router(EdgeState::new(config).await.unwrap())).await;
+        let mut request=format!("{}/v1/responses",edge_url.replace("http://","ws://")).into_client_request().unwrap();
+        request.headers_mut().insert(header::AUTHORIZATION,HeaderValue::from_static("Bearer test-key"));
+        let (mut socket,_)=connect_async(request).await.unwrap();
+        let mut frame=json!({"type":"response.create","model":"qwen3.8-flash-next","input":[{"role":"user","content":"look up"}],
+            "tools":[{"type":"function","name":"lookup","parameters":{"type":"object","properties":{}}}]});
+        for turn in 0..3 {
+            socket.send(tokio_tungstenite::tungstenite::Message::Text(frame.to_string().into())).await.unwrap();
+            let response=timeout(Duration::from_secs(5),async {
+                loop {
+                    let message=socket.next().await.unwrap().unwrap();
+                    let event:Value=serde_json::from_str(message.to_text().unwrap()).unwrap();
+                    assert_ne!(event["type"],"error","{event}");assert_ne!(event["type"],"response.failed","{event}");
+                    if event["type"]=="response.completed" {break event["response"].clone();}
+                }
+            }).await.unwrap();
+            let delta=if turn==0 {json!([{"type":"function_call_output","call_id":"chatcmpl-tool-qwen","output":[
+                {"type":"input_image","image_url":"data:image/png;base64,cHJvYmU="}]}])}
+                else {json!([{"type":"function_call_output","call_id":"call_gpt","output":"ok"}])};
+            frame=json!({"type":"response.create","model":"qwen3.8-flash-next","previous_response_id":response["id"],"input":delta});
+        }
+        let requests=seen.lock().unwrap().clone();assert_eq!(requests.len(),2);
+        assert_eq!(requests[0]["model"],"gpt-5.6-sol");
+        assert!(requests[1]["input"].as_array().unwrap().iter().any(|item|item["call_id"]=="call_gpt" && item["name"]=="functions.update_goal"));
+        socket.close(None).await.unwrap();edge_task.abort();upstream_task.abort();
+        let _=fs::remove_file(store_path).await;let _=fs::remove_file(jobs_path).await;
     }
 
     #[tokio::test]

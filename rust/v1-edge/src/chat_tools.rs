@@ -236,6 +236,7 @@ impl ChatTools {
         if let Some(namespace) = namespace {
             item["namespace"] = json!(namespace);
         }
+        super::normalize_response_tool_item_id(item);
         Ok(())
     }
 
