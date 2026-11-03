@@ -18722,7 +18722,8 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                             yield Ok::<_, Infallible>(Bytes::from(sse_frame("response.created", &json!({"type":"response.created","response":{"id":"resp-interrupt","model":"gpt-interrupt","status":"in_progress"}}))));
                             if first {
                                 yield Ok(Bytes::from(sse_frame("response.output_item.done", &json!({"type":"response.output_item.done","item":{"type":"function_call","id":"fc_done","call_id":"call_done","name":"shell","arguments":"{}"}}))));
-                                yield Ok(Bytes::from(sse_frame("response.output_text.delta", &json!({"type":"response.output_text.delta","delta":"unfinished"}))));
+                                yield Ok(Bytes::from(sse_frame("response.output_item.added", &json!({"type":"response.output_item.added","item":{"type":"function_call","id":"fc_partial","call_id":"call_partial","name":"shell","arguments":"{"}}))));
+                        yield Ok(Bytes::from(sse_frame("response.output_text.delta", &json!({"type":"response.output_text.delta","delta":"unfinished"}))));
                                 // A real stalled upstream: interruption must not wait for EOF.
                                 std::future::pending::<()>().await;
                             } else {
@@ -18780,6 +18781,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         send!(json!({"type":"response.create","model":"gpt-interrupt","input":"hello"}));
         assert_eq!(receive!()["type"], "response.created");
         assert_eq!(receive!()["type"], "response.output_item.done");
+        assert_eq!(receive!()["type"], "response.output_item.added");
         assert_eq!(receive!()["type"], "response.output_text.delta");
         // A stale interrupt must not cancel the active request or poison the socket.
         send!(
