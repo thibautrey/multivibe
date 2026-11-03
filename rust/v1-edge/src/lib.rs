@@ -12852,16 +12852,12 @@ async fn handle_websocket(
                         commit_ws_response(&mut conversation);
                     }
                     Ok(ProxyResult::Streaming(reply)) => {
-                        let status = reply.status.as_u16();
-                        let mut trace = reply.trace;
-                        let mut upstream = reply.upstream.bytes_stream();
-                        let _capacity_lease = reply.capacity_lease;
-                        let _activity_lease = reply.activity_lease;
+                        // Use the HTTP streaming pipeline before framing WebSocket
+                        // events. It owns protocol conversion, tool restoration,
+                        // tracing and admission leases for both transports.
+                        let mut upstream = streaming_response(reply).into_body().into_data_stream();
                         let mut buffer = String::new();
                         while let Some(Ok(chunk)) = upstream.next().await {
-                            if let Some(trace) = trace.as_mut() {
-                                trace.observe(&chunk);
-                            }
                             buffer.push_str(&String::from_utf8_lossy(&chunk));
                             while let Some(index) = buffer.find("\n\n") {
                                 let frame = buffer[..index].to_owned();
@@ -12877,9 +12873,6 @@ async fn handle_websocket(
                                 capture_ws_event(&mut conversation, &event);
                                 if event.as_str() != Some("[DONE]") && !ws_send_json(&mut socket, event).await { return; }
                             }
-                        }
-                        if let Some(trace) = trace.as_mut() {
-                            trace.finish(status, None, Some(false)).await;
                         }
                         commit_ws_response(&mut conversation);
                     }
@@ -18574,6 +18567,125 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         assert!(next.get("previous_response_id").is_none());
         assert_eq!(next["instructions"], "BASE");
         assert_eq!(next["input"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn chat_websocket_stream_converts_tools_usage_and_continuations() {
+        // Exercise both plain functions and Codex's namespaced custom tools.
+        for custom in [false, true] {
+            let bodies = Arc::new(StdMutex::new(Vec::new()));
+            let capture = bodies.clone();
+            let upstream = Router::new()
+                .route("/v1/models", get(|| async {
+                    Json(json!({"data": [{"id": "qwen3.8-flash-next"}]}))
+                }))
+                .route("/v1/chat/completions", post(move |Json(body): Json<Value>| {
+                    let capture = capture.clone();
+                    async move {
+                        capture.lock().unwrap().push(body.clone());
+                        assert_eq!(body["stream"], true);
+                        let returned = body["messages"].as_array().unwrap().iter()
+                            .any(|message| message["role"] == "tool");
+                        let alias = body["tools"][0]["function"]["name"].as_str().unwrap();
+                        let mut events = Vec::new();
+                        if returned {
+                            assert!(body["messages"].as_array().unwrap().iter().any(|message|
+                                message["tool_call_id"] == "call_qwen" && message["content"] == "42"));
+                            events.push(json!({"delta": {"content": "The result is 42."}, "finish_reason": null}));
+                        } else {
+                            events.push(json!({"delta": {"reasoning_content": "private reasoning"}, "finish_reason": null}));
+                            let arguments = if custom { r#"{"input":"print(42)"}"# } else { "{}" };
+                            // vLLM fragments function arguments across chunks.
+                            events.push(json!({"delta": {"tool_calls": [{"index": 0, "id": "call_qwen",
+                                "function": {"name": alias, "arguments": &arguments[..1]}}]}, "finish_reason": null}));
+                            events.push(json!({"delta": {"tool_calls": [{"index": 0,
+                                "function": {"arguments": &arguments[1..]}}]}, "finish_reason": null}));
+                        }
+                        events.push(json!({"delta": {}, "finish_reason": if returned { "stop" } else { "tool_calls" }}));
+                        let mut wire = String::new();
+                        for choice in events {
+                            wire.push_str(&format!("data: {}\n\n", json!({"object": "chat.completion.chunk", "choices": [choice]})));
+                        }
+                        // Usage arrives after finish_reason, as in the failing trace.
+                        wire.push_str(&format!("data: {}\n\ndata: [DONE]\n\n", json!({"object": "chat.completion.chunk", "choices": [],
+                            "usage": {"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15}})));
+                        let chunks = wire.into_bytes().chunks(31).map(|part| Bytes::copy_from_slice(part)).collect::<Vec<_>>();
+                        Response::builder().header(header::CONTENT_TYPE, "text/event-stream")
+                            .body(Body::from_stream(futures_util::stream::iter(chunks.into_iter().map(Ok::<_, Infallible>)))).unwrap()
+                    }
+                }));
+            let (upstream_url, upstream_task) = start_server(upstream).await;
+            let store_path = temporary_path("qwen-ws-store");
+            let jobs_path = temporary_path("qwen-ws-jobs");
+            let mut provider = account("qwen-ws");
+            provider.provider = Some("openai-compatible".to_owned());
+            provider.base_url = Some(upstream_url);
+            provider.upstream_mode = Some("chat/completions".to_owned());
+            fs::write(&store_path, serde_json::to_vec(&store_with_accounts(vec![provider])).unwrap()).await.unwrap();
+            let mut config = EdgeConfig::default();
+            config.store_path = store_path.clone();
+            config.jobs_path = jobs_path.clone();
+            config.legacy_jobs_db_path = None;
+            config.configured_api_keys = vec![("test".to_owned(), "test-key".to_owned())];
+            let (edge_url, edge_task) = start_server(build_router(EdgeState::new(config).await.unwrap())).await;
+            let mut request = format!("{}/v1/responses", edge_url.replace("http://", "ws://")).into_client_request().unwrap();
+            request.headers_mut().insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer test-key"));
+            let (mut socket, _) = connect_async(request).await.unwrap();
+            let tool = if custom {
+                json!({"type": "namespace", "name": "functions", "tools": [{"type": "custom", "name": "lookup", "format": {"type": "text"}}]})
+            } else {
+                json!({"type": "function", "name": "lookup", "parameters": {"type": "object", "properties": {}}})
+            };
+            let mut frame = json!({"type": "response.create", "model": "qwen3.8-flash-next", "instructions": "BASE",
+                "input": [{"role": "user", "content": "Look up the result"}], "tools": [tool]});
+            for turn in 0..2 {
+                socket.send(tokio_tungstenite::tungstenite::Message::Text(frame.to_string().into())).await.unwrap();
+                let (response, events) = timeout(Duration::from_secs(5), async {
+                    let mut events = Vec::new();
+                    loop {
+                        let message = socket.next().await.expect("socket open").unwrap();
+                        let event: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+                        assert!(event["type"].as_str().is_some(), "raw Chat Completion escaped: {event}");
+                        assert_ne!(event["type"], "error", "{event}");
+                        assert_ne!(event["type"], "response.failed", "{event}");
+                        let completed = event["type"] == "response.completed";
+                        events.push(event.clone());
+                        if completed { break (event["response"].clone(), events); }
+                    }
+                }).await.expect("Responses stream must complete without a Codex idle timeout");
+                assert_eq!(events[0]["type"], "response.created");
+                assert_eq!(response["usage"]["input_tokens"], 12);
+                assert_eq!(response["usage"]["output_tokens"], 3);
+                assert!(!events.iter().any(|event| event.to_string().contains("private reasoning")));
+                if turn == 0 {
+                    let call = response["output"].as_array().unwrap().iter()
+                        .find(|item| item["call_id"] == "call_qwen").expect("tool call restored");
+                    assert_eq!(call["name"], "lookup");
+                    if custom {
+                        assert_eq!(call["type"], "custom_tool_call");
+                        assert_eq!(call["namespace"], "functions");
+                        assert_eq!(call["input"], "print(42)");
+                    } else {
+                        assert_eq!(call["type"], "function_call");
+                        assert_eq!(call["arguments"], "{}");
+                    }
+                    assert!(events.iter().any(|event| event["type"] == "response.output_item.done" && event["item"] == *call));
+                    frame = json!({"type": "response.create", "model": "qwen3.8-flash-next", "previous_response_id": response["id"],
+                        "input": [{"type": if custom { "custom_tool_call_output" } else { "function_call_output" }, "call_id": "call_qwen", "output": "42"}]});
+                } else {
+                    assert!(events.iter().any(|event| event["type"] == "response.output_text.delta" && event["delta"] == "The result is 42."));
+                }
+            }
+            let requests = bodies.lock().unwrap().clone();
+            assert_eq!(requests.len(), 2);
+            assert!(requests[1]["messages"][0]["content"].as_str().unwrap().contains("BASE"));
+            assert!(requests[1]["messages"].as_array().unwrap().iter().any(|message| message["content"] == "Look up the result"));
+            socket.close(None).await.unwrap();
+            edge_task.abort();
+            upstream_task.abort();
+            let _ = fs::remove_file(store_path).await;
+            let _ = fs::remove_file(jobs_path).await;
+        }
     }
 
     #[tokio::test]
