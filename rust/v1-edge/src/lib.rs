@@ -12953,16 +12953,8 @@ async fn handle_websocket(
                     let mut finished = false;
                     loop {
                         tokio::select! {
-                            // Deliver queued events before retiring a completed producer.
+                            // Prioritize controls; drain queued events before retiring the producer.
                             biased;
-                            event = incoming_events.recv() => {
-                                let Some(event) = event else { break; };
-                                capture_ws_event(&mut conversation, &event);
-                                if let Some(response) = event.get("response") {
-                                    last_response = Some(response.clone());
-                                }
-                                if !ws_send_json(&mut socket, event).await { return; }
-                            }
                             message = socket.next() => {
                                 match message {
                                     Some(Ok(Message::Text(text))) => {
@@ -12973,7 +12965,9 @@ async fn handle_websocket(
                                             let valid = matches && control["mode"] == "discard_partial_items";
                                             if !ws_send_json(&mut socket, ws_interrupt_ack(&control, valid)).await { return; }
                                             if valid {
-                                                interrupted = true;
+                                                interrupted = !last_response.as_ref().is_some_and(|response| {
+                                                    matches!(response["status"].as_str(), Some("completed" | "incomplete" | "failed"))
+                                                });
                                                 break;
                                             }
                                         } else if !ws_send_json(&mut socket, json!({"type":"error","status":400,"error":{"type":"invalid_request_error","code":"response_in_progress","message":"a response is already in progress"}})).await { return; }
@@ -12984,6 +12978,14 @@ async fn handle_websocket(
                                     }
                                     _ => return,
                                 }
+                            }
+                            event = incoming_events.recv() => {
+                                let Some(event) = event else { break; };
+                                capture_ws_event(&mut conversation, &event);
+                                if let Some(response) = event.get("response") {
+                                    last_response = Some(response.clone());
+                                }
+                                if !ws_send_json(&mut socket, event).await { return; }
                             }
                             _ = &mut work, if !finished => { finished = true; }
                         }
@@ -18705,36 +18707,41 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         let bodies = Arc::new(StdMutex::new(Vec::new()));
         let capture = bodies.clone();
         let upstream = Router::new()
-            .route("/backend-api/codex/models", get(|| async {
-                Json(json!({"models":[{"slug":"gpt-interrupt"}]}))
-            }))
-            .route("/backend-api/codex/responses", post(move |Json(body): Json<Value>| {
-                let capture = capture.clone();
-                async move {
-                    let first = {
-                        let mut bodies = capture.lock().unwrap();
-                        bodies.push(body);
-                        bodies.len() == 1
-                    };
-                    let stream = stream! {
-                        yield Ok::<_, Infallible>(Bytes::from(sse_frame("response.created", &json!({"type":"response.created","response":{"id":"resp-interrupt","model":"gpt-interrupt","status":"in_progress"}}))));
-                        if first {
-                            yield Ok(Bytes::from(sse_frame("response.output_item.done", &json!({"type":"response.output_item.done","item":{"type":"function_call","id":"fc_done","call_id":"call_done","name":"shell","arguments":"{}"}}))));
-                            yield Ok(Bytes::from(sse_frame("response.output_text.delta", &json!({"type":"response.output_text.delta","delta":"unfinished"}))));
-                            // A real stalled upstream: interruption must not wait for EOF.
-                            std::future::pending::<()>().await;
-                        } else {
-                            yield Ok(Bytes::from(sse_frame("response.completed", &json!({"type":"response.completed","response":{"id":"resp-interrupt","model":"gpt-interrupt","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}))));
-                        }
-                    };
-                    Response::builder().header(header::CONTENT_TYPE,"text/event-stream")
-                        .body(Body::from_stream(stream)).unwrap()
-                }
-            }));
+                .route("/backend-api/codex/models", get(|| async {
+                    Json(json!({"models":[{"slug":"gpt-interrupt"}]}))
+                }))
+                .route("/backend-api/codex/responses", post(move |Json(body): Json<Value>| {
+                    let capture = capture.clone();
+                    async move {
+                        let first = {
+                            let mut bodies = capture.lock().unwrap();
+                            bodies.push(body);
+                            bodies.len() == 1
+                        };
+                        let stream = stream! {
+                            yield Ok::<_, Infallible>(Bytes::from(sse_frame("response.created", &json!({"type":"response.created","response":{"id":"resp-interrupt","model":"gpt-interrupt","status":"in_progress"}}))));
+                            if first {
+                                yield Ok(Bytes::from(sse_frame("response.output_item.done", &json!({"type":"response.output_item.done","item":{"type":"function_call","id":"fc_done","call_id":"call_done","name":"shell","arguments":"{}"}}))));
+                                yield Ok(Bytes::from(sse_frame("response.output_text.delta", &json!({"type":"response.output_text.delta","delta":"unfinished"}))));
+                                // A real stalled upstream: interruption must not wait for EOF.
+                                std::future::pending::<()>().await;
+                            } else {
+                                yield Ok(Bytes::from(sse_frame("response.completed", &json!({"type":"response.completed","response":{"id":"resp-interrupt","model":"gpt-interrupt","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}))));
+                            }
+                        };
+                        Response::builder().header(header::CONTENT_TYPE,"text/event-stream")
+                            .body(Body::from_stream(stream)).unwrap()
+                    }
+                }));
         let (upstream_url, upstream_task) = start_server(upstream).await;
         let store_path = temporary_path("websocket-interrupt");
         let jobs_path = temporary_path("websocket-interrupt-jobs");
-        fs::write(&store_path, serde_json::to_vec(&store_with_accounts(vec![account("websocket-interrupt")])).unwrap()).await.unwrap();
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(vec![account("websocket-interrupt")])).unwrap(),
+        )
+        .await
+        .unwrap();
         let mut config = EdgeConfig::default();
         config.store_path = store_path.clone();
         config.jobs_path = jobs_path.clone();
@@ -18742,15 +18749,31 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         config.chatgpt_base_url = upstream_url;
         let state = EdgeState::new(config).await.unwrap();
         let (edge_url, edge_task) = start_server(build_router(state)).await;
-        let mut request = format!("{}/v1/responses", edge_url.replace("http://", "ws://")).into_client_request().unwrap();
-        request.headers_mut().insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer websocket-key"));
+        let mut request = format!("{}/v1/responses", edge_url.replace("http://", "ws://"))
+            .into_client_request()
+            .unwrap();
+        request.headers_mut().insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer websocket-key"),
+        );
         let (mut socket, _) = connect_async(request).await.unwrap();
         macro_rules! send {
-            ($value:expr) => { socket.send(tokio_tungstenite::tungstenite::Message::Text($value.to_string().into())).await.unwrap() };
+            ($value:expr) => {
+                socket
+                    .send(tokio_tungstenite::tungstenite::Message::Text(
+                        $value.to_string().into(),
+                    ))
+                    .await
+                    .unwrap()
+            };
         }
         macro_rules! receive {
             () => {{
-                let message = timeout(Duration::from_secs(5), socket.next()).await.expect("WebSocket stalled").unwrap().unwrap();
+                let message = timeout(Duration::from_secs(5), socket.next())
+                    .await
+                    .expect("WebSocket stalled")
+                    .unwrap()
+                    .unwrap();
                 serde_json::from_str::<Value>(&message.into_text().unwrap()).unwrap()
             }};
         }
@@ -18759,9 +18782,13 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         assert_eq!(receive!()["type"], "response.output_item.done");
         assert_eq!(receive!()["type"], "response.output_text.delta");
         // A stale interrupt must not cancel the active request or poison the socket.
-        send!(json!({"type":"response.interrupt","response_id":"wrong","mode":"discard_partial_items"}));
+        send!(
+            json!({"type":"response.interrupt","response_id":"wrong","mode":"discard_partial_items"})
+        );
         assert_eq!(receive!()["type"], "response.interrupt.failed");
-        send!(json!({"type":"response.interrupt","response_id":"resp-interrupt","mode":"discard_partial_items"}));
+        send!(
+            json!({"type":"response.interrupt","response_id":"resp-interrupt","mode":"discard_partial_items"})
+        );
         let ack = receive!();
         assert_eq!(ack["type"], "response.interrupt.accepted");
         assert_eq!(ack["response_id"], "resp-interrupt");
@@ -18770,9 +18797,13 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         assert_eq!(completed["response"]["output"].as_array().unwrap().len(), 1);
         assert_eq!(completed["response"]["output"][0]["call_id"], "call_done");
         // Completion can win the race; acknowledge a late interrupt too.
-        send!(json!({"type":"response.interrupt","response_id":"resp-interrupt","mode":"discard_partial_items"}));
+        send!(
+            json!({"type":"response.interrupt","response_id":"resp-interrupt","mode":"discard_partial_items"})
+        );
         assert_eq!(receive!()["type"], "response.interrupt.accepted");
-        send!(json!({"type":"response.create","model":"gpt-interrupt","previous_response_id":"resp-interrupt","input":[{"type":"function_call_output","call_id":"call_done","output":"done"},{"role":"user","content":"look on unraid"}]}));
+        send!(
+            json!({"type":"response.create","model":"gpt-interrupt","previous_response_id":"resp-interrupt","input":[{"type":"function_call_output","call_id":"call_done","output":"done"},{"role":"user","content":"look on unraid"}]})
+        );
         assert_eq!(receive!()["type"], "response.created");
         assert_eq!(receive!()["type"], "response.completed");
         let requests = bodies.lock().unwrap().clone();
