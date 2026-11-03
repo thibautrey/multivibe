@@ -36,11 +36,20 @@ test("unknown instructions, identities, cache boundaries and incremental request
 test("Responses and Chat projections both retain the optimized initial order", () => {
   assert.deepEqual(normalizeResponsesPayload(fixture.input).input, fixture.expected.input);
   const chat = responsesToChatCompletionsPayload(fixture.input);
-  const texts = chat.messages.filter((m: any) => m.role === "system").slice(2).map((m: any) =>
-    typeof m.content === "string" ? m.content : m.content.map((p: any) => p.text).join(""));
-  const expected = fixture.expected.input.filter((m: any) => m.role === "developer").map((m: any) =>
-    typeof m.content === "string" ? m.content : m.content.map((p: any) => p.text).join(""));
-  assert.deepEqual(texts, expected);
+  // A strict chat template accepts one leading system message, so the Chat
+  // projection folds the optimized run into it without losing the priority.
+  assert.equal(chat.messages.filter((m: any) => m.role === "system").length, 1);
+  const merged = chat.messages[0].content;
+  const blocks = fixture.expected.input
+    .filter((m: any) => m.role === "developer")
+    .map((m: any) =>
+      typeof m.content === "string" ? m.content : m.content.map((p: any) => p.text).join(""));
+  let cursor = 0;
+  for (const block of blocks) {
+    const at: number = merged.indexOf(block, cursor);
+    assert.ok(at >= 0, `Chat projection lost ${block.slice(0, 32)}`);
+    cursor = at + block.length;
+  }
 });
 
 test("Chat projection preserves instruction priority even when canonicalization is ineligible", () => {
@@ -49,5 +58,8 @@ test("Chat projection preserves instruction priority even when canonicalization 
     { role: "developer", content: "Developer instruction" },
     { role: "user", content: "User request" },
   ] });
-  assert.deepEqual(chat.messages.map((m: any) => m.role), ["system", "system", "user"]);
+  assert.deepEqual(chat.messages, [
+    { role: "system", content: "System instruction\n\nDeveloper instruction" },
+    { role: "user", content: "User request" },
+  ]);
 });

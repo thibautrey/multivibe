@@ -319,6 +319,68 @@ function ensureReasoningContinuation(messages: any[]) {
   }
 }
 
+/** Text blocks of a system message, or undefined when it carries a part the
+ * fold cannot express as text (an image, for example). */
+function systemTextBlocks(value: any): string[] | undefined {
+  if (value == null) return [];
+  if (typeof value === "string") return [value];
+  if (!Array.isArray(value)) return undefined;
+  const blocks: string[] = [];
+  for (const part of value) {
+    if (typeof part === "string") blocks.push(part);
+    else if (part?.type === "text" && typeof part.text === "string") blocks.push(part.text);
+    else return undefined;
+  }
+  return blocks;
+}
+
+/** The text a runtime would render for one message's content: the parts of a
+ * message concatenate without a separator, only distinct messages are
+ * separated. */
+function systemMessageText(value: any): string | undefined {
+  const blocks = systemTextBlocks(value);
+  return blocks && blocks.join("");
+}
+
+function appendSystemContent(base: any, extra: any): string | any[] {
+  const left = systemMessageText(base);
+  const right = systemMessageText(extra);
+  if (left !== undefined && right !== undefined) {
+    return [left, right].filter((block: string) => block.trim()).join("\n\n");
+  }
+  // Media-bearing system content keeps its parts, and the folded content
+  // travels behind them so the fold never drops an attachment.
+  const parts = (value: any): any[] => value == null ? []
+    : typeof value === "string" ? [{ type: "text", text: value }]
+      : Array.isArray(value) ? value : [value];
+  return [...parts(base), ...parts(extra)];
+}
+
+/**
+ * Strict chat templates, notably the Qwen 3.5+ template served by vLLM, raise
+ * `System message must be at the beginning.` for every `system` message that
+ * is not `messages[0]`, including a second one sitting right behind the first.
+ * A Codex turn hits it twice over: base `instructions` become one system
+ * message and the `developer` context blocks become another. Fold them into one
+ * leading system message, keeping their order. Requests that already satisfy
+ * the rule stay byte-identical. Mirrors `fold_system_messages` in the edge.
+ */
+export function foldSystemMessages(messages: any[]) {
+  const positions = messages
+    .map((message, index) =>
+      message?.role === "system" || message?.role === "developer" ? index : -1)
+    .filter((index: number) => index >= 0);
+  if (!positions.length || (positions.length === 1 && positions[0] === 0)) return messages;
+  let content = messages[positions[0]].content ?? null;
+  for (const index of positions.slice(1)) {
+    content = appendSystemContent(content, messages[index].content ?? null);
+  }
+  const folded = { ...messages[positions[0]], role: "system", content };
+  for (const index of positions.slice().reverse()) messages.splice(index, 1);
+  messages.unshift(folded);
+  return messages;
+}
+
 export function responsesToChatCompletionsPayload(
   body: any,
   options?: { ensureReasoningContinuation?: boolean },
@@ -416,6 +478,7 @@ export function responsesToChatCompletionsPayload(
     messages.push({ role, content });
   }
 
+  foldSystemMessages(messages);
   if (options?.ensureReasoningContinuation) ensureReasoningContinuation(messages);
 
   const out: any = {

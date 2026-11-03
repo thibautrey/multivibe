@@ -2164,6 +2164,98 @@ fn repaired_tool_arguments(arguments: &str) -> String {
     }
 }
 
+/// Text blocks of a system message, or `None` when it carries a part the fold
+/// cannot express as text (an image, for example).
+fn system_text_blocks(value: &Value) -> Option<Vec<String>> {
+    match value {
+        Value::Null => Some(Vec::new()),
+        Value::String(text) => Some(vec![text.clone()]),
+        Value::Array(parts) => parts
+            .iter()
+            .map(|part| match part.as_str() {
+                Some(text) => Some(text.to_owned()),
+                None if part.get("type").and_then(Value::as_str) == Some("text") => {
+                    raw_string(part.get("text"))
+                }
+                None => None,
+            })
+            .collect(),
+        _ => None,
+    }
+}
+
+/// The text a runtime would render for one message's content: the parts of a
+/// message concatenate without a separator, only distinct messages are
+/// separated.
+fn system_message_text(value: &Value) -> Option<String> {
+    system_text_blocks(value).map(|blocks| blocks.join(""))
+}
+
+fn appended_system_content(base: Value, extra: Value) -> Value {
+    if let (Some(left), Some(right)) = (system_message_text(&base), system_message_text(&extra)) {
+        return Value::String(
+            [left, right]
+                .into_iter()
+                .filter(|block| !block.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+        );
+    }
+    // Media-bearing system content keeps its parts, and the folded content
+    // travels behind them so the fold never drops an attachment.
+    let parts = |value: Value| match value {
+        Value::Null => Vec::new(),
+        Value::String(text) => vec![json!({ "type": "text", "text": text })],
+        Value::Array(parts) => parts,
+        other => vec![other],
+    };
+    let mut kept = parts(base);
+    kept.extend(parts(extra));
+    Value::Array(kept)
+}
+
+/// Strict Chat Completions templates raise `System message must be at the
+/// beginning.` for every `system` message that is not `messages[0]`, including
+/// a second one sitting right behind the first. The Qwen 3.5+ template served
+/// by vLLM enforces exactly that, and the Responses bridge hits it on every
+/// Codex turn because base `instructions` become one system message while the
+/// `developer` context blocks become another. Fold them into one leading system
+/// message, keeping their order. Requests that already satisfy the rule stay
+/// byte-identical.
+fn fold_system_messages(messages: &mut Vec<Value>) {
+    let positions: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| {
+            matches!(
+                message.get("role").and_then(Value::as_str),
+                Some("system" | "developer")
+            )
+        })
+        .map(|(position, _)| position)
+        .collect();
+    if positions.is_empty() || (positions.len() == 1 && positions[0] == 0) {
+        return;
+    }
+    let mut content = messages[positions[0]]
+        .get("content")
+        .cloned()
+        .unwrap_or(Value::Null);
+    for position in &positions[1..] {
+        content = appended_system_content(
+            content,
+            messages[*position].get("content").cloned().unwrap_or(Value::Null),
+        );
+    }
+    let mut folded = messages[positions[0]].clone();
+    folded["role"] = Value::String("system".to_owned());
+    folded["content"] = content;
+    for position in positions.iter().rev() {
+        messages.remove(*position);
+    }
+    messages.insert(0, folded);
+}
+
 fn responses_to_chat_completions(
     body: &Value,
     client_stream: bool,
@@ -2299,6 +2391,7 @@ fn responses_to_chat_completions(
             }
         }
     }
+    fold_system_messages(&mut messages);
     if ensure_reasoning {
         ensure_reasoning_continuation(&mut messages);
     }
@@ -2448,6 +2541,12 @@ fn validate_chat_tool_contract(body: &Value) -> Result<(), String> {
 
 fn sanitize_generic_chat_payload(body: &Value) -> Value {
     let mut payload = object_value(body);
+    // A Chat Completions client can place system content behind a turn, which
+    // local runtimes with a strict template reject. The edge already folds the
+    // payloads it converts; do the same to what it forwards untouched.
+    if let Some(messages) = payload.get_mut("messages").and_then(Value::as_array_mut) {
+        fold_system_messages(messages);
+    }
     for key in [
         "reasoning",
         "reasoning_effort",
@@ -12560,6 +12659,124 @@ async fn ws_send_json(socket: &mut WebSocket, value: Value) -> bool {
         .is_ok()
 }
 
+/// Conversation state of one Responses WebSocket connection.
+///
+/// The Responses-over-WebSocket protocol treats the socket itself as the
+/// conversation: continuation frames carry only new input items and refer to
+/// the earlier turns through `previous_response_id` or `conversation`. This
+/// edge turns every frame into an independent upstream request, so a
+/// continuation must replay the items the connection has observed and backfill
+/// the request-scoped parameters (instructions, tools, …) the connection would
+/// otherwise have carried. Without that, an incremental frame reaches the
+/// model as a contextless one-off and the conversation loses all history.
+#[derive(Default)]
+struct WsConversation {
+    /// Input and response items observed on this connection.
+    items: Vec<Value>,
+    /// Connection-scoped parameters from the latest full request.
+    params: Map<String, Value>,
+    /// A continuation arrived while no history was known; its references keep
+    /// passing through untouched instead of being expanded from thin air.
+    opaque: bool,
+    /// Output items captured for the response that is ending.
+    pending: Vec<Value>,
+}
+
+/// The input items of a frame. A string input is one user message.
+fn ws_input_items(frame: &Value) -> Vec<Value> {
+    match frame.get("input") {
+        Some(Value::Array(items)) => items.clone(),
+        Some(Value::String(text)) => vec![json!({"role": "user", "content": text})],
+        _ => Vec::new(),
+    }
+}
+
+/// Whether a frame leans on server-side state instead of carrying its history.
+fn ws_referenced(frame: &Value) -> bool {
+    ["previous_response_id", "conversation"]
+        .iter()
+        .any(|key| frame.get(*key).is_some_and(|value| !value.is_null()))
+}
+
+/// Folds one `response.create` frame into the connection history and reshapes
+/// it into the faithful body to forward. Frames that carry no reference, the
+/// conversation start and the client's full replay after a reconnect, define
+/// the baseline and travel with their own parameters.
+fn fold_ws_frame(conversation: &mut WsConversation, frame: &mut Value) {
+    let referenced = ws_referenced(frame);
+    let delta = ws_input_items(frame);
+    let Some(object) = frame.as_object_mut() else {
+        return;
+    };
+    object.remove("type");
+    object.insert("stream".to_owned(), Value::Bool(true));
+    if !referenced {
+        conversation.items = delta;
+        conversation.opaque = false;
+        conversation.params = object
+            .iter()
+            .filter(|(key, value)| {
+                !matches!(
+                    key.as_str(),
+                    "type" | "input" | "previous_response_id" | "conversation" | "stream"
+                ) && !value.is_null()
+            })
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        return;
+    }
+    if conversation.items.is_empty() || conversation.opaque {
+        // The reference points at turns this edge never saw. Leave the chain
+        // as the client framed it: a storing upstream continues it, and every
+        // other upstream answers with a real error instead of the amnesia a
+        // locally expanded, historyless replay would hide.
+        conversation.opaque = true;
+        return;
+    }
+    for (key, value) in &conversation.params {
+        if !object.contains_key(key.as_str()) {
+            object.insert(key.clone(), value.clone());
+        }
+    }
+    let mut items = conversation.items.clone();
+    items.extend(delta.iter().cloned());
+    object.insert("input".to_owned(), Value::Array(items));
+    object.remove("previous_response_id");
+    object.remove("conversation");
+    conversation.items.extend(delta);
+}
+
+/// Captures output items from the stream events as they pass through, so the
+/// next continuation can replay them.
+fn capture_ws_event(conversation: &mut WsConversation, event: &Value) {
+    match event.get("type").and_then(Value::as_str) {
+        Some("response.output_item.done") => {
+            if let Some(item) = event.get("item").filter(|item| !item.is_null()) {
+                conversation.pending.push(item.clone());
+            }
+        }
+        Some("response.completed") | Some("response.incomplete") | Some("response.failed") => {
+            if let Some(items) = event
+                .get("response")
+                .and_then(|response| response.get("output"))
+                .and_then(Value::as_array)
+            {
+                // The terminal payload is the authoritative output list; it
+                // replaces the incrementally collected items rather than
+                // adding to them.
+                conversation.pending = items.clone();
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Appends the finished response's output to the history the next
+/// continuation replays.
+fn commit_ws_response(conversation: &mut WsConversation) {
+    conversation.items.append(&mut conversation.pending);
+}
+
 async fn handle_websocket(
     mut socket: WebSocket,
     state: EdgeState,
@@ -12567,6 +12784,7 @@ async fn handle_websocket(
     application: String,
     path: String,
 ) {
+    let mut conversation = WsConversation::default();
     while let Some(Ok(message)) = socket.next().await {
         match message {
             Message::Text(text) => {
@@ -12591,17 +12809,18 @@ async fn handle_websocket(
                     continue;
                 }
                 if frame.get("generate").and_then(Value::as_bool) == Some(false) {
+                    // Items registered without a generation still belong to
+                    // the conversation the next continuation replays.
+                    if !conversation.opaque {
+                        conversation.items.extend(ws_input_items(&frame));
+                    }
                     let id = new_id("resp");
                     let model = value_string(frame.get("model")).unwrap_or_else(|| "unknown".to_owned());
                     if !ws_send_json(&mut socket, json!({"type": "response.created", "response": {"id": id, "object": "response", "model": model, "status": "in_progress"}})).await { break; }
                     if !ws_send_json(&mut socket, json!({"type": "response.completed", "response": {"id": id, "object": "response", "model": model, "status": "completed", "output": [], "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}}})).await { break; }
                     continue;
                 }
-                if let Some(object) = frame.as_object_mut() {
-                    object.remove("type");
-                    object.remove("previous_response_id");
-                    object.insert("stream".to_owned(), Value::Bool(true));
-                }
+                fold_ws_frame(&mut conversation, &mut frame);
                 match proxy_inference(
                     &state,
                     &path,
@@ -12618,14 +12837,19 @@ async fn handle_websocket(
                             let text = String::from_utf8_lossy(&reply.body);
                             if text.contains("data:") {
                                 for (_, event) in parse_sse_events(&text) {
+                                    capture_ws_event(&mut conversation, &event);
                                     if event.as_str() != Some("[DONE]") && !ws_send_json(&mut socket, event).await { return; }
                                 }
                             } else if let Ok(response) = serde_json::from_slice::<Value>(&reply.body) {
+                                if let Some(items) = response.get("output").and_then(Value::as_array) {
+                                    conversation.pending = items.clone();
+                                }
                                 let id = value_string(response.get("id")).unwrap_or_else(|| new_id("resp"));
                                 if !ws_send_json(&mut socket, json!({"type": "response.created", "response": {"id": id, "object": "response", "model": response.get("model"), "status": "in_progress"}})).await { return; }
                                 if !ws_send_json(&mut socket, json!({"type": "response.completed", "response": response})).await { return; }
                             }
                         } else if !ws_send_json(&mut socket, json!({"type": "error", "status": reply.status.as_u16(), "error": {"type": "upstream_error", "message": String::from_utf8_lossy(&reply.body)}})).await { return; }
+                        commit_ws_response(&mut conversation);
                     }
                     Ok(ProxyResult::Streaming(reply)) => {
                         let status = reply.status.as_u16();
@@ -12643,18 +12867,21 @@ async fn handle_websocket(
                                 let frame = buffer[..index].to_owned();
                                 buffer.drain(..index + 2);
                                 for (_, event) in parse_sse_events(&format!("{frame}\n\n")) {
+                                    capture_ws_event(&mut conversation, &event);
                                     if event.as_str() != Some("[DONE]") && !ws_send_json(&mut socket, event).await { return; }
                                 }
                             }
                         }
                         if !buffer.trim().is_empty() {
                             for (_, event) in parse_sse_events(&format!("{buffer}\n\n")) {
+                                capture_ws_event(&mut conversation, &event);
                                 if event.as_str() != Some("[DONE]") && !ws_send_json(&mut socket, event).await { return; }
                             }
                         }
                         if let Some(trace) = trace.as_mut() {
                             trace.finish(status, None, Some(false)).await;
                         }
+                        commit_ws_response(&mut conversation);
                     }
                     Err(error) => {
                         let status = error.status();
@@ -14735,6 +14962,98 @@ mod tests {
         assert_eq!(prepare(&api)["input"], body["input"]);
         let mut cloud = subscription; cloud.multivibe_cloud = Some(true);
         assert_eq!(prepare(&cloud)["input"], body["input"]);
+    }
+
+    #[test]
+    fn chat_bridge_folds_codex_system_messages_into_one_leading_block() {
+        let payload = responses_to_chat_completions(
+            &json!({
+                "model": "qwen3.8-flash-next",
+                "instructions": "You are Codex.",
+                "input": [
+                    {"role": "developer", "content": [{"type": "input_text", "text": "<permissions>Rules</permissions>"}]},
+                    {"role": "user", "content": "ping"},
+                    {"role": "assistant", "content": "pong"},
+                    {"role": "developer", "content": "Memory summary."},
+                    {"role": "user", "content": "again"}
+                ]
+            }),
+            false,
+            false,
+        );
+        let messages = payload["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 4);
+        assert_eq!(
+            messages[0],
+            json!({"role": "system", "content": "You are Codex.\n\n<permissions>Rules</permissions>\n\nMemory summary."})
+        );
+        assert_eq!(messages[1], json!({"role": "user", "content": "ping"}));
+        assert_eq!(messages[2], json!({"role": "assistant", "content": "pong"}));
+        assert_eq!(messages[3], json!({"role": "user", "content": "again"}));
+
+        // One leading system message is already what strict templates accept,
+        // so nothing else may shift.
+        let untouched = responses_to_chat_completions(
+            &json!({"model": "qwen3.8-flash-next", "instructions": "You are Codex.",
+                "input": [{"role": "user", "content": "ping"}]}),
+            false,
+            false,
+        );
+        assert_eq!(
+            untouched["messages"],
+            json!([{"role": "system", "content": "You are Codex."},
+                {"role": "user", "content": "ping"}])
+        );
+    }
+
+    #[test]
+    fn chat_bridge_folds_media_bearing_system_content_without_dropping_parts() {
+        let mut messages = vec![
+            json!({"role": "user", "content": "ping"}),
+            json!({"role": "system", "content": [
+                {"type": "image_url", "image_url": {"url": "https://example.test/rules.png"}},
+                {"type": "text", "text": "Read the chart."}
+            ]}),
+            json!({"role": "system", "content": "Trailing guidance."}),
+        ];
+        fold_system_messages(&mut messages);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[0]["content"][0]["type"], "image_url");
+        assert_eq!(messages[0]["content"][1]["text"], "Read the chart.");
+        assert_eq!(messages[0]["content"][2], json!({"type": "text", "text": "Trailing guidance."}));
+        assert_eq!(messages[1], json!({"role": "user", "content": "ping"}));
+    }
+
+    #[test]
+    fn generic_chat_upstreams_receive_one_leading_system_message() {
+        let body = json!({"model": "qwen3.8-flash-next", "messages": [
+            {"role": "user", "content": "ping"},
+            {"role": "system", "content": "Injected guidance"},
+            {"role": "assistant", "content": "pong"},
+            {"role": "user", "content": "again"}
+        ]});
+        let route = RouteCandidate {
+            requested_model: "qwen3.8-flash-next".into(),
+            model: "qwen3.8-flash-next".into(),
+            provider: None,
+            account_ids: vec![],
+        };
+        let mut api = account("subscription");
+        api.provider = Some("openai-compatible".into());
+        let payload = prepared_payload(
+            &body,
+            "/v1/chat/completions",
+            &api,
+            &route,
+            None,
+            false,
+            false,
+            &EdgeConfig::default(),
+        );
+        assert_eq!(payload["messages"][0], json!({"role": "system", "content": "Injected guidance"}));
+        assert_eq!(payload["messages"][1]["role"], "user");
+        assert_eq!(payload["messages"].as_array().unwrap().len(), 4);
     }
 
     #[test]
@@ -18204,6 +18523,150 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         socket.close(None).await.unwrap();
 
         edge_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[test]
+    fn websocket_frame_folding_expands_continuations_from_observed_history() {
+        let mut conversation = WsConversation::default();
+        let mut baseline = json!({"type": "response.create", "model": "gpt-ws", "instructions": "BASE", "tools": [{"type": "function", "name": "shell"}],
+            "input": [{"role": "system", "content": "be nice"}, {"role": "user", "content": "hello"}]});
+        fold_ws_frame(&mut conversation, &mut baseline);
+        assert_eq!(baseline["input"].as_array().unwrap().len(), 2);
+        assert_eq!(conversation.items.len(), 2);
+
+        capture_ws_event(
+            &mut conversation,
+            &json!({"type": "response.completed", "response": {"id": "resp-1", "output": [
+                {"type": "function_call", "call_id": "call_1", "name": "shell", "arguments": "{}"}]}}),
+        );
+        commit_ws_response(&mut conversation);
+        assert_eq!(conversation.items.len(), 3);
+
+        let mut continuation = json!({"type": "response.create", "model": "gpt-ws", "previous_response_id": "resp-1",
+            "input": [{"type": "function_call_output", "call_id": "call_1", "output": "ok"}]});
+        fold_ws_frame(&mut conversation, &mut continuation);
+        assert!(continuation.get("previous_response_id").is_none());
+        assert_eq!(continuation["instructions"], "BASE");
+        assert_eq!(continuation["tools"][0]["name"], "shell");
+        assert_eq!(continuation["input"].as_array().unwrap().len(), 4);
+        assert_eq!(conversation.items.len(), 4);
+    }
+
+    #[test]
+    fn websocket_continuations_without_history_keep_their_reference() {
+        let mut conversation = WsConversation::default();
+        let mut continuation = json!({"type": "response.create", "model": "gpt-ws", "previous_response_id": "resp-1",
+            "input": [{"role": "user", "content": "hello"}]});
+        fold_ws_frame(&mut conversation, &mut continuation);
+        assert_eq!(continuation["previous_response_id"], "resp-1");
+        assert!(conversation.items.is_empty());
+
+        let mut replay = json!({"type": "response.create", "model": "gpt-ws", "instructions": "BASE",
+            "input": [{"role": "user", "content": "full history"}]});
+        fold_ws_frame(&mut conversation, &mut replay);
+        assert!(replay.get("previous_response_id").is_none());
+
+        let mut next = json!({"type": "response.create", "model": "gpt-ws", "previous_response_id": "resp-2",
+            "input": [{"role": "user", "content": "delta"}]});
+        fold_ws_frame(&mut conversation, &mut next);
+        assert!(next.get("previous_response_id").is_none());
+        assert_eq!(next["instructions"], "BASE");
+        assert_eq!(next["input"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn native_websocket_continuations_replay_the_observed_history() {
+        let upstream_bodies = Arc::new(StdMutex::new(Vec::new()));
+        let capture = upstream_bodies.clone();
+        let upstream = Router::new()
+            .route(
+                "/backend-api/codex/models",
+                get(|| async { Json(json!({"models": [{"slug": "gpt-ws-chain"}]})) }),
+            )
+            .route(
+                "/backend-api/codex/responses",
+                post(move |Json(request): Json<Value>| {
+                    let capture = capture.clone();
+                    async move {
+                        capture.lock().unwrap().push(request);
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header(header::CONTENT_TYPE, "text/event-stream")
+                            .body(Body::from(
+                                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-ws-chain\",\"model\":\"gpt-ws-chain\",\"status\":\"in_progress\"}}\n\n\
+                                 data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"id\":\"call_ws\",\"call_id\":\"call_ws\",\"name\":\"shell\",\"arguments\":\"{}\"}}\n\n\
+                                 data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-ws-chain\",\"model\":\"gpt-ws-chain\",\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"id\":\"call_ws\",\"call_id\":\"call_ws\",\"name\":\"shell\",\"arguments\":\"{}\"}],\"usage\":{\"input_tokens\":10,\"output_tokens\":1,\"total_tokens\":11}}}\n\n\
+                                 data: [DONE]\n\n",
+                            ))
+                            .unwrap()
+                    }
+                }),
+            );
+        let (upstream_url, upstream_task) = start_server(upstream).await;
+        let store_path = temporary_path("websocket-chain");
+        let jobs_path = temporary_path("websocket-chain-jobs");
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(vec![account("websocket-chain")])).unwrap(),
+        )
+        .await
+        .unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.configured_api_keys = vec![("websocket-app".to_owned(), "websocket-key".to_owned())];
+        config.chatgpt_base_url = upstream_url;
+        let state = EdgeState::new(config).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(state)).await;
+        let mut request = format!("{}/v1/responses", edge_url.replace("http://", "ws://"))
+            .into_client_request()
+            .unwrap();
+        request.headers_mut().insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer websocket-key"),
+        );
+        let (mut socket, _) = connect_async(request).await.unwrap();
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                r#"{"type":"response.create","model":"gpt-ws-chain","instructions":"BASE","tools":[{"type":"function","name":"shell"}],"input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}]}"#.into(),
+            ))
+            .await
+            .unwrap();
+        for _ in 0..3 {
+            let event = socket.next().await.unwrap().unwrap();
+            assert!(event.is_text());
+        }
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                r#"{"type":"response.create","model":"gpt-ws-chain","previous_response_id":"resp-ws-chain","input":[{"type":"function_call_output","call_id":"call_ws","output":"done"}]}"#.into(),
+            ))
+            .await
+            .unwrap();
+        for _ in 0..3 {
+            let event = socket.next().await.unwrap().unwrap();
+            assert!(event.is_text());
+        }
+
+        let bodies = upstream_bodies.lock().unwrap().clone();
+        assert_eq!(bodies.len(), 2);
+        assert!(bodies[0].get("previous_response_id").is_none());
+        assert_eq!(bodies[0]["input"].as_array().unwrap().len(), 1);
+        assert_eq!(bodies[0]["stream"], true);
+        let second = &bodies[1];
+        assert!(second.get("previous_response_id").is_none());
+        assert_eq!(second["instructions"], "BASE");
+        assert_eq!(second["tools"][0]["name"], "shell");
+        let input = second["input"].as_array().unwrap();
+        assert_eq!(input.len(), 3);
+        assert_eq!(input[0]["role"], "user");
+        assert_eq!(input[1]["type"], "function_call");
+        assert_eq!(input[2]["type"], "function_call_output");
+
+        socket.close(None).await.unwrap();
+        edge_task.abort();
+        upstream_task.abort();
         let _ = fs::remove_file(store_path).await;
         let _ = fs::remove_file(jobs_path).await;
     }
