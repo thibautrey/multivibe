@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { registerHostedSigningKeychain } from "./hosted-signing-keychain.mjs";
 
 test("shared runners never read or change the search list", () => {
-  for (const environment of [undefined, "self-hosted", ""]) {
+  for (const environment of ["unknown", "self-hosted", ""]) {
     assert.equal(registerHostedSigningKeychain("/job/signing.keychain-db", {
       environment, run: () => { throw new Error("must not access shared preferences"); },
     }), false);
