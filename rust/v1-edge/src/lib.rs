@@ -18743,6 +18743,8 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                                 std::future::pending::<()>().await;
                             } else {
                                 yield Ok(Bytes::from(sse_frame("response.completed", &json!({"type":"response.completed","response":{"id":"resp-interrupt","model":"gpt-interrupt","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}))));
+                            // EOF can lag behind the terminal event indefinitely.
+                            std::future::pending::<()>().await;
                             }
                         };
                         Response::builder().header(header::CONTENT_TYPE,"text/event-stream")
@@ -18823,8 +18825,11 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         );
         assert_eq!(receive!()["type"], "response.created");
         assert_eq!(receive!()["type"], "response.completed");
+        send!(json!({"type":"response.create","model":"gpt-interrupt","previous_response_id":"resp-interrupt","input":"continue before EOF"}));
+        assert_eq!(receive!()["type"], "response.created");
+        assert_eq!(receive!()["type"], "response.completed");
         let requests = bodies.lock().unwrap().clone();
-        assert_eq!(requests.len(), 2);
+        assert_eq!(requests.len(), 3);
         let input = requests[1]["input"].as_array().unwrap();
         assert_eq!(input.len(), 4);
         assert_eq!(input[1]["call_id"], "call_done");
