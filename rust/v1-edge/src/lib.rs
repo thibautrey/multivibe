@@ -12795,6 +12795,100 @@ fn commit_ws_response(conversation: &mut WsConversation) {
     conversation.items.append(&mut conversation.pending);
 }
 
+async fn ws_emit_json(events: &tokio::sync::mpsc::Sender<Value>, value: Value) -> bool {
+    events.send(value).await.is_ok()
+}
+
+async fn produce_ws_response(
+    state: &EdgeState,
+    path: &str,
+    headers: &HeaderMap,
+    frame: &Value,
+    application: &str,
+    events: tokio::sync::mpsc::Sender<Value>,
+) {
+    match proxy_inference(
+    state,
+    path,
+    headers,
+    frame,
+    application,
+    Some(ActivityKind::WebsocketTurn),
+    None,
+)
+.await
+{
+    Ok(ProxyResult::Buffered(reply)) => {
+        if reply.status.is_success() {
+            let text = String::from_utf8_lossy(&reply.body);
+            if text.contains("data:") {
+                for (_, event) in parse_sse_events(&text) {
+
+                    if event.as_str() != Some("[DONE]") && !ws_emit_json(&events, event).await { return; }
+                }
+            } else if let Ok(response) = serde_json::from_slice::<Value>(&reply.body) {
+                let id = value_string(response.get("id")).unwrap_or_else(|| new_id("resp"));
+                if !ws_emit_json(&events, json!({"type": "response.created", "response": {"id": id, "object": "response", "model": response.get("model"), "status": "in_progress"}})).await { return; }
+                if !ws_emit_json(&events, json!({"type": "response.completed", "response": response})).await { return; }
+            }
+        } else if !ws_emit_json(&events, json!({"type": "error", "status": reply.status.as_u16(), "error": {"type": "upstream_error", "message": String::from_utf8_lossy(&reply.body)}})).await { return; }
+
+    }
+    Ok(ProxyResult::Streaming(reply)) => {
+        // Use the HTTP streaming pipeline before framing WebSocket
+        // events. It owns protocol conversion, tool restoration,
+        // tracing and admission leases for both transports.
+        let mut upstream = streaming_response(reply).into_body().into_data_stream();
+        let mut buffer = String::new();
+        while let Some(Ok(chunk)) = upstream.next().await {
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
+            while let Some(index) = buffer.find("\n\n") {
+                let frame = buffer[..index].to_owned();
+                buffer.drain(..index + 2);
+                for (_, event) in parse_sse_events(&format!("{frame}\n\n")) {
+
+                    if event.as_str() != Some("[DONE]") && !ws_emit_json(&events, event).await { return; }
+                }
+            }
+        }
+        if !buffer.trim().is_empty() {
+            for (_, event) in parse_sse_events(&format!("{buffer}\n\n")) {
+
+                if event.as_str() != Some("[DONE]") && !ws_emit_json(&events, event).await { return; }
+            }
+        }
+
+    }
+    Err(error) => {
+        let status = error.status();
+        let bytes = to_bytes(error.into_body(), 1024 * 1024)
+            .await
+            .unwrap_or_default();
+        let parsed = serde_json::from_slice::<Value>(&bytes).ok();
+        let error = parsed
+            .as_ref()
+            .and_then(|body| body.get("error"))
+            .cloned()
+            .unwrap_or_else(|| json!({
+                "type": "upstream_error",
+                "message": "upstream request failed",
+            }));
+        if !ws_emit_json(&events, json!({
+            "type": "error",
+            "status": status.as_u16(),
+            "error": error,
+        })).await { return; }
+    }
+}
+}
+
+fn ws_interrupt_ack(control: &Value, accepted: bool) -> Value {
+    json!({
+        "type": if accepted { "response.interrupt.accepted" } else { "response.interrupt.failed" },
+        "response_id": control.get("response_id").cloned().unwrap_or(Value::Null),
+    })
+}
+
 async fn handle_websocket(
     mut socket: WebSocket,
     state: EdgeState,
@@ -12803,6 +12897,7 @@ async fn handle_websocket(
     path: String,
 ) {
     let mut conversation = WsConversation::default();
+    let mut last_response: Option<Value> = None;
     while let Some(Ok(message)) = socket.next().await {
         match message {
             Message::Text(text) => {
@@ -12810,6 +12905,14 @@ async fn handle_websocket(
                     if !ws_send_json(&mut socket, json!({"type": "error", "status": 400, "error": {"type": "invalid_request_error", "code": "invalid_json", "message": "expected a JSON text frame with type='response.create'"}})).await { break; }
                     continue;
                 };
+                if frame["type"] == "response.interrupt" {
+                    // An interrupt may race with completion: acknowledge the last
+                    // delivered response without cancelling a subsequent request.
+                    let accepted = frame["mode"] == "discard_partial_items"
+                        && last_response.as_ref().is_some_and(|response| response["id"].is_string() && frame["response_id"] == response["id"]);
+                    if !ws_send_json(&mut socket, ws_interrupt_ack(&frame, accepted)).await { break; }
+                    continue;
+                }
                 if frame.get("type").and_then(Value::as_str) != Some("response.create") {
                     if !ws_send_json(&mut socket, json!({"type": "error", "status": 400, "error": {"type": "invalid_request_error", "message": "expected a JSON text frame with type='response.create'"}})).await { break; }
                     continue;
@@ -12835,86 +12938,68 @@ async fn handle_websocket(
                     let id = new_id("resp");
                     let model = value_string(frame.get("model")).unwrap_or_else(|| "unknown".to_owned());
                     if !ws_send_json(&mut socket, json!({"type": "response.created", "response": {"id": id, "object": "response", "model": model, "status": "in_progress"}})).await { break; }
-                    if !ws_send_json(&mut socket, json!({"type": "response.completed", "response": {"id": id, "object": "response", "model": model, "status": "completed", "output": [], "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}}})).await { break; }
+                    let response = json!({"id": id, "object": "response", "model": model, "status": "completed", "output": [], "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}});
+                    if !ws_send_json(&mut socket, json!({"type": "response.completed", "response": response})).await { break; }
+                    last_response = Some(response);
                     continue;
                 }
                 fold_ws_frame(&mut conversation, &mut frame);
-                match proxy_inference(
-                    &state,
-                    &path,
-                    &headers,
-                    &frame,
-                    &application,
-                    Some(ActivityKind::WebsocketTurn),
-                    None,
-                )
-                .await
+                last_response = None;
+                let (events, mut incoming_events) = tokio::sync::mpsc::channel(1);
+                let mut interrupted = false;
                 {
-                    Ok(ProxyResult::Buffered(reply)) => {
-                        if reply.status.is_success() {
-                            let text = String::from_utf8_lossy(&reply.body);
-                            if text.contains("data:") {
-                                for (_, event) in parse_sse_events(&text) {
-                                    capture_ws_event(&mut conversation, &event);
-                                    if event.as_str() != Some("[DONE]") && !ws_send_json(&mut socket, event).await { return; }
-                                }
-                            } else if let Ok(response) = serde_json::from_slice::<Value>(&reply.body) {
-                                if let Some(items) = response.get("output").and_then(Value::as_array) {
-                                    conversation.pending = items.clone();
-                                }
-                                let id = value_string(response.get("id")).unwrap_or_else(|| new_id("resp"));
-                                if !ws_send_json(&mut socket, json!({"type": "response.created", "response": {"id": id, "object": "response", "model": response.get("model"), "status": "in_progress"}})).await { return; }
-                                if !ws_send_json(&mut socket, json!({"type": "response.completed", "response": response})).await { return; }
-                            }
-                        } else if !ws_send_json(&mut socket, json!({"type": "error", "status": reply.status.as_u16(), "error": {"type": "upstream_error", "message": String::from_utf8_lossy(&reply.body)}})).await { return; }
-                        commit_ws_response(&mut conversation);
-                    }
-                    Ok(ProxyResult::Streaming(reply)) => {
-                        // Use the HTTP streaming pipeline before framing WebSocket
-                        // events. It owns protocol conversion, tool restoration,
-                        // tracing and admission leases for both transports.
-                        let mut upstream = streaming_response(reply).into_body().into_data_stream();
-                        let mut buffer = String::new();
-                        while let Some(Ok(chunk)) = upstream.next().await {
-                            buffer.push_str(&String::from_utf8_lossy(&chunk));
-                            while let Some(index) = buffer.find("\n\n") {
-                                let frame = buffer[..index].to_owned();
-                                buffer.drain(..index + 2);
-                                for (_, event) in parse_sse_events(&format!("{frame}\n\n")) {
-                                    capture_ws_event(&mut conversation, &event);
-                                    if event.as_str() != Some("[DONE]") && !ws_send_json(&mut socket, event).await { return; }
-                                }
-                            }
-                        }
-                        if !buffer.trim().is_empty() {
-                            for (_, event) in parse_sse_events(&format!("{buffer}\n\n")) {
+                    let work = produce_ws_response(&state, &path, &headers, &frame, &application, events);
+                    tokio::pin!(work);
+                    let mut finished = false;
+                    loop {
+                        tokio::select! {
+                            // Deliver queued events before retiring a completed producer.
+                            biased;
+                            event = incoming_events.recv() => {
+                                let Some(event) = event else { break; };
                                 capture_ws_event(&mut conversation, &event);
-                                if event.as_str() != Some("[DONE]") && !ws_send_json(&mut socket, event).await { return; }
+                                if let Some(response) = event.get("response") {
+                                    last_response = Some(response.clone());
+                                }
+                                if !ws_send_json(&mut socket, event).await { return; }
                             }
+                            message = socket.next() => {
+                                match message {
+                                    Some(Ok(Message::Text(text))) => {
+                                        let control = serde_json::from_str::<Value>(&text).unwrap_or(Value::Null);
+                                        if control["type"] == "response.interrupt" {
+                                            let response = last_response.as_ref();
+                                            let matches = response.is_some_and(|response| response["id"].is_string() && control["response_id"] == response["id"]);
+                                            let valid = matches && control["mode"] == "discard_partial_items";
+                                            if !ws_send_json(&mut socket, ws_interrupt_ack(&control, valid)).await { return; }
+                                            if valid {
+                                                interrupted = true;
+                                                break;
+                                            }
+                                        } else if !ws_send_json(&mut socket, json!({"type":"error","status":400,"error":{"type":"invalid_request_error","code":"response_in_progress","message":"a response is already in progress"}})).await { return; }
+                                    }
+                                    Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+                                    Some(Ok(Message::Binary(_))) => {
+                                        if !ws_send_json(&mut socket, json!({"type":"error","status":400,"error":{"type":"invalid_request_error","message":"binary websocket frames are not supported"}})).await { return; }
+                                    }
+                                    _ => return,
+                                }
+                            }
+                            _ = &mut work, if !finished => { finished = true; }
                         }
-                        commit_ws_response(&mut conversation);
-                    }
-                    Err(error) => {
-                        let status = error.status();
-                        let bytes = to_bytes(error.into_body(), 1024 * 1024)
-                            .await
-                            .unwrap_or_default();
-                        let parsed = serde_json::from_slice::<Value>(&bytes).ok();
-                        let error = parsed
-                            .as_ref()
-                            .and_then(|body| body.get("error"))
-                            .cloned()
-                            .unwrap_or_else(|| json!({
-                                "type": "upstream_error",
-                                "message": "upstream request failed",
-                            }));
-                        if !ws_send_json(&mut socket, json!({
-                            "type": "error",
-                            "status": status.as_u16(),
-                            "error": error,
-                        })).await { return; }
                     }
                 }
+                if interrupted {
+                    // Only output_item.done items already delivered to the client survive.
+                    // Partial text/tool arguments and queued, undelivered events are discarded.
+                    if let Some(response) = last_response.as_mut().and_then(Value::as_object_mut) {
+                        response.insert("status".to_owned(), json!("completed"));
+                        response.insert("output".to_owned(), json!(conversation.pending));
+                        let event = json!({"type":"response.completed","response":response});
+                        if !ws_send_json(&mut socket, event).await { return; }
+                    }
+                }
+                commit_ws_response(&mut conversation);
             }
             Message::Binary(_) => {
                 if !ws_send_json(&mut socket, json!({"type": "error", "status": 400, "error": {"type": "invalid_request_error", "message": "binary websocket frames are not supported"}})).await { break; }
@@ -18611,6 +18696,95 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         socket.close(None).await.unwrap();
 
         edge_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
+    async fn native_websocket_interrupts_cancel_streams_and_preserve_completed_tools() {
+        let bodies = Arc::new(StdMutex::new(Vec::new()));
+        let capture = bodies.clone();
+        let upstream = Router::new()
+            .route("/backend-api/codex/models", get(|| async {
+                Json(json!({"models":[{"slug":"gpt-interrupt"}]}))
+            }))
+            .route("/backend-api/codex/responses", post(move |Json(body): Json<Value>| {
+                let capture = capture.clone();
+                async move {
+                    let first = {
+                        let mut bodies = capture.lock().unwrap();
+                        bodies.push(body);
+                        bodies.len() == 1
+                    };
+                    let stream = stream! {
+                        yield Ok::<_, Infallible>(Bytes::from(sse_frame("response.created", &json!({"type":"response.created","response":{"id":"resp-interrupt","model":"gpt-interrupt","status":"in_progress"}}))));
+                        if first {
+                            yield Ok(Bytes::from(sse_frame("response.output_item.done", &json!({"type":"response.output_item.done","item":{"type":"function_call","id":"fc_done","call_id":"call_done","name":"shell","arguments":"{}"}}))));
+                            yield Ok(Bytes::from(sse_frame("response.output_text.delta", &json!({"type":"response.output_text.delta","delta":"unfinished"}))));
+                            // A real stalled upstream: interruption must not wait for EOF.
+                            std::future::pending::<()>().await;
+                        } else {
+                            yield Ok(Bytes::from(sse_frame("response.completed", &json!({"type":"response.completed","response":{"id":"resp-interrupt","model":"gpt-interrupt","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}))));
+                        }
+                    };
+                    Response::builder().header(header::CONTENT_TYPE,"text/event-stream")
+                        .body(Body::from_stream(stream)).unwrap()
+                }
+            }));
+        let (upstream_url, upstream_task) = start_server(upstream).await;
+        let store_path = temporary_path("websocket-interrupt");
+        let jobs_path = temporary_path("websocket-interrupt-jobs");
+        fs::write(&store_path, serde_json::to_vec(&store_with_accounts(vec![account("websocket-interrupt")])).unwrap()).await.unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.configured_api_keys = vec![("websocket-app".to_owned(), "websocket-key".to_owned())];
+        config.chatgpt_base_url = upstream_url;
+        let state = EdgeState::new(config).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(state)).await;
+        let mut request = format!("{}/v1/responses", edge_url.replace("http://", "ws://")).into_client_request().unwrap();
+        request.headers_mut().insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer websocket-key"));
+        let (mut socket, _) = connect_async(request).await.unwrap();
+        macro_rules! send {
+            ($value:expr) => { socket.send(tokio_tungstenite::tungstenite::Message::Text($value.to_string().into())).await.unwrap() };
+        }
+        macro_rules! receive {
+            () => {{
+                let message = timeout(Duration::from_secs(5), socket.next()).await.expect("WebSocket stalled").unwrap().unwrap();
+                serde_json::from_str::<Value>(&message.into_text().unwrap()).unwrap()
+            }};
+        }
+        send!(json!({"type":"response.create","model":"gpt-interrupt","input":"hello"}));
+        assert_eq!(receive!()["type"], "response.created");
+        assert_eq!(receive!()["type"], "response.output_item.done");
+        assert_eq!(receive!()["type"], "response.output_text.delta");
+        // A stale interrupt must not cancel the active request or poison the socket.
+        send!(json!({"type":"response.interrupt","response_id":"wrong","mode":"discard_partial_items"}));
+        assert_eq!(receive!()["type"], "response.interrupt.failed");
+        send!(json!({"type":"response.interrupt","response_id":"resp-interrupt","mode":"discard_partial_items"}));
+        let ack = receive!();
+        assert_eq!(ack["type"], "response.interrupt.accepted");
+        assert_eq!(ack["response_id"], "resp-interrupt");
+        let completed = receive!();
+        assert_eq!(completed["type"], "response.completed");
+        assert_eq!(completed["response"]["output"].as_array().unwrap().len(), 1);
+        assert_eq!(completed["response"]["output"][0]["call_id"], "call_done");
+        // Completion can win the race; acknowledge a late interrupt too.
+        send!(json!({"type":"response.interrupt","response_id":"resp-interrupt","mode":"discard_partial_items"}));
+        assert_eq!(receive!()["type"], "response.interrupt.accepted");
+        send!(json!({"type":"response.create","model":"gpt-interrupt","previous_response_id":"resp-interrupt","input":[{"type":"function_call_output","call_id":"call_done","output":"done"},{"role":"user","content":"look on unraid"}]}));
+        assert_eq!(receive!()["type"], "response.created");
+        assert_eq!(receive!()["type"], "response.completed");
+        let requests = bodies.lock().unwrap().clone();
+        assert_eq!(requests.len(), 2);
+        let input = requests[1]["input"].as_array().unwrap();
+        assert_eq!(input.len(), 4);
+        assert_eq!(input[1]["call_id"], "call_done");
+        assert_eq!(input[2]["type"], "function_call_output");
+        assert_eq!(input[3]["content"], "look on unraid");
+        socket.close(None).await.unwrap();
+        edge_task.abort();
+        upstream_task.abort();
         let _ = fs::remove_file(store_path).await;
         let _ = fs::remove_file(jobs_path).await;
     }
