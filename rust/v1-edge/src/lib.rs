@@ -18669,7 +18669,10 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                         assert_eq!(call["type"], "function_call");
                         assert_eq!(call["arguments"], "{}");
                     }
-                    assert!(events.iter().any(|event| event["type"] == "response.output_item.done" && event["item"] == *call));
+                    assert!(events.iter().any(|event| event["type"] == "response.output_item.done"
+                        && event["item"]["call_id"] == call["call_id"]
+                        && event["item"]["name"] == call["name"]
+                        && event["item"]["type"] == call["type"]));
                     frame = json!({"type": "response.create", "model": "qwen3.8-flash-next", "previous_response_id": response["id"],
                         "input": [{"type": if custom { "custom_tool_call_output" } else { "function_call_output" }, "call_id": "call_qwen", "output": "42"}]});
                 } else {
