@@ -264,8 +264,8 @@ jobs:
             exit 1
           }
           certificate_fingerprint="$(openssl x509 -in "$certificate_pem" -noout -fingerprint -sha1 | cut -d= -f2 | tr -d :)"
-          # This runner may share the interactive macOS account. Never replace
-          # its search list or default keychain, even temporarily.
+          # Shared desktop runners retain their search list and default.
+          # A disposable hosted runner explicitly registers its job keychain.
           security create-keychain -p "$keychain_password" "$keychain"
           security set-keychain-settings -lut 21600 "$keychain"
           security unlock-keychain -p "$keychain_password" "$keychain"
@@ -295,6 +295,13 @@ jobs:
             echo "::error::The imported Developer ID Application certificate is not a valid code-signing identity."
             exit 1
           }
+          SIGNING_KEYCHAIN="$keychain" node scripts/provider-host/hosted-signing-keychain.mjs
+          # Fail before compiling if codesign cannot use the imported identity.
+          signing_probe="$RUNNER_TEMP/multivibe-signing-probe"
+          cp /usr/bin/true "$signing_probe"
+          codesign --force --sign "$certificate_fingerprint" --keychain "$keychain" --timestamp "$signing_probe"
+          codesign --verify --strict "$signing_probe"
+          rm -f "$signing_probe"
           printf 'SIGN_IDENTITY=%s\n' "$certificate_fingerprint" >> "$GITHUB_ENV"
           xcrun notarytool store-credentials multivibe-release \
             --key "$api_key" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" --keychain "$keychain"

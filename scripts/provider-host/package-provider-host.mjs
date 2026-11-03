@@ -709,6 +709,10 @@ async function assemble(options, selectedTarget, work, dependencies, sourceCommi
   return { root, baseName };
 }
 
+export async function signMacDiskImage(file, identity, { keychain = process.env.SIGNING_KEYCHAIN, run = command } = {}) {
+  await run("codesign", ["--force", "--sign", identity, ...(keychain ? ["--keychain", keychain] : []), "--timestamp", file]);
+}
+
 export async function archiveBundle(bundle, options, selectedTarget) {
   await mkdir(options.output, { recursive: true, mode: 0o755 });
   const extension = selectedTarget.archive;
@@ -729,7 +733,7 @@ export async function archiveBundle(bundle, options, selectedTarget) {
       "-format", "UDZO", "-imagekey", "zlib-level=9", "-fs", "HFS+", destination,
     ]);
     if (options.signIdentity) {
-      await command("codesign", ["--force", "--sign", options.signIdentity, "--timestamp", destination]);
+      await signMacDiskImage(destination, options.signIdentity);
     }
     if (options.notaryProfile) await notarizeMacDiskImage(destination, options.notaryProfile);
   } else if (selectedTarget.archive === "tar.gz") {

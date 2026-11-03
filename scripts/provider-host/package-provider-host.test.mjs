@@ -8,7 +8,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { argumentsFrom, archiveBundle, command, commandInvocation, download, stapleMacArtifact, submitMacNotarization, signMacApplication } from "./package-provider-host.mjs";
+import { argumentsFrom, archiveBundle, command, commandInvocation, download, stapleMacArtifact, submitMacNotarization, signMacApplication, signMacDiskImage } from "./package-provider-host.mjs";
 
 const packager = fileURLToPath(new URL("./package-provider-host.mjs", import.meta.url));
 const verifier = fileURLToPath(new URL("./verify-provider-host.mjs", import.meta.url));
@@ -603,4 +603,15 @@ test("release workflow never replaces the user's keychain search list or default
   assert.match(workflow, /security find-identity -v -p codesigning "\$keychain"/u);
   assert.match(workflow, /security delete-keychain "\$SIGNING_KEYCHAIN"/u);
   assert.match(workflow, /SIGNING_KEYCHAIN=%s/u);
+});
+
+test("disk image signing uses the same explicit job keychain as application signing", async () => {
+  for (const keychain of ["/tmp/job signing.keychain-db", ""]) {
+    const calls = [];
+    await signMacDiskImage("/tmp/release.dmg", "release-identity", { keychain,
+      run: async (program, args) => { calls.push({ program, args }); },
+    });
+    assert.deepEqual(calls, [{ program: "codesign", args: ["--force", "--sign", "release-identity",
+      ...(keychain ? ["--keychain", keychain] : []), "--timestamp", "/tmp/release.dmg"] }]);
+  }
 });
