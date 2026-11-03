@@ -19,10 +19,20 @@ test("source archive is deterministic and bound to the tag", () => {
     const notice = execFileSync("git", ["show", `${sha}:NOTICE`], { encoding: "utf8" });
     assert.doesNotMatch(notice, /\bTHIRD_PARTY\b/, "NOTICE must not claim a nonexistent inventory");
     const claimedPaths = [...notice.matchAll(/`([^`]+)`/g)].map((match) => match[1]);
-    assert.deepEqual(claimedPaths, ["LICENSE"], "every repository path claim must be explicit and reviewed");
+    const bundleLicense = "ChromiumEmbeddedFramework-LICENSE.txt";
+    const repositoryPaths = ["LICENSE", "native/ios/MultiVibeChat/Resources/Assets.xcassets"];
+    assert.deepEqual(claimedPaths, [repositoryPaths[0], bundleLicense, repositoryPaths[1]],
+      "every NOTICE path claim must be explicit and reviewed");
     const archived = new Set(names.trim().split("\n"));
-    for (const claimedPath of claimedPaths) {
-      assert.ok(archived.has(`multivibe-${tag}/${claimedPath}`), `NOTICE path claim is absent: ${claimedPath}`);
+    for (const claimedPath of repositoryPaths) {
+      const entry = `multivibe-${tag}/${claimedPath}`;
+      assert.ok(archived.has(entry) || archived.has(`${entry}/`), `NOTICE repository path claim is absent: ${claimedPath}`);
+    }
+    // This notice explicitly describes an installed app resource, rather
+    // than a source file. Verify both its packaging and verification gates.
+    for (const script of ["cef-runtime.mjs", "verify-provider-host.mjs"]) {
+      const source = execFileSync("git", ["show", `${sha}:scripts/provider-host/${script}`], { encoding: "utf8" });
+      assert.ok(source.includes(bundleLicense), `bundle license is missing from ${script}`);
     }
   } finally { execFileSync("git", ["tag", "-d", tag]); }
 });
