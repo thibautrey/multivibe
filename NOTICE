@@ -16,10 +16,10 @@ BSD license. The exact CEF/Chromium revision and architecture-specific archive
 digests are pinned by the release build; the upstream license is included in
 the application bundle as `ChromiumEmbeddedFramework-LICENSE.txt`.
 
-Provider marks embedded in the iOS model catalog are vendored from the same
-LobeHub Icons MIT-licensed set documented under `web/public/assets/providers`
-where available. Apple and Meta vector marks are sourced from the CC0-1.0
-Simple Icons collection. All provider names and marks remain trademarks of
+Provider marks embedded in the iOS model catalog are vendored under
+`native/ios/MultiVibeChat/Resources/Assets.xcassets` from the LobeHub Icons
+MIT-licensed set where available. Apple and Meta vector marks are sourced
+from the CC0-1.0 Simple Icons collection. All provider names and marks remain trademarks of
 their respective owners.
 
 Every MultiVibe-authored source file distributed in this repository is covered
