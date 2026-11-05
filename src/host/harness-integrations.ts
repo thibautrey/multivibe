@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import http from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 
-const MAX_CONFIG_BYTES = 1024 * 1024;
+const MAX_CONFIG_BYTES = 16 * 1024 * 1024;
 const STATE_SCHEMA_VERSION = "multivibe-host-harness-integrations-v1";
 const MANAGED_BLOCK_START = "# >>> MultiVibe Host >>>";
 const MANAGED_BLOCK_END = "# <<< MultiVibe Host <<<";
@@ -14,7 +14,7 @@ const CODEX_ROOT_BLOCK_END = "# <<< MultiVibe Host Codex root <<<";
 const CODEX_PROVIDER_BLOCK_START = "# >>> MultiVibe Host Codex provider >>>";
 const CODEX_PROVIDER_BLOCK_END = "# <<< MultiVibe Host Codex provider <<<";
 const CODEX_MODEL_CATALOG_RELATIVE_PATH = ".codex/multivibe-models.json";
-const MODEL_CATALOG_CONFIGURATION_REVISION = 2;
+const MODEL_CATALOG_CONFIGURATION_REVISION = 3;
 type CodexManagedBlockKind = "managed" | "root" | "provider" | "agents";
 
 const CODEX_AGENTS_BLOCK_START = "# >>> MultiVibe Host coding economy >>>";
@@ -70,6 +70,8 @@ export type HarnessContext = {
   modelContextWindows?: Record<string, number>;
   /** Provider-published display names keyed by model id. */
   modelNames?: Record<string, string>;
+  /** Full exposed metadata, including the four catalog contributions. */
+  modelMetadata?: Record<string, Record<string, any>>;
   homeDirectory?: string;
   codexBridgeUrl?: string;
   /** Present only when the operator enabled the cost-optimized coding profile. */
@@ -215,6 +217,7 @@ type DiscoveredModelCatalog = {
   modelInputModalities: Record<string, string[]>;
   modelContextWindows: Record<string, number>;
   modelNames: Record<string, string>;
+  modelMetadata: Record<string, Record<string, any>>;
 };
 
 async function discoverMultiVibeModelCatalog(context: HarnessContext): Promise<DiscoveredModelCatalog> {
@@ -268,9 +271,14 @@ async function discoverMultiVibeModelCatalog(context: HarnessContext): Promise<D
   const modelInputModalities: Record<string, string[]> = Object.create(null);
   const modelContextWindows: Record<string, number> = Object.create(null);
   const modelNames: Record<string, string> = Object.create(null);
+  const modelMetadata: Record<string, Record<string, any>> = Object.create(null);
   for (const entry of document.data ?? []) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
     const model = entry as { id?: unknown; name?: unknown; metadata?: { display_name?: unknown; input_modalities?: unknown; context_window?: unknown; max_context_window?: unknown; context_length?: unknown } };
+    if (typeof model.id === "string" && exposedIds.has(model.id)) {
+      const { id, object, created, owned_by, ...extra } = entry as Record<string, unknown>;
+      modelMetadata[model.id] = { ...extra, ...(model.metadata ?? {}) };
+    }
     const modalities = model.metadata?.input_modalities;
     const contextWindow = [model.metadata?.context_window, model.metadata?.max_context_window, model.metadata?.context_length]
       .find((value): value is number => typeof value === "number" && Number.isSafeInteger(value) && value > 0);
@@ -287,7 +295,7 @@ async function discoverMultiVibeModelCatalog(context: HarnessContext): Promise<D
       modelNames[model.id] = displayName.trim();
     }
   }
-  return { modelIds, codexModels, modelInputModalities, modelContextWindows, modelNames };
+  return { modelIds, codexModels, modelInputModalities, modelContextWindows, modelNames, modelMetadata };
 }
 
 /** Provider display name when published, otherwise the routable id. */
@@ -313,16 +321,51 @@ async function prepareModelCatalog(context: HarnessContext): Promise<Partial<Har
   return discoverMultiVibeModelCatalog(context);
 }
 
+function metadataFiles(context: HarnessContext) {
+  if (!context.clientId || !context.modelMetadata) return [];
+  return [{ relativePath: `.multivibe/catalogs/${context.clientId}.json`, mode: 0o600,
+    content: `${JSON.stringify({ schemaVersion: 1, models: requireModelIds(context).map(id => ({ id, ...context.modelMetadata?.[id] })), codexModels: context.codexModels ?? [] }, null, 2)}\n` }];
+}
+function reasoningLevels(context: HarnessContext, id: string): string[] {
+  const metadata = context.modelMetadata?.[id];
+  const options = metadata?.reasoning_options;
+  const values = Array.isArray(options) ? options.find(o => o.type === "effort")?.values : undefined;
+  return Array.isArray(values) ? values.filter((e): e is string => typeof e === "string" && !["off", "default"].includes(e)) : [];
+}
+function piModel(context: HarnessContext, id: string) {
+  const m = context.modelMetadata?.[id] ?? {};
+  const levels = reasoningLevels(context, id);
+  return { id, name: modelLabel(context, id),
+    ...(typeof m.supports_reasoning === "boolean" ? { reasoning: m.supports_reasoning } : {}),
+    ...(Array.isArray(m.input_modalities) ? { input: m.input_modalities.filter((v: string) => ["text", "image"].includes(v)) } : {}),
+    ...(context.modelContextWindows?.[id] ? { contextWindow: context.modelContextWindows[id] } : {}),
+    ...(m.max_output_tokens ? { maxTokens: m.max_output_tokens } : {}),
+    ...(m.pricing ? { cost: { input: m.pricing.input ?? 0, output: m.pricing.output ?? 0, cacheRead: m.pricing.cache_read ?? 0, cacheWrite: m.pricing.cache_write ?? 0 } } : {}),
+    ...(levels.length ? { thinkingLevelMap: Object.fromEntries(["off", "minimal", "low", "medium", "high", "xhigh", "max"].map(e => [e, levels.includes(e === "off" ? "none" : e) ? (e === "off" ? "none" : e) : null])) } : {}),
+  };
+}
+
 function modelAwareConfiguration(configuration: HarnessConfiguration): HarnessConfiguration {
   return {
     ...configuration,
     revision: configuration.revision ?? MODEL_CATALOG_CONFIGURATION_REVISION,
     prepare: prepareModelCatalog,
+    auxiliaryFiles: metadataFiles,
   };
 }
 
-function openCodeModelMap(modelIds: readonly string[], context: HarnessContext): Record<string, { name: string }> {
-  return Object.fromEntries(modelIds.map((id) => [id, { name: modelLabel(context, id) }]));
+function openCodeModelMap(modelIds: readonly string[], context: HarnessContext): Record<string, unknown> {
+  return Object.fromEntries(modelIds.map((id) => {
+    const m = context.modelMetadata?.[id] ?? {}, levels = reasoningLevels(context, id);
+    return [id, { name: modelLabel(context, id),
+      ...(typeof m.supports_reasoning === "boolean" ? { reasoning: m.supports_reasoning } : {}),
+      ...(typeof m.supports_tools === "boolean" ? { tool_call: m.supports_tools } : {}),
+      ...(m.context_window && m.max_output_tokens ? { limit: { context: m.context_window, output: m.max_output_tokens } } : {}),
+      ...(m.input_modalities && m.output_modalities ? { modalities: { input: m.input_modalities, output: m.output_modalities } } : {}),
+      ...(m.pricing ? { cost: { input: m.pricing.input, output: m.pricing.output, cache_read: m.pricing.cache_read, cache_write: m.pricing.cache_write } } : {}),
+      ...(levels.length ? { variants: Object.fromEntries(levels.map(e => [e, { reasoningEffort: e }])) } : {}),
+    }];
+  }));
 }
 
 function openCodeConfigurationDocument(
@@ -351,8 +394,9 @@ function openCodeConfigurationDocument(
 
 const openCodeConfiguration: HarnessConfiguration = {
   relativePath: ".config/opencode/opencode.json",
-  revision: 2,
+  revision: 3,
   prepare: prepareModelCatalog,
+  auxiliaryFiles: metadataFiles,
   render: openCodeConfigurationDocument,
   isConfigured: (current, baseUrl) => current.includes(baseUrl),
 };
@@ -658,19 +702,15 @@ function renderCodexModelCatalog(context: HarnessContext): string {
         ...(modalities && !Array.isArray(nativeModel.input_modalities) ? { input_modalities: modalities } : {}),
         ...(advertised !== undefined && currentWindow === undefined ? { context_window: advertised } : {}),
         ...(advertised !== undefined && currentMaxWindow === undefined ? { max_context_window: advertised } : {}),
+        ...(Array.isArray(nativeModel.supported_reasoning_levels) && !nativeModel.supported_reasoning_levels.length && reasoningLevels(context, id).length ? { supported_reasoning_levels: reasoningLevels(context, id).map(effort => ({ effort, description: `${effort} reasoning effort` })) } : {}),
       };
     }
     return ({
     slug: id,
     display_name: context.modelNames?.[id] ?? id,
     description: "Available through MultiVibe Host.",
-    default_reasoning_level: "medium",
-    supported_reasoning_levels: [
-      { effort: "low", description: "Fast responses with lighter reasoning" },
-      { effort: "medium", description: "Balances speed and reasoning depth" },
-      { effort: "high", description: "Greater reasoning depth for complex tasks" },
-      { effort: "xhigh", description: "Extra reasoning depth for demanding tasks" },
-    ],
+    ...(context.modelMetadata?.[id]?.default_reasoning_level ? { default_reasoning_level: context.modelMetadata[id].default_reasoning_level } : {}),
+    supported_reasoning_levels: reasoningLevels(context, id).map(effort => ({ effort, description: `${effort} reasoning effort` })),
     shell_type: "shell_command",
     visibility: "list",
     supported_in_api: true,
@@ -692,10 +732,10 @@ function renderCodexModelCatalog(context: HarnessContext): string {
 const codexConfiguration: HarnessConfiguration = {
   codexDesktop: true,
   relativePath: ".codex/config.toml",
-  revision: 5,
+  revision: 6,
   driftScope: "managed",
   prepare: prepareModelCatalog,
-  auxiliaryFiles: (context) => [{
+  auxiliaryFiles: (context) => [...metadataFiles(context), {
     relativePath: CODEX_MODEL_CATALOG_RELATIVE_PATH,
     content: renderCodexModelCatalog(context),
     mode: 0o600,
@@ -710,22 +750,22 @@ const claudeConfiguration = jsonConfiguration(".claude/settings.json", ({ baseUr
   [["env", "ANTHROPIC_AUTH_TOKEN"], apiKey],
 ]);
 
-const openClawConfiguration = modelAwareConfiguration(jsonConfiguration(".openclaw/openclaw.json", ({ baseUrl, apiKey, modelIds, modelNames }) => [
-  [["agents", "defaults", "model", "primary"], `multivibe/${selectDefaultModelId({ baseUrl, apiKey, modelIds })}`],
+const openClawConfiguration = modelAwareConfiguration(jsonConfiguration(".openclaw/openclaw.json", (context) => [
+  [["agents", "defaults", "model", "primary"], `multivibe/${selectDefaultModelId(context)}`],
   [["models", "providers", "multivibe"], {
-    baseUrl: `${baseUrl}/v1`,
-    apiKey,
+    baseUrl: `${context.baseUrl}/v1`,
+    apiKey: context.apiKey,
     api: "openai-responses",
-    models: requireModelIds({ baseUrl, apiKey, modelIds }).map((id) => ({ id, name: modelNames?.[id] ?? id })),
+    models: requireModelIds(context).map(id => { const { thinkingLevelMap, ...model } = piModel(context, id); return model; }),
   }],
 ]));
 
-const piConfiguration = modelAwareConfiguration(jsonConfiguration(".pi/agent/models.json", ({ baseUrl, apiKey, modelIds, modelNames }) => [
+const piConfiguration = modelAwareConfiguration(jsonConfiguration(".pi/agent/models.json", (context) => [
   [["providers", "multivibe"], {
-    baseUrl: `${baseUrl}/v1`,
-    apiKey,
+    baseUrl: `${context.baseUrl}/v1`,
+    apiKey: context.apiKey,
     api: "openai-responses",
-    models: requireModelIds({ baseUrl, apiKey, modelIds }).map((id) => ({ id, name: modelNames?.[id] ?? id })),
+    models: requireModelIds(context).map(id => piModel(context, id)),
   }],
 ]));
 
@@ -1265,7 +1305,7 @@ export class HostHarnessIntegrationManager {
     }
     for (const definition of this.definitions) {
       const configuration = definition.configuration;
-      if (definition.id === "openai-codex" || !configuration?.prepare || configuration.auxiliaryFiles) continue;
+      if (definition.id === "openai-codex" || !configuration?.prepare) continue;
       try {
         const updated = await this.serial(async () => {
           const state = await this.readState();
@@ -1282,17 +1322,27 @@ export class HostHarnessIntegrationManager {
           };
           const prepared = { ...context, ...(await configuration.prepare!(context)) };
           const rendered = configuration.render(current.content, prepared);
-          if (rendered === current.content) return false;
+          const auxiliaryDefinitions = configuration.auxiliaryFiles?.(prepared) ?? [];
+          let auxiliaryChanged = false;
+          for (const file of auxiliaryDefinitions) {
+            const saved = installation.auxiliaryFiles?.find(f => f.path === path.resolve(this.homeDirectory, file.relativePath));
+            const present = await readBounded(await this.safeConfigPath(file.relativePath));
+            if (!saved || !present || sha256(present.content) !== saved.installedSha256) return false;
+            auxiliaryChanged ||= present.content !== file.content;
+          }
+          if (rendered === current.content && !auxiliaryChanged) return false;
           // Discovery performs network I/O. An editor may have changed the file
           // while it was in flight; never replace those intervening user edits.
           const latest = await readBounded(configPath);
           if (!latest || sha256(latest.content) !== installation.installedSha256) return false;
-          await writeAtomic(configPath, rendered, latest.mode);
+          const auxiliary = await this.writeAuxiliaryFiles(configuration, prepared, installation.auxiliaryFiles);
+          await writeAtomic(configPath, rendered, latest.mode).catch(async error => { await auxiliary.restore(); throw error; });
           try {
-            state.installations[definition.id] = { ...installation, installedSha256: sha256(rendered) };
+            state.installations[definition.id] = { ...installation, installedSha256: sha256(rendered), auxiliaryFiles: auxiliary.states };
             await this.writeState(state);
           } catch (error) {
             await writeAtomic(configPath, latest.content, latest.mode);
+            await auxiliary.restore();
             throw error;
           }
           return true;

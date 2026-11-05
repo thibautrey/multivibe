@@ -15,7 +15,7 @@ import { CLOUD_PLATFORM_CATALOGS } from "./cloud-platforms.js";
 import type { LiveModelCatalogSnapshot } from "./live-model-catalog.js";
 import type { ModelsDevCatalog } from "./models-dev-catalog.js";
 
-export type SdkCatalogModel = { id: string; name: string; context?: number; output?: number; tools?: boolean; reasoning?: boolean; input: string[]; cost?: import("../models-dev-pricing.js").ModelsDevCost };
+export type SdkCatalogModel = { id: string; name: string; context?: number; output?: number; tools?: boolean; reasoning?: boolean; knowledge?: import("../model-metadata/types.js").UnifiedModel["knowledge"]; efforts?: string[]; defaultEffort?: string; toggle?: boolean; budget?: { min?: number; max?: number }; structuredOutput?: boolean; outputModalities?: string[]; input: string[]; cost?: import("../models-dev-pricing.js").ModelsDevCost };
 export type SdkCatalog = { source: string; fetchedAt: string; models: Record<string, SdkCatalogModel[]> };
 
 /** Runtime models.dev lookups only; the full catalog holds disk/network state. */
@@ -81,8 +81,11 @@ export function sdkAccountModels(account: Account, live?: LiveModelCatalogSnapsh
     supports_tools: provider.id === "openai" && isOpenAIImageModel(model.id) ? false : model.tools,
     supported_tool_types: provider.id === "openai" && isOpenAIImageModel(model.id) ? [] : model.tools === undefined ? undefined : model.tools ? ["function"] : [],
     supports_reasoning: model.reasoning,
+    reasoning_options: model.efforts || model.toggle || model.budget ? [ ...(model.efforts ? [{type: "effort", values: model.efforts}] : []), ...(model.toggle ? [{type: "toggle"}] : []), ...(model.budget ? [{type: "budget_tokens", ...model.budget}] : []) ] : undefined,
+    default_reasoning_level: model.defaultEffort, supports_structured_output: model.structuredOutput,
+    model_knowledge: model.knowledge,
     input_modalities: provider.id === "openai" && isOpenAIImageModel(model.id) && !model.id.startsWith("dall-e-") ? ["text", "image"] : model.input,
-    output_modalities: provider.id === "openai" && isOpenAIImageModel(model.id) ? ["image"] : ["text"], pricing: model.cost,
+    output_modalities: provider.id === "openai" && isOpenAIImageModel(model.id) ? ["image"] : model.outputModalities ?? ["text"], pricing: model.cost,
     catalog_source: discovered?.source ?? metadata.source,
     catalog_fetched_at: discovered?.fetchedAt ?? metadata.fetchedAt,
   }));

@@ -11,7 +11,7 @@ import { createAuthRateLimiter } from "./auth-rate-limit.js";
 import { createSdkAdapterRouter } from "./ai-sdk/routes.js";
 import { SDK_INTERNAL_TOKEN } from "./ai-sdk/connection.js";
 import { LiveModelCatalog } from "./ai-sdk/live-model-catalog.js";
-import { ModelsDevCatalog } from "./ai-sdk/models-dev-catalog.js";
+import { UnifiedModelCatalog } from "./model-metadata/catalog.js";
 import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -244,7 +244,7 @@ const moduleManager = new ModuleManager(
 );
 moduleManager.registerBuiltin(automaticRouterManifest, createAutomaticRouter());
 moduleManager.registerBuiltin(codingEconomyManifest, createCodingEconomy());
-const modelsDevCatalog = new ModelsDevCatalog({ cachePath: SDK_MODELS_DEV_CACHE_PATH, onUpdate: installModelsDevPricing });
+const modelsDevCatalog = new UnifiedModelCatalog({ cachePath: SDK_MODELS_DEV_CACHE_PATH, onUpdate: installModelsDevPricing });
 await modelsDevCatalog.ensure();
 const pricingRefreshTimer = setInterval(() => { void modelsDevCatalog.ensure(); }, 60_000);
 pricingRefreshTimer.unref();

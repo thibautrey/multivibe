@@ -151,7 +151,7 @@ pub(super) fn lookup(model: &str, input: u64) -> Option<Rates> {
                 )
                 .with_file_name("models-dev-catalog.json")
             });
-        if std::fs::metadata(&path).is_ok_and(|m| m.len() <= 16 * 1024 * 1024) {
+        if std::fs::metadata(&path).is_ok_and(|m| m.len() <= 96 * 1024 * 1024) {
             if let Some((models, fetched_at)) = std::fs::read(&path)
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())

@@ -12,7 +12,7 @@ import { trimTrailingSlashes } from "../../string-utils.js";
 import { sdkProviderCatalog } from "../../ai-sdk/catalog.js";
 import { sdkAccountModels } from "../../ai-sdk/catalog.js";
 import type { LiveModelCatalogSource } from "../../ai-sdk/live-model-catalog.js";
-import type { ModelsDevCatalog } from "../../ai-sdk/models-dev-catalog.js";
+import type { ModelMetadataCatalog as ModelsDevCatalog } from "../../model-metadata/catalog.js";
 import { validateSdkAccount } from "../../ai-sdk/providers.js";
 import express from "express";
 import path from "node:path";
