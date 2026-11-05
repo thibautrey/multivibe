@@ -54,7 +54,7 @@ fn enrich_with(models: &mut [Value], providers: &HashMap<String, Vec<Value>>) {
         let Some(record) = resolve(providers, provider, bare) else { continue; };
         let Some(metadata) = model.get_mut("metadata").and_then(Value::as_object_mut) else { continue; };
         metadata.insert("model_knowledge".to_owned(), record["knowledge"].clone());
-        for (source, target) in [("context", "context_window"), ("inputLimit", "max_input_tokens"), ("output", "max_output_tokens"), ("input", "input_modalities"), ("outputModalities", "output_modalities"), ("tools", "supports_tools"), ("reasoning", "supports_reasoning"), ("structuredOutput", "supports_structured_output"), ("temperature", "supports_temperature"), ("defaultEffort", "default_reasoning_level"), ("cost", "pricing")] {
+        for (source, target) in [("name", "display_name"), ("context", "context_window"), ("inputLimit", "max_input_tokens"), ("output", "max_output_tokens"), ("input", "input_modalities"), ("outputModalities", "output_modalities"), ("tools", "supports_tools"), ("reasoning", "supports_reasoning"), ("structuredOutput", "supports_structured_output"), ("temperature", "supports_temperature"), ("defaultEffort", "default_reasoning_level"), ("cost", "pricing")] {
             if let Some(value) = record.get(source).filter(|v| !v.is_null()) {
                 if metadata.get(target).is_none_or(Value::is_null) { metadata.insert(target.to_owned(), value.clone()); }
             }
