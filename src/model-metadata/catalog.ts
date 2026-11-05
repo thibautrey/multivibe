@@ -27,6 +27,7 @@ export class UnifiedModelCatalog implements ModelMetadataCatalog {
   private flight?: Promise<boolean>;
   private nextRefresh = 0;
   private fetchedAt = 0;
+  private persistError?: string;
   private readonly now: () => number;
   constructor(private options: Options = {}) { this.now = options.now ?? Date.now; }
 
@@ -37,7 +38,8 @@ export class UnifiedModelCatalog implements ModelMetadataCatalog {
   }
   state(): ModelsDevCatalogState & { sources: Record<string, { fetchedAt?: string; modelCount: number; lastError?: string }> } {
     return { source: "multivibe:unified-model-catalog", fetchedAt: this.fetchedAt ? new Date(this.fetchedAt).toISOString() : undefined,
-      stale: this.now() >= this.nextRefresh || SOURCES.some(s => !this.snapshots.has(s) || this.snapshots.get(s)?.lastError),
+      stale: Boolean(this.persistError) || this.now() >= this.nextRefresh || SOURCES.some(s => !this.snapshots.has(s) || this.snapshots.get(s)?.lastError || this.now() - (this.snapshots.get(s)?.fetchedAt ?? 0) >= (this.options.ttlMs ?? 86_400_000)),
+      ...(this.persistError ? { lastError: this.persistError } : {}),
       providerCount: Object.keys(this.providers).length,
       sources: Object.fromEntries(SOURCES.map(s => { const snapshot = this.snapshots.get(s); return [s, { fetchedAt: snapshot?.fetchedAt ? new Date(snapshot.fetchedAt).toISOString() : undefined, modelCount: snapshot?.records.length ?? 0, lastError: snapshot?.lastError }]; })) };
   }
@@ -64,7 +66,7 @@ export class UnifiedModelCatalog implements ModelMetadataCatalog {
       else this.snapshots.set(source, { fetchedAt: old?.fetchedAt ?? 0, records: old?.records ?? [], lastError: `Could not refresh ${source}` });
     });
     if (updated) { this.fetchedAt = this.now(); this.materialize(); await this.persist(); }
-    this.nextRefresh = this.now() + (results.some(r => r.status === "rejected") ? 60_000 : this.options.ttlMs ?? 86_400_000);
+    this.nextRefresh = this.now() + ((this.persistError || results.some(r => r.status === "rejected")) ? 60_000 : this.options.ttlMs ?? 86_400_000);
     return updated;
   }
   private materialize() {
@@ -84,14 +86,27 @@ export class UnifiedModelCatalog implements ModelMetadataCatalog {
     if (!this.options.cachePath) return;
     try {
       const data = await readFile(this.options.cachePath); if (data.byteLength > UNIFIED_CATALOG_MAX_BYTES) return;
-      const cache = JSON.parse(data.toString()); if (cache.version !== 2 || cache.unifiedVersion !== 1) return;
+      const cache = JSON.parse(data.toString()); if (cache.version !== 2) return;
+      if (cache.unifiedVersion === undefined) {
+        // Upgrade the existing normalized models.dev cache without requiring a network round trip.
+        const records: Contribution[] = [];
+        for (const [provider, models] of Object.entries(object(cache.providers))) for (const raw of Array.isArray(models) ? models : []) {
+          const m = object(raw); if (!modelId(provider) || !modelId(m.id)) continue;
+          const { id, name, context, output, input, tools, reasoning, cost } = m;
+          records.push({ source: "models.dev", url: SOURCE_URLS["models.dev"], fetchedAt: Number(cache.fetchedAt) || 0, provider, id,
+            facts: { name, context, output, input, tools, reasoning, cost }, data: { ...m, legacy_normalized_cache: true } });
+        }
+        if (records.length) { this.snapshots.set("models.dev", { records, fetchedAt: Number(cache.fetchedAt) || 0 }); this.fetchedAt = Number(cache.fetchedAt) || 0; this.materialize(); }
+        return;
+      }
+      if (cache.unifiedVersion !== 1) return;
       const grouped = new Map<CatalogSource, Contribution[]>();
       for (const models of Object.values(object(cache.providers))) for (const model of Array.isArray(models) ? models : []) for (const record of object(model.knowledge).sources ?? []) {
         if (!SOURCES.includes(record.source) || !modelId(record.id) || !modelId(record.provider) || !Number.isFinite(record.fetchedAt)) continue;
         if (typeof record.url !== "string" || ![...Object.values(SOURCE_URLS), "https://raw.githubusercontent.com/langchain-ai/langchain/"].some(url => record.url === url || (record.source === "langchain" && record.url.startsWith(url)))) continue;
         const records = grouped.get(record.source) ?? []; records.push(record); grouped.set(record.source, records);
       }
-      for (const [source, records] of grouped) this.snapshots.set(source, { records, fetchedAt: Math.max(...records.map(r => r.fetchedAt)) });
+      for (const [source, records] of grouped) this.snapshots.set(source, { records, fetchedAt: Math.max(...records.map(r => r.fetchedAt)), ...(typeof cache.sources?.[source]?.lastError === "string" ? { lastError: cache.sources[source].lastError } : {}) });
       if (!this.snapshots.size) return;
       this.fetchedAt = Number(cache.fetchedAt) || 0; this.materialize();
     } catch { /* Corrupt cache never prevents startup; the next refresh repairs it. */ }
@@ -100,9 +115,9 @@ export class UnifiedModelCatalog implements ModelMetadataCatalog {
     if (!this.options.cachePath) return;
     const aliases = Object.fromEntries(SDK_PROVIDERS.filter(p => p.modelsDevId && p.modelsDevId !== p.id).map(p => [p.id, p.modelsDevId!]));
     const payload = JSON.stringify({ version: 2, unifiedVersion: 1, source: "multivibe:unified-model-catalog", fetchedAt: this.fetchedAt, providerAliases: aliases, sources: this.state().sources, providers: this.providers });
-    if (Buffer.byteLength(payload) > UNIFIED_CATALOG_MAX_BYTES) return;
+    if (Buffer.byteLength(payload) > UNIFIED_CATALOG_MAX_BYTES) { this.persistError = "Unified catalog exceeds cache size limit"; return; }
     const temporary = `${this.options.cachePath}.${randomUUID()}.tmp`;
-    try { await mkdir(path.dirname(temporary), { recursive: true, mode: 0o700 }); await writeFile(temporary, payload, { mode: 0o600 }); await rename(temporary, this.options.cachePath); }
-    catch { await unlink(temporary).catch(() => undefined); }
+    try { await mkdir(path.dirname(temporary), { recursive: true, mode: 0o700 }); await writeFile(temporary, payload, { mode: 0o600 }); await rename(temporary, this.options.cachePath); this.persistError = undefined; }
+    catch { this.persistError = "Could not persist unified model catalog"; await unlink(temporary).catch(() => undefined); }
   }
 }
