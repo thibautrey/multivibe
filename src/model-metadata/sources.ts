@@ -40,12 +40,11 @@ export function normalizeSource(source: Exclude<CatalogSource, "langchain">, pay
     for (const [key, raw] of Object.entries(object(payload))) {
       const m = object(raw); if (!m.litellm_provider || (m.mode && !["chat", "responses"].includes(m.mode))) continue;
       const provider = String(m.litellm_provider), prefix = provider + "/", id = key.startsWith(prefix) ? key.slice(prefix.length) : key;
-      const flags = EFFORTS.filter(e => m[`supports_${e}_reasoning_effort`] === true);
       const cost: Record<string, number> = {};
       for (const [a, b] of Object.entries({ input_cost_per_token: "input", output_cost_per_token: "output", cache_read_input_token_cost: "cache_read", cache_creation_input_token_cost: "cache_write" })) if (typeof m[a] === "number" && m[a] >= 0) cost[b] = m[a] * 1_000_000;
       // Isolated supports_xhigh flags are not a complete allowlist.
-      add(provider, id, m, { context: positive(m.max_input_tokens ?? m.max_tokens), output: positive(m.max_output_tokens), input: strings(m.supported_input_modalities), outputModalities: strings(m.supported_output_modalities), tools: boolean(m.supports_function_calling), reasoning: boolean(m.supports_reasoning), efforts: effortList(m.reasoning_effort_levels), defaultEffort: EFFORTS.includes(m.default_reasoning_effort) ? m.default_reasoning_effort : undefined, structuredOutput: boolean(m.supports_response_schema), cost: Object.keys(cost).length ? cost : undefined });
-      void flags; // All individual flags remain available in the original source record.
+      add(provider, id, m, { context: positive(m.max_input_tokens ?? m.max_tokens), output: positive(m.max_output_tokens), input: strings(m.supported_input_modalities), outputModalities: strings(m.supported_output_modalities), tools: boolean(m.supports_function_calling), reasoning: boolean(m.supports_reasoning), efforts: effortList(m.reasoning_effort_levels), defaultEffort: EFFORTS.includes(m.default_reasoning_effort) ? m.default_reasoning_effort : undefined, structuredOutput: boolean(m.supports_response_schema), cost: normalizeModelsDevCost(cost) });
+      // Individual capability flags remain available in the original source record.
     }
   }
   if (!out.length) throw Error(`${source} returned no usable models`);
