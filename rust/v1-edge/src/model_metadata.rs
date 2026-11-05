@@ -30,7 +30,15 @@ fn resolve(providers: &HashMap<String, Vec<Value>>, provider: &str, id: &str) ->
         let values = candidates.iter().filter_map(|m| m.get(key)).collect::<Vec<_>>();
         if let Some(first) = values.first() {
             if values.iter().all(|v| *v == *first) { result[key] = (*first).clone(); }
-            else { conflicts.insert(key.to_owned(), Value::Array(values.iter().map(|v| (*v).clone()).collect())); }
+            else {
+                conflicts.insert(key.to_owned(), Value::Array(values.iter().map(|v| (*v).clone()).collect()));
+                if ["efforts", "input", "outputModalities"].contains(&key) {
+                    if let Some(first) = first.as_array() {
+                        let common = first.iter().filter(|item| values.iter().all(|v| v.as_array().is_some_and(|a| a.contains(item)))).cloned().collect::<Vec<_>>();
+                        if !common.is_empty() { result[key] = json!(common); }
+                    }
+                }
+            }
         }
     }
     result["knowledge"] = json!({"sources": sources, "conflicts": conflicts, "match": "cross-provider-consensus"});
@@ -88,6 +96,15 @@ pub(super) fn codex_reasoning(info: &mut Value, metadata: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn local_deployments_keep_common_efforts_and_report_host_differences() {
+        let db = HashMap::from([
+            ("a".to_owned(), vec![json!({"id":"local-reasoner","reasoning":true,"efforts":["low","medium","xhigh"],"knowledge":{"sources":[]}})]),
+            ("b".to_owned(), vec![json!({"id":"local-reasoner","reasoning":true,"efforts":["none","low","medium","high"],"knowledge":{"sources":[]}})])]);
+        let result = resolve(&db, "openai-compatible", "local-reasoner").unwrap();
+        assert_eq!(result["efforts"],json!(["low","medium"]));
+        assert!(result["knowledge"]["conflicts"].get("efforts").is_some());
+    }
     #[test]
     fn provider_identity_runtime_precedence_and_consensus() {
         let db = HashMap::from([
