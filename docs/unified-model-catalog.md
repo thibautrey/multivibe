@@ -15,7 +15,7 @@ Identity is the normalized provider plus the exact model ID. A small provider-na
 
 Each entry stores normalized facts, all original public source records, source URLs and observation times, and conflicting values. Scalar priority is models.dev, LangChain, LiteLLM, Pi. Explicit acceptance lists intersect, numeric capacity limits take the minimum, and a denial wins for boolean capabilities on the same provider. Default effort is retained only when compatible with the resolved acceptance list. Unknown capabilities remain absent. Isolated LiteLLM effort flags and Pi fallback UI levels do not invent a complete native allowlist.
 
-Live runtime metadata overrides catalog facts. When a local endpoint has no matching provider identity, only agreed facts from exact ID/canonical-ID matches transfer; disagreements remain visible, and prices never transfer between providers. Catalog metadata enriches discovered models; it does not authorize routing or grant account/model access.
+Live runtime metadata overrides catalog facts. When a local endpoint has no matching provider identity, only agreed facts and common acceptance-list values from exact ID/canonical-ID matches transfer; disagreements remain visible, and prices never transfer between providers. Catalog metadata enriches discovered models; it does not authorize routing or grant account/model access.
 
 ## Refresh and storage
 
