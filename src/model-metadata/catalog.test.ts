@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { UnifiedModelCatalog } from "./catalog.js";
@@ -95,4 +95,14 @@ test("stable models.dev data survives optional v2 failure and exposes all four c
   assert.equal(models[0].default_reasoning_level,"high");
   assert.equal(models[0].model_knowledge?.sources.length,4);
   assert.equal(models[0].model_knowledge?.sources[0].data.new_public_fact,"preserved");
+});
+
+
+test("upgrade retains legacy cache metadata when every external source is unavailable",async t=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),"legacy-models-"));t.after(()=>rm(root,{recursive:true,force:true}));const cachePath=path.join(root,"catalog.json");
+ await writeFile(cachePath,JSON.stringify({version:2,fetchedAt:123456,providers:{openai:[{id:"legacy",name:"Legacy",input:["text"],reasoning:true,context:128000,cost:{input:2,output:3}}]}}));
+ const catalog=new UnifiedModelCatalog({cachePath,fetch:(async()=>{throw Error("offline");}) as typeof fetch});
+ await catalog.ensure();assert.equal(catalog.catalogFor("openai")?.models[0].context,128000);
+ assert.equal(await catalog.refresh(),false);assert.equal(catalog.catalogFor("openai")?.models[0].cost?.input,2);
+ assert.equal(catalog.state().stale,true);
 });
