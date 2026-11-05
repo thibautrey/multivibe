@@ -2,6 +2,7 @@ import { normalizeModelsDevCost } from "../models-dev-pricing.js";
 import { parseProfiles } from "./python-literal.js";
 import { object, positive, strings, effortList, modelId, EFFORTS, type CatalogSource, type Contribution, type ModelFacts } from "./types.js";
 
+export const MODELS_DEV_V2_URL = "https://models.dev/_experimental_v2.0_api.json";
 export const SOURCE_URLS = {
   "models.dev": "https://models.dev/api.json",
   litellm: "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
@@ -34,7 +35,7 @@ export function normalizeSource(source: Exclude<CatalogSource, "langchain">, pay
       // Only explicit native mappings are evidence, not Pi's synthetic fallback levels.
       const native = Object.values(map).filter((v): v is string => typeof v === "string" && EFFORTS.includes(v));
       const cost = object(m.cost);
-      add(provider, id, m, { name: m.name, context: positive(m.contextWindow), output: positive(m.maxTokens), input: strings(m.input), tools: boolean(m.tools), reasoning: boolean(m.reasoning), efforts: native.length ? [...new Set(native)] : undefined, cost: Object.keys(cost).length ? normalizeModelsDevCost({ input: cost.input, output: cost.output, cache_read: cost.cacheRead, cache_write: cost.cacheWrite }) : undefined });
+      add(provider, id, m, { name: m.name, context: positive(m.contextWindow), output: positive(m.maxTokens), input: strings(m.input), tools: boolean(m.tools), reasoning: boolean(m.reasoning), efforts: native.length && ["off", "minimal", "low", "medium", "high"].every(e => Object.hasOwn(map, e)) ? [...new Set(native)] : undefined, cost: Object.keys(cost).length ? normalizeModelsDevCost({ input: cost.input, output: cost.output, cache_read: cost.cacheRead, cache_write: cost.cacheWrite }) : undefined });
     }
   } else {
     for (const [key, raw] of Object.entries(object(payload))) {
@@ -76,6 +77,23 @@ export async function fetchText(fetcher: typeof fetch, url: string, timeoutMs: n
 export async function fetchSource(source: CatalogSource, fetcher: typeof fetch, timeoutMs: number, now: number): Promise<Contribution[]> {
   const text = await fetchText(fetcher, SOURCE_URLS[source], timeoutMs);
   const payload = JSON.parse(text);
+  if (source === "models.dev") {
+    const records = normalizeSource(source, payload, now);
+    // The stable v1 feed remains usable if the optional experimental v2 feed fails.
+    // v2 supplies defaults, MIME modalities and protocol metadata omitted by v1.
+    try {
+      const v2 = object(JSON.parse(await fetchText(fetcher, MODELS_DEV_V2_URL, timeoutMs)));
+      for (const record of records) {
+        const m = object(object(object(v2[record.provider]).models)[record.id]);
+        if (!Object.keys(m).length) continue;
+        record.data = { ...record.data, models_dev_v2: m };
+        const reasoning = object(object(m.capabilities).reasoning), defaults = object(reasoning.default);
+        if (defaults.type === "effort" && EFFORTS.includes(defaults.value)) record.facts.defaultEffort = defaults.value;
+        if (modelId(m.canonical_id) && !record.canonicalId) record.canonicalId = m.canonical_id;
+      }
+    } catch { /* Preserve stable data; optional format is not a startup dependency. */ }
+    return records;
+  }
   if (source !== "langchain") return normalizeSource(source, payload, now);
   const tree = object(payload);
   if (tree.truncated || !Array.isArray(tree.tree)) throw Error("Incomplete LangChain tree");

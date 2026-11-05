@@ -2,7 +2,7 @@
 
 The control plane maintains one materialized catalog from four public sources:
 
-- models.dev (`https://models.dev/api.json`), including `reasoning_options` and canonical identity.
+- models.dev (`https://models.dev/api.json`), including `reasoning_options` and canonical identity. The optional experimental v2 feed additionally supplies defaults and full protocol metadata; stable v1 data remains available if v2 fails.
 - LangChain Model Profiles, discovered from the LangChain repository tree and read at that tree's commit. Python files are parsed as literals; downloaded code is never executed.
 - LiteLLM's `model_prices_and_context_window.json`, including capability flags and provider-specific metadata.
 - Pi AI's public `https://pi.dev/api/models` catalog, including explicit native thinking mappings.
@@ -21,7 +21,7 @@ Live runtime metadata overrides catalog facts. When a local endpoint has no matc
 
 All sources participate in one refresh cycle, deduplicated in flight. Each successful source replaces its previous contribution before the database is rebuilt. A failed source retains its last good contribution. The default refresh interval is 24 hours, with a one-minute retry after partial failures. A stale disk snapshot is immediately available after restart while refresh runs in the background. Malformed/oversized data never removes a last good snapshot.
 
-The unified database uses the existing `SDK_MODELS_DEV_CACHE_PATH` and retains the version-2 `providers` pricing interface, with `unifiedVersion: 1`. Reads are bounded to 96 MiB and source responses to 24 MiB. Cache writes are atomic. The Rust edge reads the same materialized database, caches it for 30 seconds, and performs no external catalog requests on inference paths.
+The unified database uses the existing `SDK_MODELS_DEV_CACHE_PATH` and retains the version-2 `providers` pricing interface, with `unifiedVersion: 1`. Reads are bounded to 96 MiB and source responses to 24 MiB. Cache writes are atomic. Analytics uses a read-only view of this database and never overwrites it with a separate refresh. The Rust edge reads the same materialized database, caches it for 30 seconds, and performs no external catalog requests on inference paths.
 
 ## Harness exposure
 

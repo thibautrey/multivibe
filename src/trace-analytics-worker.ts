@@ -1,9 +1,10 @@
-import { ModelsDevCatalog } from "./ai-sdk/models-dev-catalog.js";
+import { UnifiedModelCatalog } from "./model-metadata/catalog.js";
 import { installModelsDevPricing } from "./model-pricing.js";
 import { parentPort, workerData } from "node:worker_threads";
 import { TraceAnalyticsStore } from "./trace-analytics-store.js";
 
-const pricing = workerData.pricingCachePath ? new ModelsDevCatalog({
+const pricing = workerData.pricingCachePath ? new UnifiedModelCatalog({
+  readOnly: true,
   cachePath: workerData.pricingCachePath, onUpdate: installModelsDevPricing,
 }) : undefined;
 let initializedPricing = false;
@@ -17,7 +18,7 @@ async function ingest() {
     if (pricing) {
       if (!initializedPricing) {
         await pricing.ensure();
-        // Only the analytics worker waits for a cold price fetch. Inference stays available.
+        // Read the shared materialization; the analytics worker never overwrites it or fetches its own sources.
         await pricing.refresh();
         initializedPricing = true;
       } else await pricing.ensure();
