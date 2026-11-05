@@ -10441,6 +10441,7 @@ fn model_entry_from_upstream(
                 "context_window",
                 "contextWindow",
                 "context_length",
+                "max_model_len",
                 "max_context_tokens",
                 "max_input_tokens",
             ][..],

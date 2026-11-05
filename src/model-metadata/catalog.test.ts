@@ -84,3 +84,15 @@ test("analytics readers reload the shared database without fetching or overwriti
   await reader.ensure();await reader.refresh();assert.equal(requests,0);
   assert.equal(reader.catalogFor("openai")?.models[0].output,1234);assert.equal(await readFile(cachePath,"utf8"),before);
 });
+
+test("stable models.dev data survives optional v2 failure and exposes all four contributions to SDK consumers",async()=>{
+  const {sdkAccountModels}=await import('../ai-sdk/catalog.js');
+  const catalog=new UnifiedModelCatalog({fetch:(async u=>String(u)===MODELS_DEV_V2_URL ? new Response("unavailable",{status:503}) : fixtures(String(u))) as typeof fetch});
+  assert.equal(await catalog.refresh(),true);
+  const models=sdkAccountModels({id:"fixture",provider:"ai-sdk",sdkProvider:"openai",sdkModels:["reasoner"],enabled:true} as any,undefined,catalog);
+  assert.equal(models[0].supports_reasoning,true);
+  assert.deepEqual(models[0].reasoning_options?.find(o=>o.type==="effort")?.values,["low","high"]);
+  assert.equal(models[0].default_reasoning_level,"high");
+  assert.equal(models[0].model_knowledge?.sources.length,4);
+  assert.equal(models[0].model_knowledge?.sources[0].data.new_public_fact,"preserved");
+});
