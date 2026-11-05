@@ -10,7 +10,7 @@ const SOURCES = Object.keys(SOURCE_URLS) as CatalogSource[];
 export const UNIFIED_CATALOG_MAX_BYTES = 96 * 1024 * 1024;
 type SourceSnapshot = { fetchedAt: number; records: Contribution[]; lastError?: string };
 type Options = {
-  fetch?: typeof fetch; cachePath?: string; ttlMs?: number; timeoutMs?: number; now?: () => number;
+  fetch?: typeof fetch; cachePath?: string; readOnly?: boolean; ttlMs?: number; timeoutMs?: number; now?: () => number;
   onUpdate?: (providers: Record<string, ModelsDevModel[]>, fetchedAt: number, aliases: Record<string, string>) => void;
 };
 export type ModelMetadataCatalog = {
@@ -41,9 +41,16 @@ export class UnifiedModelCatalog implements ModelMetadataCatalog {
       providerCount: Object.keys(this.providers).length,
       sources: Object.fromEntries(SOURCES.map(s => { const snapshot = this.snapshots.get(s); return [s, { fetchedAt: snapshot?.fetchedAt ? new Date(snapshot.fetchedAt).toISOString() : undefined, modelCount: snapshot?.records.length ?? 0, lastError: snapshot?.lastError }]; })) };
   }
-  async ensure(): Promise<void> { await this.loadOnce(); if (this.now() >= this.nextRefresh) void this.refresh(); }
+  async ensure(): Promise<void> {
+    await this.loadOnce();
+    if (this.now() >= this.nextRefresh) {
+      if (this.options.readOnly) { await this.load(); this.nextRefresh = this.now() + 30_000; }
+      else void this.refresh();
+    }
+  }
   async refresh(): Promise<boolean> {
     await this.loadOnce();
+    if (this.options.readOnly) { await this.load(); return this.snapshots.size > 0; }
     if (this.flight) return this.flight;
     const run = this.refreshAll().finally(() => { if (this.flight === run) this.flight = undefined; });
     this.flight = run; return run;

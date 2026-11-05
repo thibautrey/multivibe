@@ -4,13 +4,14 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { UnifiedModelCatalog } from "./catalog.js";
-import { SOURCE_URLS, normalizeSource } from "./sources.js";
+import { SOURCE_URLS, MODELS_DEV_V2_URL, normalizeSource } from "./sources.js";
 import { parseProfiles } from "./python-literal.js";
 
 const profilePath = "libs/partners/openai/langchain_openai/data/_profiles.py";
 const python = '_PROFILES: dict = {"reasoner": {"text_inputs": True, "text_outputs": True, "reasoning_output": True, "reasoning_effort_levels": ["low", "high"], "reasoning_effort_default": "high", "max_output_tokens": 1234,},}\n';
 function fixtures(url: string): Response {
   if (url === SOURCE_URLS["models.dev"]) return Response.json({ openai: { models: { reasoner: { id: "reasoner", canonical_model_id: "lab/reasoner", name: "Reasoner", reasoning: true, reasoning_options: [{type: "effort", values: ["low", "high"]}], limit: {context: 10000}, modalities: {input:["text"],output:["text"]}, cost:{input:2,output:5}, new_public_fact:"preserved" } } }, other: {models:{ reasoner:{id:"reasoner",reasoning:false} }} });
+  if (url === MODELS_DEV_V2_URL) return Response.json({openai:{models:{reasoner:{capabilities:{reasoning:{supported:true,default:{type:"effort",value:"high"}}}}}}});
   if (url === SOURCE_URLS.litellm) return Response.json({ reasoner: {litellm_provider:"openai",supports_reasoning:true,supports_function_calling:true,max_output_tokens:2000,reasoning_effort_levels:["low","medium","high"]} });
   if (url === SOURCE_URLS.pi) return Response.json({openai:{reasoner:{id:"reasoner",name:"Reasoner",reasoning:true,input:["text"],thinkingLevelMap:{low:"low",high:"high",xhigh:null},contextWindow:12000,maxTokens:4000}}});
   if (url === SOURCE_URLS.langchain) return Response.json({sha:"abc123",tree:[{path:profilePath}]});
@@ -22,7 +23,7 @@ test("four source records consolidate once with provenance, conflicts and provid
   let requests = 0;
   const catalog = new UnifiedModelCatalog({fetch:(async u => { requests++;return fixtures(String(u)); }) as typeof fetch});
   const results = await Promise.all([catalog.refresh(),catalog.refresh()]);
-  assert.deepEqual(results,[true,true]); assert.equal(requests,5);
+  assert.deepEqual(results,[true,true]); assert.equal(requests,6);
   const model = catalog.catalogFor("openai")!.models[0] as any;
   assert.deepEqual(model.efforts,["low","high"]); assert.equal(model.defaultEffort,"high");
   assert.equal(model.context,10000); assert.equal(model.output,1234); assert.equal(model.tools,true);
@@ -62,6 +63,8 @@ test("unknown capabilities stay unknown and isolated flags do not invent a compl
   assert.equal(record.data.supports_xhigh_reasoning_effort,true);
   const [pi]=normalizeSource("pi",{openai:{r:{reasoning:true}}},1);
   assert.equal(pi.facts.efforts,undefined);
+  const [partial]=normalizeSource("pi",{anthropic:{r:{reasoning:true,thinkingLevelMap:{max:"max"}}}},1);
+  assert.equal(partial.facts.efforts,undefined);
 });
 
 test("oversized, malformed and empty source payloads keep catalog unavailable rather than fabricate models",async()=>{
@@ -69,4 +72,15 @@ test("oversized, malformed and empty source payloads keep catalog unavailable ra
     const catalog=new UnifiedModelCatalog({fetch:(async()=>response()) as typeof fetch});
     assert.equal(await catalog.refresh(),false); assert.equal(catalog.catalogFor("openai"),undefined);
   }
+});
+
+
+test("analytics readers reload the shared database without fetching or overwriting it", async t => {
+  const root=await mkdtemp(path.join(os.tmpdir(),"catalog-reader-"));t.after(()=>rm(root,{recursive:true,force:true}));
+  const cachePath=path.join(root,"models.json");
+  const writer=new UnifiedModelCatalog({cachePath,fetch:(async u=>fixtures(String(u))) as typeof fetch});await writer.refresh();
+  const before=await readFile(cachePath,"utf8");let requests=0;
+  const reader=new UnifiedModelCatalog({cachePath,readOnly:true,fetch:(async()=>{requests++;throw Error("no network");}) as typeof fetch});
+  await reader.ensure();await reader.refresh();assert.equal(requests,0);
+  assert.equal(reader.catalogFor("openai")?.models[0].output,1234);assert.equal(await readFile(cachePath,"utf8"),before);
 });
