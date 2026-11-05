@@ -6,7 +6,7 @@ import type { Account } from "../types.js";
 import { sdkAccountModels, sdkModelId, isOpenAIImageModel } from "./catalog.js";
 import { LiveModelCatalog } from "./live-model-catalog.js";
 import type { LiveModelCatalogSource } from "./live-model-catalog.js";
-import type { ModelsDevCatalog } from "./models-dev-catalog.js";
+import type { ModelMetadataCatalog as ModelsDevCatalog } from "../model-metadata/catalog.js";
 import { sdkAccountBaseUrl } from "./providers.js";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";

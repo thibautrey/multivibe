@@ -1292,3 +1292,27 @@ test("the installed command registers a real session without exposing credential
   assert.equal(registration?.sessionId, "fixture-session");
   assert.equal(registration?.projectRoot, home);
 });
+
+test("unified facts reach native harness catalogs and complete source data remains available", () => {
+  const context = { baseUrl: "http://127.0.0.1:1455", apiKey: "test", clientId: "fixture", modelIds: ["local-reasoner"], modelContextWindows: { "local-reasoner": 500000 },
+    modelMetadata: { "local-reasoner": { supports_reasoning: true, supports_tools: true, supports_structured_output: true, context_window: 500000, max_output_tokens: 32000, input_modalities: ["text", "image"], output_modalities: ["text"], reasoning_options: [{type:"effort",values:["low","medium","xhigh"]}], default_reasoning_level: "xhigh", model_knowledge: {sources:[{source:"models.dev",data:{new_future_field:42}},{source:"langchain"},{source:"litellm"},{source:"pi"}]} } } };
+  const config = (id: string) => HOST_HARNESS_DEFINITIONS.find(d=>d.id===id)!.configuration!;
+  const codex = config("openai-codex").auxiliaryFiles!(context);
+  const native=JSON.parse(codex.find(f=>f.relativePath.endsWith("multivibe-models.json"))!.content).models[0];
+  assert.equal(native.default_reasoning_level,"xhigh"); assert.deepEqual(native.supported_reasoning_levels.map((l:any)=>l.effort),["low","medium","xhigh"]);
+  const pi=JSON.parse(config("pi").render(null,context)).providers.multivibe.models[0];
+  assert.equal(pi.reasoning,true); assert.equal(pi.contextWindow,500000); assert.equal(pi.thinkingLevelMap.high,null); assert.equal(pi.thinkingLevelMap.xhigh,"xhigh");
+  const opencode=JSON.parse(config("opencode").render(null,context)).provider.multivibe.models["local-reasoner"];
+  assert.equal(opencode.reasoning,true);assert.deepEqual(Object.keys(opencode.variants),["low","medium","xhigh"]);
+  for(const d of HOST_HARNESS_DEFINITIONS.filter(d=>d.configuration?.prepare)) {
+    const sidecar=d.configuration!.auxiliaryFiles?.(context).find(f=>f.relativePath===".multivibe/catalogs/fixture.json");
+    assert.ok(sidecar,d.id);assert.equal(JSON.parse(sidecar.content).models[0].model_knowledge.sources[0].data.new_future_field,42,d.id);
+  }
+});
+
+test("unknown reasoning no longer receives invented generic Codex effort levels",()=>{
+  const configuration=HOST_HARNESS_DEFINITIONS.find(d=>d.id==="openai-codex")!.configuration!;
+  const files=configuration.auxiliaryFiles!({baseUrl:"http://localhost",apiKey:"test",modelIds:["unknown"]});
+  const model=JSON.parse(files.find(f=>f.relativePath.endsWith("multivibe-models.json"))!.content).models[0];
+  assert.deepEqual(model.supported_reasoning_levels,[]);assert.equal(model.default_reasoning_level,undefined);
+});

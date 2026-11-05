@@ -13,6 +13,7 @@ mod dashboard;
 mod idempotency;
 mod images;
 mod model_pricing;
+mod model_metadata;
 mod realtime_voice;
 mod token_refresh;
 
@@ -10391,7 +10392,7 @@ fn model_entry(
         "account_ids": account_ids,
         "context_window": Value::Null,
         "max_output_tokens": Value::Null,
-        "supports_reasoning": provider == "openai",
+        "supports_reasoning": if provider == "openai" { json!(true) } else { Value::Null },
         "supports_tools": true,
         "supported_tool_types": ["function"],
     });
@@ -10457,6 +10458,11 @@ fn model_entry_from_upstream(
             if value.is_number() {
                 metadata.insert(destination.to_owned(), value.clone());
             }
+        }
+    }
+    for key in ["reasoning_options", "default_reasoning_level", "supported_reasoning_levels", "model_knowledge", "supports_structured_output", "supports_temperature", "input_modalities", "output_modalities"] {
+        if let Some(value) = upstream.get(key).or_else(|| upstream.get("metadata").and_then(|m| m.get(key))) {
+            metadata.insert(key.to_owned(), value.clone());
         }
     }
     // llama.cpp reports the configured capacity separately from the training maximum.
@@ -11068,6 +11074,7 @@ fn cached_exposed_models(
             merge_account_models(&mut models, account, &entry.models);
         }
     }
+    model_metadata::enrich(&mut models);
     models
 }
 
@@ -11324,7 +11331,9 @@ fn codex_model_shape(model: &Value) -> Option<Value> {
         return None;
     }
     if let Some(value) = model.get("codexModelInfo") {
-        return Some(value.clone());
+        let mut info = value.clone();
+        model_metadata::codex_reasoning(&mut info, &model["metadata"]);
+        return Some(info);
     }
     let metadata = metadata?;
     let provider = metadata.get("provider")?.as_str()?;
@@ -11388,6 +11397,7 @@ fn codex_model_shape(model: &Value) -> Option<Value> {
             {"effort":"xhigh","description":"Extended reasoning"}
         ]);
     }
+    model_metadata::codex_reasoning(&mut info, metadata);
     Some(info)
 }
 
