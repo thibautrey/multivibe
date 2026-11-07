@@ -6039,14 +6039,14 @@ fn prepared_payload(
             }
         }
     }
-    if !sends_chat {
-        if let Some(items) = payload.get_mut("input").and_then(Value::as_array_mut) {
-            if normalize_provider(account) == "openai" {
-                strip_foreign_reasoning_items(items);
-            }
-            for item in items {
-                normalize_response_tool_item_id(item);
-            }
+    if !sends_chat
+        && let Some(items) = payload.get_mut("input").and_then(Value::as_array_mut)
+    {
+        if normalize_provider(account) == "openai" {
+            strip_foreign_reasoning_items(items);
+        }
+        for item in items {
+            normalize_response_tool_item_id(item);
         }
     }
     filter_unsupported_tools(&mut payload, &normalize_provider(account));
