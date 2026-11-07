@@ -5,6 +5,7 @@ import { detectCommunityHost } from "./community-host-profile.js";
 import { takeDeviceSignIn } from "./host/device-signin.js";
 import { getHostMenuProviderActivity, recordHostMenuTraceUsage } from "./host/menu-bar.js";
 import { automaticRouterManifest, createAutomaticRouter } from "./automatic-router.js";
+import { audioPluginManifest, createAudioPlugin } from "./audio-plugin.js";
 import { codingEconomyManifest, createCodingEconomy } from "./coding-economy.js";
 import { syncVirtualModelAliases } from "./virtual-model-registry.js";
 import { createAuthRateLimiter } from "./auth-rate-limit.js";
@@ -243,6 +244,7 @@ const moduleManager = new ModuleManager(
   !MULTIVIBE_CONTROL_PLANE,
 );
 moduleManager.registerBuiltin(automaticRouterManifest, createAutomaticRouter());
+moduleManager.registerBuiltin(audioPluginManifest, createAudioPlugin());
 moduleManager.registerBuiltin(codingEconomyManifest, createCodingEconomy());
 const modelsDevCatalog = new UnifiedModelCatalog({ cachePath: SDK_MODELS_DEV_CACHE_PATH, onUpdate: installModelsDevPricing });
 await modelsDevCatalog.ensure();

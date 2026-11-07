@@ -48,6 +48,8 @@ export type ModuleManifest = {
   homepage?: string;
   settingsSchema?: Record<string, unknown>;
   defaultSettings?: Record<string, unknown>;
+  /** Built-in modules can opt into being enabled on first discovery. */
+  defaultEnabled?: boolean;
   /** Virtual models this bundled module contributes to the instance catalog. */
   virtualModels?: readonly ModuleVirtualModel[];
 };

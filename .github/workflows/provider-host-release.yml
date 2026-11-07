@@ -807,19 +807,27 @@ jobs:
             --trusted-key-id 8041964146f75ff5 \
             --trusted-public-key-base64 /TAkcZv7iyGJrPJY1ds1WGxrS7LvoUYnUrYERX2FOgU= \
             --output "release/multivibe-host-update-$channel.json"
+          curated="release-notes/${GITHUB_REF_NAME}.md"
           if [[ "$RELEASE_NOTES_OUTCOME" == success && -s release-notes.md ]]; then
+            if [[ -f "$curated" ]]; then
+              { cat "$curated"; printf '\n'; cat release-notes.md; } > release-notes.combined.md
+              mv release-notes.combined.md release-notes.md
+            fi
             notes_args=(--notes-file release-notes.md)
           else
             echo "::warning::Optional release notes generation failed; using the original release notes."
-            notes_args=(--notes "$(<container-release/container-release-notes.md)" --generate-notes)
+            {
+              cat container-release/container-release-notes.md
+              if [[ -f "$curated" ]]; then printf '\n'; cat "$curated"; fi
+              printf '\n'
+              cat release-info/release-platforms.md
+            } > release-notes.md
+            notes_args=(--notes-file release-notes.md --generate-notes)
           fi
           # Always append deterministic availability after optional generated prose.
           if [[ "$RELEASE_NOTES_OUTCOME" == success && -s release-notes.md ]]; then
             printf '\n' >> release-notes.md
             cat release-info/release-platforms.md >> release-notes.md
-          else
-            cat container-release/container-release-notes.md release-info/release-platforms.md > release-notes.md
-            notes_args=(--notes-file release-notes.md --generate-notes)
           fi
           gh release create "$GITHUB_REF_NAME" release/* container-release/container-release.json \
             --verify-tag \

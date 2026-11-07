@@ -113,6 +113,7 @@ import { harnessRuntimeRoutes } from "../../host/harness-runtime/routes.js";
 import { instanceRelayRoutes, type InstanceRelay } from "../../host/instance-relay.js";
 import { legacyHarnessRun } from "../../host/harness-runtime/legacy.js";
 import { isInstallableConversationHarness } from "../../host/conversation-harnesses.js";
+import { audioRoutes } from "../../audio-routes.js";
 
 const MULTIVIBE_CLOUD_FLOW_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -446,6 +447,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
   } = traceManager;
 
   const router = express.Router();
+  router.use("/audio", audioRoutes({ moduleManager }));
   router.use("/host-harness-runtime/v1", harnessRuntimeRoutes(options.hostHarnessRuntime));
   router.use("/instance-relay/v1", instanceRelayRoutes(options.instanceRelay,
     options.multivibeCloud ? operation => options.multivibeCloud!.withRelayAccount(operation) : undefined));

@@ -40,6 +40,11 @@ runs on every protocol path; see the hook coverage table below.
 
 ## Manifest and packaging
 
+Built-in modules use the same manifest shape as installed plugins. They are
+registered by the host with `registerBuiltin(manifest, module)` and can set
+`defaultEnabled: true` to be active on first discovery. The built-in
+`multivibe.audio` module uses this path; see [Audio and live voice](./audio-plugin.md).
+
 A public GitHub plugin repository contains `multivibe.module.json` and its built
 JavaScript entrypoint. Installation clones and pins a commit; it does not run a
 package installation or build. The repository URL must be public GitHub HTTPS
