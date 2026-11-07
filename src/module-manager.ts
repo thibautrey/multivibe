@@ -248,7 +248,7 @@ export class ModuleManager {
     for (const { manifest } of this.builtins.values()) {
       this.manifests.set(manifest.id, manifest);
       if (!this.locks.some((lock) => lock.id === manifest.id)) {
-        this.locks.push({ id: manifest.id, origin: manifest.repository, commit: "builtin", enabled: false,
+        this.locks.push({ id: manifest.id, origin: manifest.repository, commit: "builtin", enabled: manifest.defaultEnabled === true,
           settings: structuredClone(manifest.defaultSettings ?? {}), source: "bundled" });
         await this.saveLocks();
       }

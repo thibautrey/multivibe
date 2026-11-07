@@ -88,7 +88,7 @@ accepts a publicly known value. Set `ADMIN_TOKEN` in `.env` next to
 | [Download the Host](#download-multivibe-host) | [Providers and onboarding](https://github.com/thibautrey/multivibe/wiki/Providers-and-onboarding#-providers-and-onboarding) | [Tracing and projects](https://github.com/thibautrey/multivibe/wiki/Tracing-and-projects#-tracing-and-project-attribution) |
 | [Gateway quick start](https://github.com/thibautrey/multivibe/wiki/Quick-start#-quick-start) | [API reference and examples](https://github.com/thibautrey/multivibe/wiki/API-reference#-api-surface) | [Storage and local models](https://github.com/thibautrey/multivibe/wiki/Persistence-and-local-models#-persistence) |
 | [Dashboard tour](https://github.com/thibautrey/multivibe/wiki/Dashboard) | [Routing and aliases](https://github.com/thibautrey/multivibe/wiki/Routing-and-aliases#-routing-strategy) | [Configuration](https://github.com/thibautrey/multivibe/wiki/Configuration) |
-| [Installation guide](./packaging/PROVIDER-HOST-README.md) | [Realtime voice gateway](./docs/realtime-voice-gateway.md) · [Plugin API](./docs/plugins-api.md) | [Development](https://github.com/thibautrey/multivibe/wiki/Local-development) · [More docs](https://github.com/thibautrey/multivibe/wiki/Home) |
+| [Installation guide](./packaging/PROVIDER-HOST-README.md) | [Realtime voice gateway](./docs/realtime-voice-gateway.md) · [Audio and live voice](./docs/audio-plugin.md) · [Plugin API](./docs/plugins-api.md) | [Development](https://github.com/thibautrey/multivibe/wiki/Local-development) · [More docs](https://github.com/thibautrey/multivibe/wiki/Home) |
 
 ---
 
@@ -240,6 +240,7 @@ The **[GitHub wiki](https://github.com/thibautrey/multivibe/wiki/Home)** contain
 - [Providers and onboarding](https://github.com/thibautrey/multivibe/wiki/Providers-and-onboarding)
 - [API reference](https://github.com/thibautrey/multivibe/wiki/API-reference)
 - [Plugin API reference and migration guide](./docs/plugins-api.md) — sandbox, settings, model services, private SQLite storage, completion telemetry, and virtual routing
+- [Audio and live voice](./docs/audio-plugin.md) — configure the models behind a local GPT-Live-compatible voice server
 - [Routing and aliases](https://github.com/thibautrey/multivibe/wiki/Routing-and-aliases)
 - [Configuration](https://github.com/thibautrey/multivibe/wiki/Configuration)
 - [Local development](https://github.com/thibautrey/multivibe/wiki/Local-development)
