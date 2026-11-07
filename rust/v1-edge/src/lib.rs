@@ -2162,6 +2162,27 @@ fn decode_reasoning_content(value: Option<&Value>) -> Option<String> {
         .filter(|text| !text.is_empty())
 }
 
+/// Codex replays the whole conversation because MultiVibe never stores turns
+/// upstream. Reasoning items produced by a chat/completions runtime carry the
+/// edge's portable `mv-reasoning-v1:` blob, which only this edge can decode. A
+/// native Responses upstream verifies its own encrypted content and rejects
+/// the entire request when it cannot decrypt a foreign item, so drop those
+/// items (and unusable empty ones) before forwarding. Native blobs and the
+/// chat bridge, which decodes portable reasoning, stay untouched.
+fn strip_foreign_reasoning_items(items: &mut Vec<Value>) {
+    items.retain(|item| {
+        if item.get("type").and_then(Value::as_str) != Some("reasoning") {
+            return true;
+        }
+        item.get("encrypted_content")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|value| {
+                !value.is_empty() && !value.starts_with(MULTIVIBE_REASONING_PREFIX)
+            })
+    });
+}
+
 /// DeepSeek's thinking mode rejects a request that ends on a tool result when
 /// any assistant message of the pending turn lacks `reasoning_content`, even
 /// when the model itself omitted reasoning for that generation. The provider
@@ -6020,6 +6041,9 @@ fn prepared_payload(
     }
     if !sends_chat {
         if let Some(items) = payload.get_mut("input").and_then(Value::as_array_mut) {
+            if normalize_provider(account) == "openai" {
+                strip_foreign_reasoning_items(items);
+            }
             for item in items {
                 normalize_response_tool_item_id(item);
             }
@@ -16411,6 +16435,43 @@ mod tests {
         // Reads do not renew the TTL: app-one was inserted at 1,000 and is
         // expired at 1,100 even though it was recently read.
         assert_eq!(cache.get("app-one", "thread", "openai", 1_100), None);
+    }
+
+    #[test]
+    fn native_responses_upstream_drops_portable_reasoning_only() {
+        let body = json!({"model":"gpt-5.6-sol", "input": [
+            {"type":"reasoning", "id":"rs_portable", "summary":[], "encrypted_content": encode_reasoning_content("deepseek thought")},
+            {"role":"user", "content":"pousse"},
+            {"type":"reasoning", "id":"rs_native", "summary":[], "encrypted_content": "gAAAAABnative-opaque-blob"},
+            {"type":"reasoning", "id":"rs_empty", "summary":[], "encrypted_content": ""},
+            {"type":"message", "role":"assistant", "content":[{"type":"output_text","text":"ok"}]}
+        ]});
+        let route = RouteCandidate { requested_model:"gpt-5.6-sol".into(), model:"gpt-5.6-sol".into(), provider:Some("openai".into()), account_ids:vec![] };
+        let payload = prepared_payload(&body, "/v1/responses", &account("subscription"), &route, None, false, false, &EdgeConfig::default());
+        let items = payload["input"].as_array().unwrap();
+        let reasoning: Vec<&str> = items
+            .iter()
+            .filter(|item| item["type"] == "reasoning")
+            .filter_map(|item| item["id"].as_str())
+            .collect();
+        assert_eq!(reasoning, vec!["rs_native"], "portable and empty reasoning items must not reach a native Responses upstream");
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0]["content"], "pousse");
+    }
+
+    #[test]
+    fn chat_bridge_still_decodes_portable_reasoning() {
+        let body = json!({"model":"deepseek-v4.1-flash", "input": [
+            {"type":"reasoning", "encrypted_content": encode_reasoning_content("deepseek thought")},
+            {"type":"function_call", "call_id":"call-1", "name":"run", "arguments":"{}"},
+            {"type":"function_call_output", "call_id":"call-1", "output":"ok"}
+        ]});
+        let route = RouteCandidate { requested_model:"deepseek-v4.1-flash".into(), model:"deepseek-v4.1-flash".into(), provider:Some("openai-compatible".into()), account_ids:vec![] };
+        let mut chat = account("spark");
+        chat.provider = Some("openai-compatible".into());
+        chat.upstream_mode = Some("chat/completions".into());
+        let payload = prepared_payload(&body, "/v1/responses", &chat, &route, None, false, false, &EdgeConfig::default());
+        assert_eq!(payload["messages"][0]["reasoning_content"], "deepseek thought");
     }
 
     #[test]
