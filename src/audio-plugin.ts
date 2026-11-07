@@ -172,6 +172,7 @@ export function audioServerEnv(
     OPENGPT_VOICE_DELEGATION_MODE: text("delegationMode"),
     OPENGPT_VOICE_RESPONSES_MODEL: text("llmModel"),
     OPENGPT_VOICE_TURN_PROVIDER: text("turnDetection"),
+    OPENGPT_VOICE_MAX_SESSION_DURATION_S: String(settings.maxSessionSeconds ?? ""),
   };
   if (language && language !== "auto") env.OPENGPT_VOICE_ASR_LANGUAGE = language;
   return Object.fromEntries(Object.entries(env).filter(([, value]) => value));

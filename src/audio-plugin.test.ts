@@ -34,6 +34,7 @@ test("audio settings map to the local GPT-Live environment", () => {
     turnDetection: "vad",
     delegationMode: "responses",
     llmModel: "qwen3-32b",
+    maxSessionSeconds: 3600,
   }), {
     OPENGPT_VOICE_ASR_MODEL: "whisper-1",
     OPENGPT_VOICE_TTS_MODEL: "Kokoro-82M-bf16",
@@ -41,6 +42,7 @@ test("audio settings map to the local GPT-Live environment", () => {
     OPENGPT_VOICE_DELEGATION_MODE: "responses",
     OPENGPT_VOICE_RESPONSES_MODEL: "qwen3-32b",
     OPENGPT_VOICE_TURN_PROVIDER: "vad",
+    OPENGPT_VOICE_MAX_SESSION_DURATION_S: "3600",
     OPENGPT_VOICE_ASR_LANGUAGE: "fr",
   });
   assert.equal(audioServerEnv({ language: "auto" }).OPENGPT_VOICE_ASR_LANGUAGE, undefined);

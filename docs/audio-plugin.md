@@ -55,6 +55,7 @@ Open **Extensions → Audio**. The workspace exposes:
 | Language | `OPENGPT_VOICE_ASR_LANGUAGE` | Optional transcription hint |
 | Turn detection | `OPENGPT_VOICE_TURN_PROVIDER` | `vad` or `http` |
 | Task delegation | `OPENGPT_VOICE_DELEGATION_MODE` | `responses` or `client` |
+| Session limit | `OPENGPT_VOICE_MAX_SESSION_DURATION_S` | Maximum call length in seconds |
 | Local server | — | Base URL used by the health check |
 
 Model identifiers are suggestions; choose **Custom model…** to enter any
