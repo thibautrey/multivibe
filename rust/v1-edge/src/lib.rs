@@ -8663,6 +8663,10 @@ impl PassthroughSseState {
     }
 }
 
+/// Cloudflare closes a proxied response that yields no body byte for 100s.
+/// Comment frames keep the client stream alive while upstream prefill runs.
+const STREAM_HEARTBEAT: Duration = Duration::from_secs(15);
+
 fn streaming_response(reply: StreamingReply) -> Response {
     let mut builder = Response::builder().status(reply.status);
     let mut headers = reply.headers;
@@ -8685,21 +8689,33 @@ fn streaming_response(reply: StreamingReply) -> Response {
         let _capacity_lease = capacity_lease;
         let _activity_lease = activity_lease;
         let mut stream_error: Option<String> = None;
+        // Emit one comment immediately: a proxied client only receives response
+        // headers once the first body byte arrives. Upstream prefill on a long
+        // conversation can otherwise idle past Cloudflare's 100s origin timeout.
+        yield Ok::<Bytes, Infallible>(Bytes::from(": keepalive\n\n"));
+        let mut heartbeat = tokio::time::interval(STREAM_HEARTBEAT);
+        heartbeat.tick().await;
         if transform == StreamTransform::None {
             let mut state = PassthroughSseState::default();
-            while let Some(chunk) = upstream.next().await {
-                match chunk {
-                    Ok(chunk) => {
-                        if let Some(trace) = trace.as_mut() { trace.observe(&chunk); }
-                        if let Err(message) = state.observe(&chunk) {
-                            stream_error = Some(message);
+            loop {
+                tokio::select! {
+                    next = upstream.next() => match next {
+                        Some(Ok(chunk)) => {
+                            if let Some(trace) = trace.as_mut() { trace.observe(&chunk); }
+                            if let Err(message) = state.observe(&chunk) {
+                                stream_error = Some(message);
+                                break;
+                            }
+                            yield Ok::<Bytes, Infallible>(chunk)
+                        }
+                        Some(Err(error)) => {
+                            stream_error = Some(error.to_string());
                             break;
                         }
-                        yield Ok::<Bytes, Infallible>(chunk)
-                    }
-                    Err(error) => {
-                        stream_error = Some(error.to_string());
-                        break;
+                        None => break,
+                    },
+                    _ = heartbeat.tick() => {
+                        yield Ok::<Bytes, Infallible>(Bytes::from(": keepalive\n\n"));
                     }
                 }
             }
@@ -8713,23 +8729,29 @@ fn streaming_response(reply: StreamingReply) -> Response {
         } else {
             let mut converter = SseStreamTransformer::new(transform, &model);
             converter.chat_response.chat_tools = chat_tools;
-            while let Some(chunk) = upstream.next().await {
-                match chunk {
-                    Ok(chunk) => {
-                        if let Some(trace) = trace.as_mut() { trace.observe(&chunk); }
-                        let output = converter.push(&chunk);
-                        if !output.is_empty() { yield Ok::<Bytes, Infallible>(Bytes::from(output)); }
-                        if let Some(message) = converter.failed.clone() {
-                            stream_error = Some(message);
+            loop {
+                tokio::select! {
+                    next = upstream.next() => match next {
+                        Some(Ok(chunk)) => {
+                            if let Some(trace) = trace.as_mut() { trace.observe(&chunk); }
+                            let output = converter.push(&chunk);
+                            if !output.is_empty() { yield Ok::<Bytes, Infallible>(Bytes::from(output)); }
+                            if let Some(message) = converter.failed.clone() {
+                                stream_error = Some(message);
+                                break;
+                            }
+                        }
+                        Some(Err(error)) => {
+                            let message = error.to_string();
+                            stream_error = Some(message.clone());
+                            let output = converter.fail(&message);
+                            if !output.is_empty() { yield Ok::<Bytes, Infallible>(Bytes::from(output)); }
                             break;
                         }
-                    }
-                    Err(error) => {
-                        let message = error.to_string();
-                        stream_error = Some(message.clone());
-                        let output = converter.fail(&message);
-                        if !output.is_empty() { yield Ok::<Bytes, Infallible>(Bytes::from(output)); }
-                        break;
+                        None => break,
+                    },
+                    _ = heartbeat.tick() => {
+                        yield Ok::<Bytes, Infallible>(Bytes::from(": keepalive\n\n"));
                     }
                 }
             }
@@ -16542,8 +16564,14 @@ mod tests {
                 .send()
                 .await
                 .unwrap();
-            let chunk = response.chunk().await.unwrap().unwrap();
-            assert!(String::from_utf8_lossy(&chunk).contains(event));
+            // The first body byte is a keepalive comment so a proxied client
+            // receives headers before upstream prefill completes.
+            let mut received = String::new();
+            while !received.contains(event) {
+                let chunk = response.chunk().await.unwrap().unwrap();
+                received.push_str(&String::from_utf8_lossy(&chunk));
+            }
+            assert!(received.contains(event));
             drop(response);
 
             let traces = timeout(Duration::from_secs(2), async {
@@ -19750,6 +19778,72 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
     }
 
     #[tokio::test]
+    async fn stalled_prefill_keeps_the_stream_open_with_keepalive_comments() {
+        let upstream = Router::new()
+            .route(
+                "/backend-api/codex/models",
+                get(|| async { Json(json!({"models": [{"slug": "gpt-slow-prefill"}]})) }),
+            )
+            .route(
+                "/backend-api/codex/responses",
+                post(|| async {
+                    let body = stream! {
+                        // Prefill on a long conversation: headers arrive, no token yet.
+                        std::future::pending::<()>().await;
+                        yield Ok::<Bytes, Infallible>(Bytes::new());
+                    };
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header(header::CONTENT_TYPE, "text/event-stream")
+                        .body(Body::from_stream(body))
+                        .unwrap()
+                }),
+            );
+        let (upstream_url, upstream_task) = start_server(upstream).await;
+
+        let store_path = temporary_path("slow-prefill");
+        let jobs_path = temporary_path("slow-prefill-jobs");
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(vec![account("openai-1")])).unwrap(),
+        )
+        .await
+        .unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.chatgpt_base_url = upstream_url;
+        config.configured_api_keys = vec![("slow-app".to_owned(), "slow-key".to_owned())];
+        config.models_cache_ttl = Duration::from_secs(60);
+        config.upstream_timeout = Duration::from_secs(30);
+
+        let state = EdgeState::new(config).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(state)).await;
+        let mut response = reqwest::Client::new()
+            .post(format!("{edge_url}/v1/responses"))
+            .header("authorization", "Bearer slow-key")
+            .json(&json!({"model": "gpt-slow-prefill", "input": "hello", "stream": true}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        // The client sees a body byte well before Cloudflare's 100s origin
+        // timeout, even though upstream produced none.
+        let first = timeout(Duration::from_secs(5), response.chunk())
+            .await
+            .expect("headers and first byte must not wait for prefill")
+            .unwrap()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&first), ": keepalive\n\n");
+
+        drop(response);
+        edge_task.abort();
+        upstream_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
     async fn native_sse_stream_is_relayed_without_a_node_hop() {
         let upstream = Router::new()
             .route(
@@ -19977,11 +20071,14 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         let body = response.text().await.unwrap();
         assert_eq!(
             body,
-            concat!(
-                "event: response.failed\r\n",
-                "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_overloaded\",\"message\":\"Selected model is at capacity\"}}}\r\n\r\n",
-                "event: error\r\n",
-                "data: {\"type\":\"error\",\"code\":\"server_overloaded\",\"message\":\"Selected model is at capacity\"}",
+            format!(
+                ": keepalive\n\n{}",
+                concat!(
+                    "event: response.failed\r\n",
+                    "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_overloaded\",\"message\":\"Selected model is at capacity\"}}}\r\n\r\n",
+                    "event: error\r\n",
+                    "data: {\"type\":\"error\",\"code\":\"server_overloaded\",\"message\":\"Selected model is at capacity\"}",
+                )
             )
         );
         let trace_contents = fs::read_to_string(&trace_path).await.unwrap();
