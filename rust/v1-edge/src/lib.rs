@@ -8480,8 +8480,43 @@ impl PassthroughSseState {
 }
 
 /// Cloudflare closes a proxied response that yields no body byte for 100s.
-/// Comment frames keep the client stream alive while upstream prefill runs.
+/// Heartbeat frames keep the client stream alive while upstream prefill runs.
 const STREAM_HEARTBEAT: Duration = Duration::from_secs(15);
+
+/// A heartbeat the client's SSE reader actually surfaces as an event.
+///
+/// Comment frames (`: keepalive`) keep Cloudflare's 100s origin timer alive but
+/// are swallowed by eventsource parsers, so clients that time out on *events*
+/// (Codex: `stream_idle_timeout_ms`, 300s by default) still abort a long
+/// prefill. Emit a data frame in the client's own dialect instead.
+fn keepalive_frame(transform: StreamTransform, model: &str) -> Bytes {
+    let frame = match transform {
+        StreamTransform::ChatToResponse => {
+            sse_frame("response.in_progress", &json!({ "type": "response.in_progress" }))
+        }
+        StreamTransform::ResponseToChat => {
+            let created = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_secs())
+                .unwrap_or(0);
+            format!(
+                "data: {}\n\n",
+                json!({
+                    "id": "keepalive",
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model,
+                    "choices": []
+                })
+            )
+        }
+        StreamTransform::ResponseToAnthropic => sse_frame("ping", &json!({ "type": "ping" })),
+        // Passthrough: the wire format is the client's own, so a comment is the
+        // only frame that cannot confuse an unknown parser.
+        StreamTransform::None => ": keepalive\n\n".to_owned(),
+    };
+    Bytes::from(frame)
+}
 
 fn streaming_response(reply: StreamingReply) -> Response {
     let mut builder = Response::builder().status(reply.status);
@@ -8506,10 +8541,10 @@ fn streaming_response(reply: StreamingReply) -> Response {
         let _capacity_lease = capacity_lease;
         let _activity_lease = activity_lease;
         let mut stream_error: Option<String> = None;
-        // Emit one comment immediately: a proxied client only receives response
+        // Emit one heartbeat immediately: a proxied client only receives response
         // headers once the first body byte arrives. Upstream prefill on a long
         // conversation can otherwise idle past Cloudflare's 100s origin timeout.
-        yield Ok::<Bytes, Infallible>(Bytes::from(": keepalive\n\n"));
+        yield Ok::<Bytes, Infallible>(keepalive_frame(transform, &model));
         let mut heartbeat = tokio::time::interval(heartbeat_interval);
         heartbeat.tick().await;
         if transform == StreamTransform::None {
@@ -8532,7 +8567,7 @@ fn streaming_response(reply: StreamingReply) -> Response {
                         None => break,
                     },
                     _ = heartbeat.tick() => {
-                        yield Ok::<Bytes, Infallible>(Bytes::from(": keepalive\n\n"));
+                        yield Ok::<Bytes, Infallible>(keepalive_frame(transform, &model));
                     }
                 }
             }
@@ -8568,7 +8603,7 @@ fn streaming_response(reply: StreamingReply) -> Response {
                         None => break,
                     },
                     _ = heartbeat.tick() => {
-                        yield Ok::<Bytes, Infallible>(Bytes::from(": keepalive\n\n"));
+                        yield Ok::<Bytes, Infallible>(keepalive_frame(transform, &model));
                     }
                 }
             }
