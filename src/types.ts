@@ -247,6 +247,14 @@ export type LegacyModelAlias = {
 export type StoreSettings = {
   defaultPassthroughAccountId?: string;
   imageRequestModelOverride?: string;
+  /** Concrete local model behind multivibe/voice. */
+  voiceLocalModel?: string;
+  /** Stronger model used when a voice turn crosses the escalation threshold. */
+  voiceAdvancedModel?: string;
+  /** 0..1 heuristic threshold for escalating a voice turn. */
+  voiceEscalationThreshold?: number;
+  /** Defaults to true when a local or advanced voice model is configured. */
+  voiceEscalationEnabled?: boolean;
   anonymousUsageSharingEnabled?: boolean;
   anonymousUsageSharingEnabledAt?: string;
   /** Opt-in community benchmarks report (schema v2). Absent means disabled. */

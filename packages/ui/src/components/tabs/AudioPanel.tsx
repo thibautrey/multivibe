@@ -8,6 +8,9 @@ const AUDIO_PLUGIN = "multivibe.audio";
 type AudioOption = { id: string; name: string; voices?: string[] };
 type AudioSettings = {
   llmModel: string;
+  escalationModel: string;
+  escalationThreshold: number;
+  voiceRoutingEnabled: boolean;
   sttModel: string;
   ttsModel: string;
   ttsVoice: string;
@@ -139,7 +142,7 @@ export function AudioPanel({ module, onReload }: { module: ModuleView; onReload:
   const currentModule = payload.module;
   const tts = payload.catalog.tts.find((option) => option.id === settings.ttsModel);
   const voices: AudioOption[] = (tts?.voices ?? []).map((voice) => ({ id: voice, name: voice }));
-  const update = (key: keyof AudioSettings, value: string | number) =>
+  const update = (key: keyof AudioSettings, value: string | number | boolean) =>
     setSettings((previous) => previous ? { ...previous, [key]: value } : previous);
 
   const save = async () => {
@@ -223,6 +226,21 @@ export function AudioPanel({ module, onReload }: { module: ModuleView; onReload:
           <span className="control-label">Local GPT-Live server</span>
           <input id="audio-server-url" value={settings.serverUrl} disabled={Boolean(busy)} placeholder="http://127.0.0.1:8099" onChange={(event) => update("serverUrl", event.target.value)} />
           <span className="audio-hint">Base URL used for the health check. The token stays in the host environment.</span>
+        </label>
+        <label className="control-field" htmlFor="audio-escalation-model">
+          <span className="control-label">Escalation model</span>
+          <ModelSelect id="audio-escalation-model" value={settings.escalationModel} onChange={(value) => update("escalationModel", value)} disabled={Boolean(busy)} />
+          <span className="audio-hint">Stronger model for voice turns that need more reasoning.</span>
+        </label>
+        <label className="control-field" htmlFor="audio-escalation-threshold">
+          <span className="control-label">Escalation threshold</span>
+          <input id="audio-escalation-threshold" type="number" min={0} max={1} step={0.05} value={settings.escalationThreshold} disabled={Boolean(busy)} onChange={(event) => update("escalationThreshold", Number(event.target.value))} />
+          <span className="audio-hint">0..1; higher values keep more turns on the local model.</span>
+        </label>
+        <label className="control-field" htmlFor="audio-voice-routing">
+          <span className="control-label">Escalate complex requests</span>
+          <input id="audio-voice-routing" type="checkbox" checked={settings.voiceRoutingEnabled} disabled={Boolean(busy)} onChange={(event) => update("voiceRoutingEnabled", event.target.checked)} />
+          <span className="audio-hint">Publishes multivibe/voice with local-first routing.</span>
         </label>
         <label className="control-field" htmlFor="audio-delegation">
           <span className="control-label">Task delegation</span>

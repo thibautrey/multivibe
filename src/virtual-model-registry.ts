@@ -14,6 +14,8 @@ export type VirtualModelDescriptor = {
   moduleName?: string;
   role?: "parent" | "worker";
   description?: string;
+  /** Managed alias marker used to create and later reconcile the alias. */
+  aliasDescription?: string;
   /** Concrete model the id resolves to, when configured. */
   target?: string;
   status: VirtualModelStatus;
@@ -73,6 +75,7 @@ export function resolveVirtualModels(
       moduleName: entry.moduleName,
       role: entry.declaration.role,
       description: entry.declaration.description,
+      aliasDescription: entry.declaration.aliasDescription,
     };
     const target = targetFor(entry);
     if (!entry.enabled) return { ...base, target, status: "unconfigured" as const, reason: "Module is disabled" };
@@ -93,12 +96,12 @@ export function resolveVirtualModels(
 }
 
 /** Serializes an alias id for use as a model id: no leading or trailing space. */
-function aliasFor(id: string, target: string): ModelAlias {
+function aliasFor(id: string, target: string, description: string): ModelAlias {
   return {
     schemaVersion: 2,
     id,
     enabled: true,
-    description: CODING_ECONOMY_ALIAS_DESCRIPTION,
+    description,
     rules: [
       {
         id: "pinned-target",
@@ -109,10 +112,11 @@ function aliasFor(id: string, target: string): ModelAlias {
   };
 }
 
-function sameTarget(alias: ModelAlias, target: string): boolean {
+function sameTarget(alias: ModelAlias, target: string, description: string): boolean {
   const candidates = alias.rules.flatMap((rule) => rule.candidates);
   return (
     alias.enabled === true &&
+    alias.description === description &&
     alias.rules.length === 1 &&
     candidates.length === 1 &&
     candidates[0].model === target &&
@@ -147,8 +151,9 @@ export async function syncVirtualModelAliases(
 
   for (const descriptor of descriptors) {
     const current = byId.get(descriptor.id);
+    const managedDescription = descriptor.aliasDescription ?? CODING_ECONOMY_ALIAS_DESCRIPTION;
     if (descriptor.status !== "ready" || !descriptor.target) {
-      if (current?.description === CODING_ECONOMY_ALIAS_DESCRIPTION) {
+      if (current?.description === managedDescription) {
         await store.deleteModelAlias(descriptor.id);
         result.removed.push(descriptor.id);
       } else if (current) {
@@ -157,7 +162,7 @@ export async function syncVirtualModelAliases(
       continue;
     }
     if (!current) {
-      const alias = aliasFor(descriptor.id, descriptor.target);
+      const alias = aliasFor(descriptor.id, descriptor.target, managedDescription);
       if (validateSmartAlias(alias).length) {
         result.conflicts.push({ id: descriptor.id, reason: validateSmartAlias(alias)[0] });
         continue;
@@ -166,18 +171,22 @@ export async function syncVirtualModelAliases(
       result.created.push(descriptor.id);
       continue;
     }
-    if (current.description !== CODING_ECONOMY_ALIAS_DESCRIPTION) {
+    if (current.description !== managedDescription) {
       result.conflicts.push({ id: descriptor.id, reason: "An alias with this id already exists and is not managed by this module" });
       continue;
     }
-    if (!sameTarget(current, descriptor.target)) {
-      await store.upsertModelAlias(aliasFor(descriptor.id, descriptor.target));
+    if (!sameTarget(current, descriptor.target, managedDescription)) {
+      await store.upsertModelAlias(aliasFor(descriptor.id, descriptor.target, managedDescription));
       result.updated.push(descriptor.id);
     }
   }
 
+  const managedDescriptions = new Set<string>([CODING_ECONOMY_ALIAS_DESCRIPTION]);
+  for (const descriptor of descriptors) {
+    if (descriptor.aliasDescription) managedDescriptions.add(descriptor.aliasDescription);
+  }
   for (const alias of existing) {
-    if (alias.description !== CODING_ECONOMY_ALIAS_DESCRIPTION) continue;
+    if (!managedDescriptions.has(alias.description ?? "")) continue;
     if (declaredIds.has(alias.id)) continue;
     await store.deleteModelAlias(alias.id);
     result.removed.push(alias.id);

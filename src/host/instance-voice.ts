@@ -6,8 +6,9 @@ export const INSTANCE_VOICE_ORIGIN='https://app.multivibe.cloud';
 const digest=(value:string)=>createHash('sha256').update(value).digest('hex');
 const equal=(a:string,b:string)=>a.length===b.length&&timingSafeEqual(Buffer.from(a),Buffer.from(b));
 const uuid=/^[0-9a-f-]{36}$/i;
-export const SPEECH_MODELS={kokoro:'Kokoro-82M-bf16',qwen:'Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16',stt:'whisper-large-v3-turbo-asr-4bit'};
-export type InstanceVoiceOptions={stateFile:string;edgeOrigin:string;edgeKey:string;speechOrigin:string;llmModel:string;relayOrigin?:string};
+export type SpeechModelIds={stt:string;kokoro?:string;qwen?:string};
+export const SPEECH_MODELS:SpeechModelIds={kokoro:'Kokoro-82M-bf16',qwen:'Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16',stt:'whisper-large-v3-turbo-asr-4bit'};
+export type InstanceVoiceOptions={stateFile:string;edgeOrigin:string;edgeKey:string;speechOrigin:string;llmModel:string;relayOrigin?:string;speechModels?:SpeechModelIds};
 type Live={socket:WebSocket;deviceId:string;deviceToken:string;voice:string;credit:boolean;exhausted:boolean;speaking:boolean;manualCommit:boolean;closed:boolean;timer:NodeJS.Timeout;pending:string[];pendingBytes:number};
 
 /** Read the Host's current authorization file for every check. This companion
@@ -33,29 +34,35 @@ export class InstanceVoiceBridge {
   private readonly edge:string;
   private readonly speech:string;
   private readonly origin:string;
+  private readonly models:SpeechModelIds;
   constructor(private readonly options:InstanceVoiceOptions){
-    this.edge=loopbackOrigin(options.edgeOrigin);this.speech=loopbackOrigin(options.speechOrigin);
+    this.edge=loopbackOrigin(options.edgeOrigin);this.speech=loopbackOrigin(options.speechOrigin);this.models=options.speechModels??SPEECH_MODELS;
     this.origin=options.relayOrigin??INSTANCE_VOICE_ORIGIN;
     if(this.origin!==INSTANCE_VOICE_ORIGIN&&!(process.env.NODE_ENV==='test'&&new URL(this.origin).hostname==='127.0.0.1'))throw Error('Use the fixed MultiVibe Relay origin');
   }
   async capabilities(){
     const response=await fetch(this.speech+'/v1/models',{redirect:'error',signal:AbortSignal.timeout(5000)});
     if(!response.ok)throw Error('Speech runtime unavailable');
-    const models=await response.json() as {data:{id:string}[]},loaded=new Set(models.data.map(m=>m.id));
-    if(!loaded.has(SPEECH_MODELS.stt))throw Error('Transcription model unavailable');
+    const models=await response.json() as {data:{id:string;voices?:({name?:string}|string)[]}[]},loaded=new Set(models.data.map(m=>m.id));
+    if(!loaded.has(this.models.stt))throw Error('Transcription model unavailable');
     const available=new Map<string,{model:string;modelName:string;voice:string;name:string}>();
     for(const [provider,label] of [['kokoro','Kokoro'],['qwen','Qwen3 TTS']] as const){
-      const model=SPEECH_MODELS[provider];if(!loaded.has(model))continue;
-      const result=await fetch(this.speech+'/v1/audio/voices?model='+encodeURIComponent(model),{redirect:'error',signal:AbortSignal.timeout(5000)});
-      if(!result.ok)continue;const body=await result.json() as {voices:string[]};
-      for(const voice of body.voices){if(!/^[A-Za-z0-9_-]{1,80}$/.test(voice))continue;available.set(provider+':'+voice,{model,modelName:label,voice,name:label+' · '+voice});}
+      const model=this.models[provider];if(!model||!loaded.has(model))continue;
+      const entry=models.data.find(m=>m.id===model);let voices:string[]=[];
+      if(Array.isArray(entry?.voices)){
+        voices=entry.voices.map(v=>typeof v==='string'?v:v?.name).filter((v):v is string=>typeof v==='string');
+      }else{
+        const result=await fetch(this.speech+'/v1/audio/voices?model='+encodeURIComponent(model),{redirect:'error',signal:AbortSignal.timeout(5000)});
+        if(!result.ok)continue;const body=await result.json() as {voices:string[]};voices=body.voices;
+      }
+      for(const voice of voices){if(!/^[A-Za-z0-9_-]{1,80}$/.test(voice))continue;available.set(provider+':'+voice,{model,modelName:label,voice,name:label+' · '+voice});}
     }
     this.voices=available;
     const voices=[...available].map(([id,v])=>({id,name:v.name,model:v.model,voice:v.voice}));
     voices.sort((a,b)=>a.id==='kokoro:ff_siwis'?-1:b.id==='kokoro:ff_siwis'?1:a.name.localeCompare(b.name));
     const synthesisModels=[...new Map([...available.values()].map(v=>[v.model,{id:v.model,name:v.modelName}])).values()];
     return {enabled:voices.length>0,voices,backgroundAudio:false,tools:false,retainsAudio:false,llmModel:this.options.llmModel,
-      transcriptionModel:SPEECH_MODELS.stt,transcriptionModels:[{id:SPEECH_MODELS.stt,name:'Whisper large v3 turbo'}],synthesisModels};
+      transcriptionModel:this.models.stt,transcriptionModels:[{id:this.models.stt,name:'Whisper large v3 turbo'}],synthesisModels};
   }
   speechVoice(id:unknown){const voice=typeof id==='string'?this.voices.get(id):undefined;if(!voice)throw Error('Voice unavailable');return voice;}
   private send(body:unknown){
