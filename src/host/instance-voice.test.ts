@@ -65,3 +65,25 @@ test('a refused native WebSocket handshake ends cleanly without recursive error 
   const handshake=once(server,'upgrade');const running=bridge.run();await handshake;
   await new Promise(r=>setTimeout(r,20));bridge.stop();await running;
 });
+
+test('speaches model cards publish voices without the oMLX voices endpoint',async t=>{
+  const before=process.env.NODE_ENV;process.env.NODE_ENV='test';t.after(()=>{if(before===undefined)delete process.env.NODE_ENV;else process.env.NODE_ENV=before;});
+  const stt='deepdml/faster-whisper-large-v3-turbo-ct2',kokoro='speaches-ai/Kokoro-82M-v1.0-ONNX';
+  const server=http.createServer((request,response)=>{
+    response.setHeader('content-type','application/json');
+    if(request.url==='/v1/models'){
+      response.end(JSON.stringify({data:[{id:stt},{id:kokoro,voices:[{name:'ff_siwis'},{name:'af_heart'}]}]}));return;
+    }
+    response.writeHead(404);response.end(JSON.stringify({error:'not found'}));
+  });
+  server.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>server.close());
+  const address=server.address();assert(address&&typeof address!=='string');const origin='http://127.0.0.1:'+address.port;
+  const bridge=new InstanceVoiceBridge({stateFile:'/unused',edgeOrigin:origin,edgeKey:'synthetic',speechOrigin:origin,llmModel:'multivibe/voice',relayOrigin:origin,speechModels:{stt,kokoro}});t.after(()=>bridge.stop());
+  const capabilities=await bridge.capabilities();
+  assert.deepEqual(capabilities.transcriptionModels,[{id:stt,name:'Whisper large v3 turbo'}]);
+  assert.deepEqual(capabilities.synthesisModels,[{id:kokoro,name:'Kokoro'}]);
+  assert.deepEqual(capabilities.voices,[
+    {id:'kokoro:ff_siwis',name:'Kokoro · ff_siwis',model:kokoro,voice:'ff_siwis'},
+    {id:'kokoro:af_heart',name:'Kokoro · af_heart',model:kokoro,voice:'af_heart'}
+  ]);
+});

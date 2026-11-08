@@ -48,7 +48,10 @@ Open **Extensions → Audio**. The workspace exposes:
 
 | Control | Server variable | Meaning |
 | --- | --- | --- |
-| Reasoning model | `OPENGPT_VOICE_RESPONSES_MODEL` | Model that answers after transcription |
+| Reasoning model | `OPENGPT_VOICE_RESPONSES_MODEL` | Local model used for low-latency voice turns |
+| Escalation model | — | Stronger model used when a turn crosses the threshold |
+| Escalation threshold | — | `0..1` heuristic threshold; higher keeps more turns local |
+| Escalate complex requests | — | Publish `multivibe/voice` with local-first routing |
 | Transcription | `OPENGPT_VOICE_ASR_MODEL` | Speech-to-text model |
 | Synthesis | `OPENGPT_VOICE_TTS_MODEL` | Text-to-speech model |
 | Output voice | `OPENGPT_VOICE_TTS_VOICE` | Default voice |
@@ -61,6 +64,20 @@ Open **Extensions → Audio**. The workspace exposes:
 Model identifiers are suggestions; choose **Custom model…** to enter any
 identifier your OpenAI-compatible server accepts. The reasoning model is
 resolved by MultiVibe, so it must also exist in the MultiVibe model catalog.
+
+When **Escalate complex requests** is enabled, the server environment uses
+`multivibe/voice` instead of the local model name. The Rust edge resolves that
+virtual model before provider selection:
+
+- short greetings and simple commands stay on the configured local model;
+- longer turns, multi-step questions, tool-enabled requests, or explicit
+  reasoning requests are sent to the escalation model.
+
+The decision is a local heuristic (length, French/English complexity keywords,
+tool presence, reasoning flags, conversation depth, and multiple questions). It
+adds no classifier call, so it does not consume the latency budget. The
+threshold is stored in Host settings as `voiceEscalationThreshold`; the local and
+advanced models are stored as `voiceLocalModel` and `voiceAdvancedModel`.
 
 **Server environment** shows the exact variables to start the local server with.
 The plugin never stores bearer tokens; set them in the host environment.
@@ -115,6 +132,9 @@ instructions, audio, input, store, and delegation type are immutable.
   client's responsibility.
 - One server process serves all sessions; there is no horizontal scaling or GPU
   scheduling.
+- The local-first router is heuristic. It does not guarantee that every complex
+  turn reaches the advanced model, and it never escalates a turn that is already
+  served by a provider-held continuation without a fresh request.
 - Compatibility is verified against the project's tests, not OpenAI production.
 
 ## Troubleshooting

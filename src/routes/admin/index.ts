@@ -447,7 +447,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
   } = traceManager;
 
   const router = express.Router();
-  router.use("/audio", audioRoutes({ moduleManager }));
+  router.use("/audio", audioRoutes({ moduleManager, store }));
   router.use("/host-harness-runtime/v1", harnessRuntimeRoutes(options.hostHarnessRuntime));
   router.use("/instance-relay/v1", instanceRelayRoutes(options.instanceRelay,
     options.multivibeCloud ? operation => options.multivibeCloud!.withRelayAccount(operation) : undefined));

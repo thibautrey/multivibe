@@ -1,5 +1,7 @@
 import express from "express";
 import type { ModuleManager } from "./module-manager.js";
+import type { AccountStore } from "./store.js";
+import { syncVirtualModelAliases } from "./virtual-model-registry.js";
 import {
   AUDIO_DELEGATION_MODES,
   AUDIO_LANGUAGES,
@@ -9,11 +11,13 @@ import {
   AUDIO_TURN_DETECTION,
   audioPluginManifest,
   audioServerEnv,
+  audioVoiceRouting,
   normalizeAudioServerUrl,
 } from "./audio-plugin.js";
 
 export type AudioRoutesOptions = {
   moduleManager?: ModuleManager;
+  store?: AccountStore;
   env?: NodeJS.ProcessEnv;
   request?: typeof fetch;
 };
@@ -45,6 +49,7 @@ function payload(moduleManager: ModuleManager | undefined) {
       delegationModes: AUDIO_DELEGATION_MODES,
     },
     env: audioServerEnv(settings),
+    routing: audioVoiceRouting(settings),
     server: {
       configured: Boolean(settings.serverUrl),
       url: settings.serverUrl,
@@ -81,7 +86,7 @@ async function probe(
   }
 }
 
-export function audioRoutes({ moduleManager, env = process.env, request = fetch }: AudioRoutesOptions) {
+export function audioRoutes({ moduleManager, store, env = process.env, request = fetch }: AudioRoutesOptions) {
   const router = express.Router();
 
   router.get("/", (_req, res) => {
@@ -104,6 +109,23 @@ export function audioRoutes({ moduleManager, env = process.env, request = fetch 
       const settings = { ...current, ...incoming } as Record<string, unknown>;
       settings.serverUrl = normalizeAudioServerUrl(settings.serverUrl);
       await moduleManager.setSettings(AUDIO_PLUGIN, settings);
+      if (store) {
+        const routing = audioVoiceRouting(settings);
+        await store.patchSettings({
+          voiceLocalModel: routing.localModel || undefined,
+          voiceAdvancedModel: routing.advancedModel || undefined,
+          voiceEscalationThreshold: routing.threshold,
+          voiceEscalationEnabled: routing.enabled,
+        });
+        // The managed alias makes multivibe/voice visible in the catalog. The
+        // Rust edge resolves it before alias resolution, so this is a catalog
+        // entry, not the routing decision itself.
+        try {
+          await syncVirtualModelAliases(store, moduleManager);
+        } catch {
+          // Alias reconciliation is best effort; settings remain saved.
+        }
+      }
       return res.json(payload(moduleManager));
     } catch (error) {
       return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
