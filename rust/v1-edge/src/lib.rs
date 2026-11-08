@@ -1584,20 +1584,23 @@ fn voice_complexity_score(text: &str, body: &Value) -> f64 {
     let chars = text.chars().count();
     let mut score = 0.0_f64;
     if chars > 120 {
-        score += 0.15;
+        score += 0.2;
     }
     if chars > 400 {
-        score += 0.15;
+        score += 0.2;
     }
     if chars > 1200 {
-        score += 0.15;
+        score += 0.2;
     }
     let lower = text.to_lowercase();
     let keywords = VOICE_COMPLEXITY_KEYWORDS
         .iter()
         .filter(|keyword| lower.contains(**keyword))
         .count();
-    score += (keywords as f64 * 0.08).min(0.4);
+    score += (keywords as f64 * 0.1).min(0.5);
+    if keywords >= 3 {
+        score += 0.1;
+    }
     if body
         .get("tools")
         .and_then(Value::as_array)
