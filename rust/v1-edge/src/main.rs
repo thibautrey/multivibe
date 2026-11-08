@@ -9,6 +9,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = EdgeState::new(config.clone()).await?;
     let model_catalog_monitor = state.start_model_catalog_monitor();
     let job_runner = state.start_job_runner();
+    let shutdown_state = state.clone();
     let router: Router = build_router(state);
     let listener = TcpListener::bind(&bind_address).await?;
 
@@ -18,7 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(shutdown_state))
         .await?;
     model_catalog_monitor.abort();
     if let Some(job_runner) = job_runner {
@@ -27,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn shutdown_signal() {
+async fn shutdown_signal(state: multivibe_v1_edge::EdgeState) {
     let ctrl_c = async {
         if let Err(error) = tokio::signal::ctrl_c().await {
             eprintln!("failed to install Ctrl-C handler: {error}");
@@ -52,4 +53,14 @@ async fn shutdown_signal() {
 
     #[cfg(not(unix))]
     ctrl_c.await;
+
+    // Stop admitting new turns, then let live WebSocket connections finish the
+    // current generation and close with code 1001. Axum's graceful shutdown
+    // waits for the remaining connections after this future resolves.
+    state.begin_shutdown();
+    eprintln!("{}", serde_json::json!({
+        "event": "server.shutdown",
+        "draining": true,
+        "shutdownGraceMs": state.config.shutdown_grace.as_millis() as u64,
+    }));
 }
