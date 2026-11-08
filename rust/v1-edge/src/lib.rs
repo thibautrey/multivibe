@@ -132,6 +132,10 @@ pub struct EdgeConfig {
     /// Grace period for active WebSocket generations during a server shutdown.
     pub shutdown_grace: Duration,
     pub image_request_timeout: Duration,
+    /// Cadence of SSE comment frames written while an upstream body is idle.
+    /// Cloudflare closes a proxied response that yields no byte for 100s, so
+    /// this must stay well under that budget.
+    pub stream_heartbeat: Duration,
     pub max_account_retry_attempts: usize,
     pub max_upstream_retries: usize,
     pub upstream_retry_base_delay: Duration,
@@ -202,6 +206,7 @@ impl Default for EdgeConfig {
             websocket_idle_timeout: None,
             shutdown_grace: Duration::from_secs(15 * 60),
             image_request_timeout: Duration::from_secs(5 * 60),
+            stream_heartbeat: STREAM_HEARTBEAT,
             max_account_retry_attempts: 10,
             max_upstream_retries: 5,
             upstream_retry_base_delay: Duration::from_secs(2),
@@ -367,6 +372,12 @@ impl EdgeConfig {
                     .and_then(|value| value.parse::<u64>().ok())
                     .filter(|value| (1..=2_147_483_647).contains(value))
                     .unwrap_or(defaults.image_request_timeout.as_millis() as u64),
+            ),
+            stream_heartbeat: Duration::from_millis(
+                env("STREAM_HEARTBEAT_MS")
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(defaults.stream_heartbeat.as_millis() as u64)
+                    .max(1_000),
             ),
             max_account_retry_attempts: env("MAX_ACCOUNT_RETRY_ATTEMPTS")
                 .and_then(|v| v.parse::<usize>().ok())
@@ -3770,6 +3781,7 @@ struct StreamingReply {
     trace: Option<StreamingTrace>,
     capacity_lease: AdmissionLease,
     activity_lease: Option<ActivityLease>,
+    stream_heartbeat: Duration,
 }
 
 enum ProxyResult {
@@ -7431,6 +7443,7 @@ async fn proxy_inference(
                         trace: Some(streaming_trace),
                         capacity_lease,
                         activity_lease,
+                        stream_heartbeat: state.config.stream_heartbeat,
                     }));
                 }
                 let bytes = match response.bytes().await {
@@ -8683,6 +8696,7 @@ fn streaming_response(reply: StreamingReply) -> Response {
     let mut upstream = reply.upstream.bytes_stream();
     let capacity_lease = reply.capacity_lease;
     let activity_lease = reply.activity_lease;
+    let heartbeat_interval = reply.stream_heartbeat;
     let body = stream! {
         // The lease lives for exactly as long as the response body. Dropping
         // the client body cancels this generator and releases the account.
@@ -8693,7 +8707,7 @@ fn streaming_response(reply: StreamingReply) -> Response {
         // headers once the first body byte arrives. Upstream prefill on a long
         // conversation can otherwise idle past Cloudflare's 100s origin timeout.
         yield Ok::<Bytes, Infallible>(Bytes::from(": keepalive\n\n"));
-        let mut heartbeat = tokio::time::interval(STREAM_HEARTBEAT);
+        let mut heartbeat = tokio::time::interval(heartbeat_interval);
         heartbeat.tick().await;
         if transform == StreamTransform::None {
             let mut state = PassthroughSseState::default();
@@ -19816,6 +19830,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         config.configured_api_keys = vec![("slow-app".to_owned(), "slow-key".to_owned())];
         config.models_cache_ttl = Duration::from_secs(60);
         config.upstream_timeout = Duration::from_secs(30);
+        config.stream_heartbeat = Duration::from_millis(250);
 
         let state = EdgeState::new(config).await.unwrap();
         let (edge_url, edge_task) = start_server(build_router(state)).await;
@@ -19835,6 +19850,13 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
             .unwrap()
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&first), ": keepalive\n\n");
+        // And it repeats while the upstream stays idle, so no 100s gap can form.
+        let second = timeout(Duration::from_secs(2), response.chunk())
+            .await
+            .expect("idle upstream must keep receiving heartbeat frames")
+            .unwrap()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&second), ": keepalive\n\n");
 
         drop(response);
         edge_task.abort();
