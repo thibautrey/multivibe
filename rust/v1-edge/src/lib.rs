@@ -23,7 +23,7 @@ use axum::{
     body::{Body, to_bytes},
     extract::{
         Path, Query, State, WebSocketUpgrade,
-        ws::{Message, WebSocket},
+        ws::{CloseFrame, Message, Utf8Bytes, WebSocket},
     },
     http::{
         HeaderMap, Method, Request, StatusCode, Uri,
@@ -118,6 +118,19 @@ pub struct EdgeConfig {
     pub session_affinity_ttl: Duration,
     pub session_affinity_max_entries: usize,
     pub upstream_timeout: Duration,
+    /// Interval between WebSocket Ping frames. Ping/Pong keeps the socket
+    /// alive through idle reverse proxies even when the model emits no tokens.
+    pub websocket_ping_interval: Duration,
+    /// Maximum time to wait for a Pong before treating the peer as dead.
+    pub websocket_pong_timeout: Duration,
+    /// Bound for the closing handshake when the edge initiates a Close.
+    pub websocket_close_timeout: Duration,
+    /// Optional idle limit for a connection with no in-flight response.
+    /// `None` keeps idle sockets open indefinitely (they are kept alive by
+    /// Ping frames).
+    pub websocket_idle_timeout: Option<Duration>,
+    /// Grace period for active WebSocket generations during a server shutdown.
+    pub shutdown_grace: Duration,
     pub image_request_timeout: Duration,
     pub max_account_retry_attempts: usize,
     pub max_upstream_retries: usize,
@@ -183,6 +196,11 @@ impl Default for EdgeConfig {
             session_affinity_ttl: Duration::from_secs(60 * 60),
             session_affinity_max_entries: 10_000,
             upstream_timeout: Duration::from_secs(10 * 60),
+            websocket_ping_interval: Duration::from_secs(25),
+            websocket_pong_timeout: Duration::from_secs(75),
+            websocket_close_timeout: Duration::from_secs(5),
+            websocket_idle_timeout: None,
+            shutdown_grace: Duration::from_secs(15 * 60),
             image_request_timeout: Duration::from_secs(5 * 60),
             max_account_retry_attempts: 10,
             max_upstream_retries: 5,
@@ -316,6 +334,34 @@ impl EdgeConfig {
                 .unwrap_or(defaults.session_affinity_max_entries)
                 .max(1),
             upstream_timeout: Duration::from_millis(timeout_ms.max(1)),
+            websocket_ping_interval: Duration::from_millis(
+                env("MULTIVIBE_WS_PING_INTERVAL_MS")
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(defaults.websocket_ping_interval.as_millis() as u64)
+                    .max(1),
+            ),
+            websocket_pong_timeout: Duration::from_millis(
+                env("MULTIVIBE_WS_PONG_TIMEOUT_MS")
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(defaults.websocket_pong_timeout.as_millis() as u64)
+                    .max(1),
+            ),
+            websocket_close_timeout: Duration::from_millis(
+                env("MULTIVIBE_WS_CLOSE_TIMEOUT_MS")
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(defaults.websocket_close_timeout.as_millis() as u64)
+                    .max(1),
+            ),
+            websocket_idle_timeout: env("MULTIVIBE_WS_IDLE_TIMEOUT_MS")
+                .and_then(|value| value.parse::<u64>().ok())
+                .filter(|value| *value > 0)
+                .map(Duration::from_millis),
+            shutdown_grace: Duration::from_millis(
+                env("MULTIVIBE_SHUTDOWN_GRACE_MS")
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(defaults.shutdown_grace.as_millis() as u64)
+                    .max(1),
+            ),
             image_request_timeout: Duration::from_millis(
                 env("IMAGE_REQUEST_TIMEOUT_MS")
                     .and_then(|value| value.parse::<u64>().ok())
@@ -3133,29 +3179,228 @@ fn chat_completion_sse(value: &Value) -> String {
     format!("data: {}\n\ndata: [DONE]\n\n", value)
 }
 
-fn parse_sse_events(text: &str) -> Vec<(String, Value)> {
-    text.replace("\r\n", "\n")
-        .split("\n\n")
-        .filter_map(|frame| {
-            let mut event = String::new();
-            let mut data = Vec::new();
-            for line in frame.lines() {
-                if let Some(value) = line.strip_prefix("event:") {
-                    event = value.trim().to_owned();
-                } else if let Some(value) = line.strip_prefix("data:") {
-                    data.push(value.trim());
+/// Maximum bytes accumulated for one SSE event. A larger event is treated as
+/// a protocol failure instead of growing the buffer without bound.
+const SSE_MAX_EVENT_BYTES: usize = 1024 * 1024;
+
+#[derive(Debug, Default, Clone)]
+struct SseEvent {
+    event: Option<String>,
+    data: String,
+}
+
+#[derive(Debug, Default)]
+struct SseBatch {
+    events: Vec<SseEvent>,
+    overflow: bool,
+}
+
+/// Incremental SSE decoder.
+///
+/// The buffer is kept as bytes so a multi-byte UTF-8 sequence split across two
+/// network chunks is not corrupted. Complete lines are decoded only when an
+/// event boundary is reached. LF, CRLF and bare CR line terminators are
+/// accepted, and multiple events in one chunk are all returned.
+#[derive(Debug, Default)]
+struct SseDecoder {
+    buffer: Vec<u8>,
+    event: Option<String>,
+    data: Vec<u8>,
+    data_len: usize,
+    overflow: bool,
+}
+
+impl SseDecoder {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn push(&mut self, chunk: &[u8]) -> SseBatch {
+        if self.overflow {
+            return SseBatch {
+                events: Vec::new(),
+                overflow: true,
+            };
+        }
+        self.buffer.extend_from_slice(chunk);
+        let mut batch = SseBatch::default();
+        let mut consumed = 0;
+        while let Some((line_end, next)) = sse_next_line_from(&self.buffer, consumed) {
+            let line = self.buffer[consumed..line_end].to_vec();
+            consumed = next;
+            if line.is_empty() {
+                if let Some(event) = self.take_event() {
+                    batch.events.push(event);
+                }
+            } else {
+                self.push_line(&line);
+                if self.overflow {
+                    batch.overflow = true;
+                    self.reset_after_overflow();
+                    return batch;
                 }
             }
-            if data.is_empty() {
+        }
+        if consumed > 0 {
+            self.buffer.drain(..consumed);
+        }
+        if !batch.overflow
+            && (self.buffer.len() > SSE_MAX_EVENT_BYTES
+                || self.data_len > SSE_MAX_EVENT_BYTES)
+        {
+            batch.overflow = true;
+            self.overflow = true;
+            self.reset_after_overflow();
+        }
+        batch
+    }
+
+    fn finish(&mut self) -> Vec<SseEvent> {
+        let mut events = Vec::new();
+        if self.overflow {
+            self.reset_after_overflow();
+            return events;
+        }
+        let mut consumed = 0;
+        while let Some((line_end, next)) = sse_next_line_eof_from(&self.buffer, consumed) {
+            let line = self.buffer[consumed..line_end].to_vec();
+            consumed = next;
+            if line.is_empty() {
+                if let Some(event) = self.take_event() {
+                    events.push(event);
+                }
+            } else {
+                self.push_line(&line);
+            }
+        }
+        if consumed > 0 {
+            self.buffer.drain(..consumed);
+        }
+        if !self.buffer.is_empty() {
+            let mut line = std::mem::take(&mut self.buffer);
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            self.push_line(&line);
+        }
+        if let Some(event) = self.take_event() {
+            events.push(event);
+        }
+        events
+    }
+
+    fn push_line(&mut self, line: &[u8]) {
+        // A line starting with ':' is a comment.
+        if line.first() == Some(&b':') {
+            return;
+        }
+        let (field, value) = match line.iter().position(|byte| *byte == b':') {
+            Some(index) => (&line[..index], &line[index + 1..]),
+            None => (line, &[][..]),
+        };
+        match String::from_utf8_lossy(field).as_ref() {
+            "data" => {
+                // The SSE spec removes exactly one leading space after the colon.
+                let value = value.strip_prefix(b" ").unwrap_or(value);
+                self.data_len = self.data_len.saturating_add(value.len() + 1);
+                if self.data_len > SSE_MAX_EVENT_BYTES {
+                    self.overflow = true;
+                    return;
+                }
+                self.data.extend_from_slice(value);
+                self.data.push(b'\n');
+            }
+            "event" => {
+                self.event = Some(String::from_utf8_lossy(value).trim().to_owned());
+            }
+            _ => {}
+        }
+    }
+
+    fn take_event(&mut self) -> Option<SseEvent> {
+        if self.overflow {
+            self.reset_after_overflow();
+            return None;
+        }
+        if self.data.is_empty() {
+            self.event = None;
+            return None;
+        }
+        if self.data.last() == Some(&b'\n') {
+            self.data.pop();
+        }
+        let data = String::from_utf8_lossy(&self.data).into_owned();
+        let event = self.event.take();
+        self.data.clear();
+        self.data_len = 0;
+        Some(SseEvent { event, data })
+    }
+
+    fn reset_after_overflow(&mut self) {
+        self.buffer.clear();
+        self.data.clear();
+        self.data_len = 0;
+        self.event = None;
+    }
+}
+
+/// Find the next complete line starting at `start`. A trailing CR is held
+/// until the next chunk so CRLF is not split into two terminators.
+fn sse_next_line_from(buffer: &[u8], start: usize) -> Option<(usize, usize)> {
+    let mut index = start;
+    while index < buffer.len() {
+        match buffer[index] {
+            b'\n' => return Some((index, index + 1)),
+            b'\r' => {
+                if index + 1 < buffer.len() {
+                    return Some((index, if buffer[index + 1] == b'\n' {
+                        index + 2
+                    } else {
+                        index + 1
+                    }));
+                }
                 return None;
             }
-            let text = data.join("\n");
-            if text == "[DONE]" {
-                return Some((event, Value::String("[DONE]".to_owned())));
+            _ => index += 1,
+        }
+    }
+    None
+}
+
+/// End-of-stream variant that treats a trailing CR as a terminator.
+fn sse_next_line_eof_from(buffer: &[u8], start: usize) -> Option<(usize, usize)> {
+    let mut index = start;
+    while index < buffer.len() {
+        match buffer[index] {
+            b'\n' => return Some((index, index + 1)),
+            b'\r' => {
+                let next = if index + 1 < buffer.len() && buffer[index + 1] == b'\n' {
+                    index + 2
+                } else {
+                    index + 1
+                };
+                return Some((index, next));
             }
-            serde_json::from_str::<Value>(&text)
+            _ => index += 1,
+        }
+    }
+    None
+}
+
+fn parse_sse_events(text: &str) -> Vec<(String, Value)> {
+    let mut decoder = SseDecoder::new();
+    let mut events = decoder.push(text.as_bytes()).events;
+    events.extend(decoder.finish());
+    events
+        .into_iter()
+        .filter_map(|event| {
+            let name = event.event.unwrap_or_default();
+            if event.data == "[DONE]" {
+                return Some((name, Value::String("[DONE]".to_owned())));
+            }
+            serde_json::from_str::<Value>(&event.data)
                 .ok()
-                .map(|value| (event, value))
+                .map(|value| (name, value))
         })
         .collect()
 }
@@ -3346,6 +3591,7 @@ struct StreamingReply {
     upstream: reqwest::Response,
     transform: StreamTransform,
     requested_model: String,
+    provider: String,
     trace: Option<StreamingTrace>,
     capacity_lease: AdmissionLease,
     activity_lease: Option<ActivityLease>,
@@ -4134,21 +4380,16 @@ struct NativeCustomToolCall {
 }
 
 impl NativeStreamDiagnostics {
-    fn inspect_frame(&mut self, frame: &str) {
-        let normalized = frame.replace('\r', "");
-        for line in normalized.lines() {
-            let Some(payload) = line.strip_prefix("data:").map(str::trim) else {
-                continue;
-            };
-            if payload.is_empty() || payload == "[DONE]" {
-                continue;
-            }
-            let Ok(event) = serde_json::from_str::<Value>(payload) else {
-                self.invalid_data_payload_count = self.invalid_data_payload_count.saturating_add(1);
-                continue;
-            };
-            self.inspect_event(&event);
+    fn inspect_payload(&mut self, payload: &str) {
+        let payload = payload.trim();
+        if payload.is_empty() || payload == "[DONE]" {
+            return;
         }
+        let Ok(event) = serde_json::from_str::<Value>(payload) else {
+            self.invalid_data_payload_count = self.invalid_data_payload_count.saturating_add(1);
+            return;
+        };
+        self.inspect_event(&event);
     }
 
     fn inspect_event(&mut self, event: &Value) {
@@ -4402,42 +4643,33 @@ impl NativeStreamDiagnostics {
 }
 
 struct SseTraceObserver {
-    buffer: String,
+    decoder: SseDecoder,
     diagnostics: NativeStreamDiagnostics,
 }
 
 impl SseTraceObserver {
     fn new() -> Self {
         Self {
-            buffer: String::new(),
+            decoder: SseDecoder::new(),
             diagnostics: NativeStreamDiagnostics::default(),
         }
     }
 
     fn push(&mut self, bytes: &[u8]) {
-        self.buffer.push_str(&String::from_utf8_lossy(bytes));
-        loop {
-            let delimiter = self
-                .buffer
-                .find("\n\n")
-                .map(|index| (index, 2))
-                .into_iter()
-                .chain(self.buffer.find("\r\n\r\n").map(|index| (index, 4)))
-                .min_by_key(|(index, _)| *index);
-            let Some((index, length)) = delimiter else {
-                break;
-            };
-            let frame = self.buffer[..index].to_owned();
-            self.buffer.drain(..index + length);
-            self.diagnostics.inspect_frame(&frame);
+        let batch = self.decoder.push(bytes);
+        for event in batch.events {
+            self.diagnostics.inspect_payload(&event.data);
+        }
+        if batch.overflow {
+            self.diagnostics.invalid_data_payload_count =
+                self.diagnostics.invalid_data_payload_count.saturating_add(1);
         }
     }
 
     fn flush_pending(&mut self) {
-        if !self.buffer.trim().is_empty() {
-            self.diagnostics.inspect_frame(&self.buffer);
+        for event in self.decoder.finish() {
+            self.diagnostics.inspect_payload(&event.data);
         }
-        self.buffer.clear();
     }
 
     fn finish(mut self) -> NativeStreamDiagnostics {
@@ -5230,6 +5462,7 @@ pub struct EdgeState {
     capacity_version: Arc<AtomicU64>,
     admission: Arc<AdmissionController>,
     drain: DrainController,
+    shutdown: broadcast::Sender<()>,
     realtime_secrets: realtime_voice::SecretStore,
     job_runner_started: Arc<AtomicBool>,
     dashboard: Arc<dashboard::DashboardState>,
@@ -5283,6 +5516,7 @@ impl EdgeState {
             max_response_bytes: config.idempotency_max_response_bytes,
         });
         let capacity_version = Arc::new(AtomicU64::new(1));
+        let (shutdown, _) = broadcast::channel(16);
         let state = Self {
             store: AccountStore::new(config.store_path.clone()),
             jobs: Arc::new(
@@ -5311,6 +5545,7 @@ impl EdgeState {
             token_refresh: token_refresh::TokenRefreshManager::default(),
             admission: Arc::new(AdmissionController::new(capacity_version.clone())),
             drain: DrainController::default(),
+            shutdown,
             realtime_secrets: realtime_voice::SecretStore::default(),
             capacity_version,
             job_runner_started: Arc::new(AtomicBool::new(false)),
@@ -5318,6 +5553,13 @@ impl EdgeState {
         };
         state.restore_model_catalog_cache().await;
         Ok(state)
+    }
+
+    /// Stop admitting new work and notify live WebSocket connections so they
+    /// can finish the current generation and close with code 1001.
+    pub fn begin_shutdown(&self) {
+        self.drain.begin();
+        let _ = self.shutdown.send(());
     }
 
     /// Seed the in-memory catalog from the last successful snapshot so a
@@ -6174,7 +6416,12 @@ async fn send_upstream_with_retry(
                     return Err(UpstreamSendError::Timeout);
                 }
                 let message = error.to_string();
+                // A transport error after the request may have reached the
+                // provider can represent a billed generation. Retrying it could
+                // duplicate tool calls, costs or side effects. Only retry a
+                // connection-establishment failure, where no request was sent.
                 if retry < max_retries
+                    && error.is_connect()
                     && !is_quota_error(StatusCode::BAD_GATEWAY, &message)
                 {
                     tokio::time::sleep(upstream_retry_delay(
@@ -6187,14 +6434,8 @@ async fn send_upstream_with_retry(
                 }
                 return Err(UpstreamSendError::Transport(message));
             }
-            Err(_) if retry < max_retries => {
-                tokio::time::sleep(upstream_retry_delay(
-                    None,
-                    retry,
-                    state.config.upstream_retry_base_delay,
-                ))
-                .await;
-            }
+            // A timeout is ambiguous: the provider may still be generating.
+            // Never replay it automatically.
             Err(_) => return Err(UpstreamSendError::Timeout),
         }
     }
@@ -6989,6 +7230,7 @@ async fn proxy_inference(
                         upstream: response,
                         transform,
                         requested_model: requested_model.clone().if_empty_then(default_model),
+                        provider: provider.clone(),
                         trace: Some(streaming_trace),
                         capacity_lease,
                         activity_lease,
@@ -7489,6 +7731,29 @@ impl ChatResponseStreamState {
         out.push_str(&response_completed_sse(&response));
         out
     }
+
+    /// Terminal failure for an upstream error or truncation. It never emits a
+    /// synthetic `response.completed`.
+    fn fail(&mut self, message: &str) -> String {
+        if self.completed_sent {
+            return String::new();
+        }
+        self.completed_sent = true;
+        let response = json!({
+            "id": self.response_id,
+            "object": "response",
+            "created_at": self.created,
+            "model": self.model,
+            "status": "failed",
+            "error": {"code": "upstream_error", "message": message},
+            "output": [],
+            "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        });
+        sse_frame(
+            "response.failed",
+            &json!({"type": "response.failed", "response": response}),
+        )
+    }
 }
 
 #[derive(Default)]
@@ -7651,41 +7916,58 @@ impl AnthropicStreamState {
 
 struct SseStreamTransformer {
     mode: StreamTransform,
-    buffer: String,
+    decoder: SseDecoder,
     chat_response: ChatResponseStreamState,
     response_chat: ResponseChatStreamState,
     anthropic: AnthropicStreamState,
     anthropic_chat: bool,
+    /// Whether the upstream announced a normal terminal state.
+    terminal: bool,
+    /// A fatal upstream/decoder error. Once set, no synthetic success is
+    /// emitted for this response.
+    failed: Option<String>,
 }
 
 impl SseStreamTransformer {
     fn new(mode: StreamTransform, model: &str) -> Self {
         Self {
             mode,
-            buffer: String::new(),
+            decoder: SseDecoder::new(),
             chat_response: ChatResponseStreamState::new(model),
             response_chat: ResponseChatStreamState::new(model),
             anthropic: AnthropicStreamState::new(model),
             anthropic_chat: false,
+            terminal: false,
+            failed: None,
         }
     }
 
     fn push(&mut self, bytes: &[u8]) -> String {
-        self.buffer.push_str(&String::from_utf8_lossy(bytes));
+        if self.failed.is_some() {
+            return String::new();
+        }
+        let batch = self.decoder.push(bytes);
         let mut output = String::new();
-        while let Some(index) = self.buffer.find("\n\n") {
-            let frame = self.buffer[..index].to_owned();
-            self.buffer.drain(..index + 2);
-            output.push_str(&self.transform_frame(&frame));
+        for event in batch.events {
+            output.push_str(&self.transform_event(&event));
+        }
+        if batch.overflow {
+            let message = "upstream SSE event exceeded the size limit";
+            output.push_str(&self.fail(message));
         }
         output
     }
 
+    /// Flush a stream that already reached a normal terminal state. Kept for
+    /// callers that own the terminal detection; it never turns a recorded
+    /// failure into a success.
     fn finish(&mut self) -> String {
         let mut output = String::new();
-        if !self.buffer.trim().is_empty() {
-            let frame = std::mem::take(&mut self.buffer);
-            output.push_str(&self.transform_frame(&frame));
+        for event in self.decoder.finish() {
+            output.push_str(&self.transform_event(&event));
+        }
+        if self.failed.is_some() {
+            return output;
         }
         match self.mode {
             StreamTransform::ChatToResponse => output.push_str(&self.chat_response.finish()),
@@ -7696,34 +7978,111 @@ impl SseStreamTransformer {
         output
     }
 
-    fn transform_frame(&mut self, frame: &str) -> String {
-        let mut data = Vec::new();
-        let normalized_frame = frame.replace('\r', "");
-        for line in normalized_frame.lines() {
-            if let Some(value) = line.strip_prefix("data:") {
-                data.push(value.trim());
-            }
+    /// End-of-stream handling: only synthesize a terminal success when the
+    /// upstream actually announced one. An EOF after `response.created` (or
+    /// after partial chat output without `finish_reason`) is a truncation.
+    fn finish_eof(&mut self) -> String {
+        let mut output = String::new();
+        for event in self.decoder.finish() {
+            output.push_str(&self.transform_event(&event));
         }
-        if data.is_empty() {
+        if self.failed.is_some() {
+            return output;
+        }
+        if self.terminal {
+            match self.mode {
+                StreamTransform::ChatToResponse => output.push_str(&self.chat_response.finish()),
+                StreamTransform::ResponseToChat => output.push_str(&self.response_chat.finish()),
+                StreamTransform::ResponseToAnthropic => output.push_str(&self.finish_anthropic()),
+                StreamTransform::None => {}
+            }
+        } else {
+            output.push_str(&self.fail("upstream stream ended before a terminal event"));
+        }
+        output
+    }
+
+    fn fail(&mut self, message: &str) -> String {
+        if self.failed.is_some() {
             return String::new();
         }
-        let payload = data.join("\n");
-        if payload == "[DONE]" {
+        self.failed = Some(message.to_owned());
+        // A terminal event already reached the client. Record the transport
+        // error for tracing but do not append a contradictory failure frame.
+        if self.terminal {
+            return String::new();
+        }
+        self.terminal = true;
+        match self.mode {
+            StreamTransform::ChatToResponse => self.chat_response.fail(message),
+            StreamTransform::ResponseToChat => format!(
+                "data: {}\n\n",
+                json!({
+                    "error": {
+                        "message": message,
+                        "type": "upstream_error",
+                        "code": "stream_interrupted"
+                    }
+                })
+            ),
+            StreamTransform::ResponseToAnthropic => {
+                self.anthropic.stopped = true;
+                sse_frame(
+                    "error",
+                    &anthropic_error_value(StatusCode::BAD_GATEWAY, message),
+                )
+            }
+            StreamTransform::None => sse_frame(
+                "error",
+                &json!({
+                    "type": "error",
+                    "code": "upstream_error",
+                    "message": message,
+                    "param": Value::Null,
+                    "sequence_number": 0
+                }),
+            ),
+        }
+    }
+
+    fn transform_event(&mut self, event: &SseEvent) -> String {
+        if event.data == "[DONE]" {
+            self.terminal = true;
             return match self.mode {
                 StreamTransform::ChatToResponse => self.chat_response.finish(),
                 StreamTransform::ResponseToChat => self.response_chat.finish(),
                 StreamTransform::ResponseToAnthropic => self.finish_anthropic(),
-                StreamTransform::None => format!("{frame}\n\n"),
+                StreamTransform::None => String::new(),
             };
         }
-        let Ok(value) = serde_json::from_str::<Value>(&payload) else {
+        let Ok(value) = serde_json::from_str::<Value>(&event.data) else {
             return String::new();
         };
+        let event_type = value
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if matches!(
+            event_type,
+            "response.completed" | "response.failed" | "response.incomplete" | "error"
+        ) {
+            self.terminal = true;
+        }
         match self.mode {
-            StreamTransform::ChatToResponse => self.transform_chat_chunk(&value),
+            StreamTransform::ChatToResponse => {
+                let output = self.transform_chat_chunk(&value);
+                if self.chat_response.finish_pending {
+                    self.terminal = true;
+                }
+                output
+            }
             StreamTransform::ResponseToChat => self.transform_response_event(&value),
             StreamTransform::ResponseToAnthropic => self.transform_anthropic_event(&value),
-            StreamTransform::None => format!("{frame}\n\n"),
+            StreamTransform::None => format!(
+                "event: {}\ndata: {}\n\n",
+                event.event.as_deref().unwrap_or_default(),
+                event.data
+            ),
         }
     }
 
@@ -8008,6 +8367,105 @@ impl SseStreamTransformer {
     }
 }
 
+/// Observes a native Responses SSE stream without rewriting it. It records the
+/// response identity, output items already delivered and whether a terminal
+/// event arrived, so a truncated upstream can be reported as `response.failed`
+/// instead of being mistaken for a completed response.
+#[derive(Default)]
+struct PassthroughSseState {
+    decoder: SseDecoder,
+    response_id: Option<String>,
+    model: Option<String>,
+    created_at: Option<u64>,
+    output: Vec<Value>,
+    terminal: bool,
+    error: Option<String>,
+}
+
+impl PassthroughSseState {
+    fn observe(&mut self, chunk: &[u8]) -> Result<(), String> {
+        let batch = self.decoder.push(chunk);
+        for event in batch.events {
+            if event.data == "[DONE]" {
+                continue;
+            }
+            let Ok(value) = serde_json::from_str::<Value>(&event.data) else {
+                continue;
+            };
+            match value
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+            {
+                "response.created" => {
+                    if let Some(response) = value.get("response") {
+                        self.response_id = value_string(response.get("id"));
+                        self.model = value_string(response.get("model"));
+                        self.created_at = response.get("created_at").and_then(Value::as_u64);
+                    }
+                }
+                "response.output_item.done" => {
+                    if let Some(item) = value.get("item").filter(|item| !item.is_null()) {
+                        self.output.push(item.clone());
+                    }
+                }
+                "response.completed" | "response.incomplete" => {
+                    self.terminal = true;
+                    if self.output.is_empty()
+                        && let Some(items) =
+                            value.pointer("/response/output").and_then(Value::as_array)
+                    {
+                        self.output = items.clone();
+                    }
+                }
+                "response.failed" | "error" => {
+                    self.terminal = true;
+                    self.error = value
+                        .pointer("/response/error/message")
+                        .or_else(|| value.pointer("/error/message"))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                }
+                _ => {}
+            }
+        }
+        if batch.overflow {
+            return Err("upstream SSE event exceeded the size limit".to_owned());
+        }
+        Ok(())
+    }
+
+    fn failure_frame(&self, message: &str) -> String {
+        if let Some(id) = &self.response_id {
+            let response = json!({
+                "id": id,
+                "object": "response",
+                "created_at": self.created_at.unwrap_or_else(|| now_ms() / 1000),
+                "model": self.model,
+                "status": "failed",
+                "error": {"code": "upstream_error", "message": message},
+                "output": self.output,
+                "usage": Value::Null
+            });
+            sse_frame(
+                "response.failed",
+                &json!({"type": "response.failed", "response": response}),
+            )
+        } else {
+            sse_frame(
+                "error",
+                &json!({
+                    "type": "error",
+                    "code": "upstream_error",
+                    "message": message,
+                    "param": Value::Null,
+                    "sequence_number": 0
+                }),
+            )
+        }
+    }
+}
+
 fn streaming_response(reply: StreamingReply) -> Response {
     let mut builder = Response::builder().status(reply.status);
     let mut headers = reply.headers;
@@ -8031,10 +8489,15 @@ fn streaming_response(reply: StreamingReply) -> Response {
         let _activity_lease = activity_lease;
         let mut stream_error: Option<String> = None;
         if transform == StreamTransform::None {
+            let mut state = PassthroughSseState::default();
             while let Some(chunk) = upstream.next().await {
                 match chunk {
                     Ok(chunk) => {
                         if let Some(trace) = trace.as_mut() { trace.observe(&chunk); }
+                        if let Err(message) = state.observe(&chunk) {
+                            stream_error = Some(message);
+                            break;
+                        }
                         yield Ok::<Bytes, Infallible>(chunk)
                     }
                     Err(error) => {
@@ -8042,6 +8505,13 @@ fn streaming_response(reply: StreamingReply) -> Response {
                         break;
                     }
                 }
+            }
+            if !state.terminal {
+                let message = stream_error
+                    .clone()
+                    .unwrap_or_else(|| "upstream stream ended before a terminal event".to_owned());
+                stream_error = Some(message.clone());
+                yield Ok::<Bytes, Infallible>(Bytes::from(state.failure_frame(&message)));
             }
         } else {
             let mut converter = SseStreamTransformer::new(transform, &model);
@@ -8052,22 +8522,27 @@ fn streaming_response(reply: StreamingReply) -> Response {
                         if let Some(trace) = trace.as_mut() { trace.observe(&chunk); }
                         let output = converter.push(&chunk);
                         if !output.is_empty() { yield Ok::<Bytes, Infallible>(Bytes::from(output)); }
+                        if let Some(message) = converter.failed.clone() {
+                            stream_error = Some(message);
+                            break;
+                        }
                     }
                     Err(error) => {
                         let message = error.to_string();
                         stream_error = Some(message.clone());
-                        let output = if transform == StreamTransform::ResponseToAnthropic {
-                            format!("event: error\ndata: {}\n\n", json!({"type": "error", "error": {"type": "api_error", "message": message}}))
-                        } else {
-                            format!("data: {}\n\ndata: [DONE]\n\n", json!({"error": {"message": message, "type": "upstream_error", "code": "stream_interrupted"}}))
-                        };
-                        yield Ok::<Bytes, Infallible>(Bytes::from(output));
+                        let output = converter.fail(&message);
+                        if !output.is_empty() { yield Ok::<Bytes, Infallible>(Bytes::from(output)); }
                         break;
                     }
                 }
             }
-            let output = converter.finish();
-            if !output.is_empty() { yield Ok::<Bytes, Infallible>(Bytes::from(output)); }
+            if stream_error.is_none() {
+                let output = converter.finish_eof();
+                if !output.is_empty() { yield Ok::<Bytes, Infallible>(Bytes::from(output)); }
+                if converter.failed.is_some() {
+                    stream_error = converter.failed.clone();
+                }
+            }
         }
         if let Some(trace) = trace.as_mut() {
             trace.finish(status, stream_error, Some(false)).await;
@@ -12676,6 +13151,214 @@ async fn ws_send_json(socket: &mut WebSocket, value: Value) -> bool {
         .is_ok()
 }
 
+/// Send one Responses WebSocket event, echoing the lane supplied by
+/// `response.create` when the upstream did not provide one.
+async fn ws_send_event(socket: &mut WebSocket, mut value: Value, stream_id: Option<&str>) -> bool {
+    if let Some(stream_id) = stream_id
+        && value.get("stream_id").is_none()
+    {
+        value["stream_id"] = Value::String(stream_id.to_owned());
+    }
+    ws_send_json(socket, value).await
+}
+
+async fn ws_send_ping(socket: &mut WebSocket, send_timeout: Duration) -> bool {
+    timeout(
+        send_timeout,
+        socket.send(Message::Ping(Bytes::from_static(b"multivibe"))),
+    )
+    .await
+    .map(|result| result.is_ok())
+    .unwrap_or(false)
+}
+
+async fn ws_send_close(socket: &mut WebSocket, code: u16, reason: &str) -> bool {
+    let frame = CloseFrame {
+        code,
+        reason: Utf8Bytes::from(reason),
+    };
+    socket.send(Message::Close(Some(frame))).await.is_ok()
+}
+
+/// Complete a server-initiated closing handshake without waiting forever for a
+/// peer that may already be gone.
+async fn ws_close_and_wait(
+    socket: &mut WebSocket,
+    code: u16,
+    reason: &str,
+    close_timeout: Duration,
+) -> bool {
+    if !ws_send_close(socket, code, reason).await {
+        return false;
+    }
+    let _ = timeout(close_timeout, async {
+        loop {
+            match socket.next().await {
+                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await;
+    true
+}
+
+fn is_ws_terminal_event(value: &Value) -> bool {
+    matches!(
+        value.get("type").and_then(Value::as_str),
+        Some("response.completed" | "response.failed" | "response.incomplete" | "error")
+    )
+}
+
+fn ws_error_value(status: u16, message: &str) -> Value {
+    json!({
+        "type": "error",
+        "status": status,
+        "error": {
+            "type": "upstream_error",
+            "code": "stream_interrupted",
+            "message": message,
+        }
+    })
+}
+
+/// A structured, secret-free summary of one WebSocket connection. Prompts,
+/// credentials and request bodies are deliberately never recorded.
+struct WsConnectionLog {
+    connection_id: String,
+    opened_at: u64,
+    opened_instant: Instant,
+    request_id: String,
+    application: String,
+    path: String,
+    model: Option<String>,
+    provider: Option<String>,
+    response_id: Option<String>,
+    last_event: Option<String>,
+    last_ping_at: Option<Instant>,
+    last_pong_at: Option<Instant>,
+    terminal_event: Option<String>,
+    upstream_error: Option<String>,
+    close_cause: &'static str,
+    close_code: Option<u16>,
+    interrupted: bool,
+    events_sent: u64,
+    pings_sent: u64,
+    pongs_received: u64,
+}
+
+impl WsConnectionLog {
+    fn new(headers: &HeaderMap, application: &str, path: &str) -> Self {
+        let request_id = header_value(headers, "x-multivibe-trace-parent")
+            .or_else(|| header_value(headers, "x-client-request-id"))
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        let log = Self {
+            connection_id: Uuid::new_v4().to_string(),
+            opened_at: now_ms(),
+            opened_instant: Instant::now(),
+            request_id,
+            application: application.to_owned(),
+            path: path.to_owned(),
+            model: None,
+            provider: None,
+            response_id: None,
+            last_event: None,
+            last_ping_at: None,
+            last_pong_at: None,
+            terminal_event: None,
+            upstream_error: None,
+            close_cause: "peer",
+            close_code: None,
+            interrupted: false,
+            events_sent: 0,
+            pings_sent: 0,
+            pongs_received: 0,
+        };
+        eprintln!(
+            "{}",
+            json!({
+                "event": "websocket.opened",
+                "connectionId": log.connection_id,
+                "openedAt": log.opened_at,
+                "requestId": log.request_id,
+                "application": log.application,
+                "path": log.path,
+            })
+        );
+        log
+    }
+
+    fn record_event(&mut self, event: &Value) {
+        let event_type = event
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        self.last_event = Some(event_type.to_owned());
+        self.events_sent = self.events_sent.saturating_add(1);
+        if is_ws_terminal_event(event) {
+            self.terminal_event = Some(event_type.to_owned());
+            if matches!(event_type, "response.failed" | "error") {
+                self.upstream_error = event
+                    .pointer("/response/error/message")
+                    .or_else(|| event.pointer("/error/message"))
+                    .and_then(Value::as_str)
+                    .map(|message| message.chars().take(500).collect());
+            }
+        }
+        if let Some(response) = event.get("response") {
+            self.response_id = value_string(response.get("id")).or(self.response_id.clone());
+            if let Some(model) = value_string(response.get("model")) {
+                self.model = Some(model);
+            }
+        }
+    }
+
+    fn finish(&self) {
+        let duration_ms = self.opened_instant.elapsed().as_millis() as u64;
+        let last_ping_ms_ago = self
+            .last_ping_at
+            .map(|at| at.elapsed().as_millis() as u64);
+        let last_pong_ms_ago = self
+            .last_pong_at
+            .map(|at| at.elapsed().as_millis() as u64);
+        let timeout = self.close_cause == "heartbeat_timeout"
+            || self.close_cause == "shutdown_timeout";
+        let normal = (matches!(self.close_code, Some(1000 | 1001 | 1005)) && !timeout)
+            || self.close_cause == "client_closed";
+        let cancelled = self.interrupted || self.close_cause == "client_cancel";
+        let network = self.close_cause == "network";
+        eprintln!(
+            "{}",
+            json!({
+                "event": "websocket.closed",
+                "connectionId": self.connection_id,
+                "openedAt": self.opened_at,
+                "durationMs": duration_ms,
+                "requestId": self.request_id,
+                "application": self.application,
+                "path": self.path,
+                "model": self.model,
+                "provider": self.provider,
+                "responseId": self.response_id,
+                "lastEvent": self.last_event,
+                "lastPingMsAgo": last_ping_ms_ago,
+                "lastPongMsAgo": last_pong_ms_ago,
+                "terminalEvent": self.terminal_event,
+                "upstreamError": self.upstream_error,
+                "closeCause": self.close_cause,
+                "closeCode": self.close_code,
+                "normal": normal,
+                "timeout": timeout,
+                "cancelled": cancelled,
+                "network": network,
+                "eventsSent": self.events_sent,
+                "pingsSent": self.pings_sent,
+                "pongsReceived": self.pongs_received,
+            })
+        );
+    }
+}
+
 /// Conversation state of one Responses WebSocket connection.
 ///
 /// The Responses-over-WebSocket protocol treats the socket itself as the
@@ -12697,6 +13380,9 @@ struct WsConversation {
     opaque: bool,
     /// Output items captured for the response that is ending.
     pending: Vec<Value>,
+    /// WebSocket lane from the latest `response.create`. It is echoed on every
+    /// event but never forwarded to the HTTP upstream.
+    stream_id: Option<String>,
 }
 
 /// The input items of a frame. A string input is one user message.
@@ -12722,10 +13408,19 @@ fn ws_referenced(frame: &Value) -> bool {
 fn fold_ws_frame(conversation: &mut WsConversation, frame: &mut Value) {
     let referenced = ws_referenced(frame);
     let delta = ws_input_items(frame);
+    conversation.stream_id = frame
+        .get("stream_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
     let Some(object) = frame.as_object_mut() else {
         return;
     };
     object.remove("type");
+    // WebSocket-only envelope fields must not reach the HTTP Responses API.
+    object.remove("stream_id");
+    object.remove("generate");
+    object.remove("background");
     object.insert("stream".to_owned(), Value::Bool(true));
     if !referenced {
         conversation.items = delta;
@@ -12735,7 +13430,14 @@ fn fold_ws_frame(conversation: &mut WsConversation, frame: &mut Value) {
             .filter(|(key, value)| {
                 !matches!(
                     key.as_str(),
-                    "type" | "input" | "previous_response_id" | "conversation" | "stream"
+                    "type"
+                        | "input"
+                        | "previous_response_id"
+                        | "conversation"
+                        | "stream"
+                        | "stream_id"
+                        | "generate"
+                        | "background"
                 ) && !value.is_null()
             })
             .map(|(key, value)| (key.clone(), value.clone()))
@@ -12810,6 +13512,42 @@ async fn ws_emit_json(events: &tokio::sync::mpsc::Sender<Value>, value: Value) -
     events.send(value).await.is_ok()
 }
 
+#[derive(Default)]
+struct WsTurnResult {
+    provider: Option<String>,
+    terminal: bool,
+    error: Option<String>,
+    client_gone: bool,
+}
+
+/// Convert the HTTP SSE error shape (`{type,code,message}`) to the WebSocket
+/// error shape Codex expects (`{type,status,error:{...}}`). `response.failed`
+/// already carries a wrapped `response.error`.
+fn normalize_ws_error_event(value: &mut Value) {
+    if value.get("type").and_then(Value::as_str) != Some("error")
+        || value.get("error").is_some()
+    {
+        return;
+    }
+    let code = value
+        .get("code")
+        .and_then(Value::as_str)
+        .unwrap_or("upstream_error");
+    let message = value
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("upstream stream failed");
+    *value = json!({
+        "type": "error",
+        "status": 502,
+        "error": {
+            "type": "upstream_error",
+            "code": code,
+            "message": message,
+        }
+    });
+}
+
 async fn produce_ws_response(
     state: &EdgeState,
     path: &str,
@@ -12817,80 +13555,225 @@ async fn produce_ws_response(
     frame: &Value,
     application: &str,
     events: tokio::sync::mpsc::Sender<Value>,
-) {
+) -> WsTurnResult {
+    let mut result = WsTurnResult::default();
     match proxy_inference(
-    state,
-    path,
-    headers,
-    frame,
-    application,
-    Some(ActivityKind::WebsocketTurn),
-    None,
-)
-.await
-{
-    Ok(ProxyResult::Buffered(reply)) => {
-        if reply.status.is_success() {
-            let text = String::from_utf8_lossy(&reply.body);
-            if text.contains("data:") {
-                for (_, event) in parse_sse_events(&text) {
-
-                    if event.as_str() != Some("[DONE]") && !ws_emit_json(&events, event).await { return; }
+        state,
+        path,
+        headers,
+        frame,
+        application,
+        Some(ActivityKind::WebsocketTurn),
+        None,
+    )
+    .await
+    {
+        Ok(ProxyResult::Buffered(reply)) => {
+            if reply.status.is_success() {
+                let text = String::from_utf8_lossy(&reply.body);
+                if text.contains("data:") {
+                    let mut saw_terminal = false;
+                    for (_, mut event) in parse_sse_events(&text) {
+                        if event.as_str() == Some("[DONE]") {
+                            continue;
+                        }
+                        normalize_ws_error_event(&mut event);
+                        if is_ws_terminal_event(&event) {
+                            saw_terminal = true;
+                        }
+                        if !ws_emit_json(&events, event).await {
+                            result.client_gone = true;
+                            return result;
+                        }
+                    }
+                    if !saw_terminal {
+                        let message = "upstream buffered stream ended before a terminal event";
+                        if !ws_emit_json(&events, ws_error_value(502, message)).await {
+                            result.client_gone = true;
+                            return result;
+                        }
+                        result.error = Some(message.to_owned());
+                    }
+                    result.terminal = true;
+                } else if let Ok(response) = serde_json::from_slice::<Value>(&reply.body) {
+                    let id = value_string(response.get("id")).unwrap_or_else(|| new_id("resp"));
+                    if !ws_emit_json(
+                        &events,
+                        json!({
+                            "type": "response.created",
+                            "response": {
+                                "id": id,
+                                "object": "response",
+                                "model": response.get("model"),
+                                "status": "in_progress"
+                            }
+                        }),
+                    )
+                    .await
+                    {
+                        result.client_gone = true;
+                        return result;
+                    }
+                    let status = response
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .unwrap_or("completed");
+                    let event_type = match status {
+                        "failed" => "response.failed",
+                        "incomplete" => "response.incomplete",
+                        _ => "response.completed",
+                    };
+                    if !ws_emit_json(
+                        &events,
+                        json!({"type": event_type, "response": response}),
+                    )
+                    .await
+                    {
+                        result.client_gone = true;
+                        return result;
+                    }
+                    result.terminal = true;
+                } else {
+                    let message = "upstream returned an invalid buffered response";
+                    if !ws_emit_json(&events, ws_error_value(502, message)).await {
+                        result.client_gone = true;
+                        return result;
+                    }
+                    result.error = Some(message.to_owned());
+                    result.terminal = true;
                 }
-            } else if let Ok(response) = serde_json::from_slice::<Value>(&reply.body) {
-                let id = value_string(response.get("id")).unwrap_or_else(|| new_id("resp"));
-                if !ws_emit_json(&events, json!({"type": "response.created", "response": {"id": id, "object": "response", "model": response.get("model"), "status": "in_progress"}})).await { return; }
-                if !ws_emit_json(&events, json!({"type": "response.completed", "response": response})).await { return; }
-            }
-        } else if !ws_emit_json(&events, json!({"type": "error", "status": reply.status.as_u16(), "error": {"type": "upstream_error", "message": String::from_utf8_lossy(&reply.body)}})).await { return; }
-
-    }
-    Ok(ProxyResult::Streaming(reply)) => {
-        // Use the HTTP streaming pipeline before framing WebSocket
-        // events. It owns protocol conversion, tool restoration,
-        // tracing and admission leases for both transports.
-        let mut upstream = streaming_response(reply).into_body().into_data_stream();
-        let mut buffer = String::new();
-        while let Some(Ok(chunk)) = upstream.next().await {
-            buffer.push_str(&String::from_utf8_lossy(&chunk));
-            while let Some(index) = buffer.find("\n\n") {
-                let frame = buffer[..index].to_owned();
-                buffer.drain(..index + 2);
-                for (_, event) in parse_sse_events(&format!("{frame}\n\n")) {
-
-                    if event.as_str() != Some("[DONE]") && !ws_emit_json(&events, event).await { return; }
+            } else {
+                let message = String::from_utf8_lossy(&reply.body).into_owned();
+                if !ws_emit_json(
+                    &events,
+                    json!({
+                        "type": "error",
+                        "status": reply.status.as_u16(),
+                        "error": {"type": "upstream_error", "message": message}
+                    }),
+                )
+                .await
+                {
+                    result.client_gone = true;
+                    return result;
                 }
+                result.error = Some(message);
+                result.terminal = true;
             }
         }
-        if !buffer.trim().is_empty() {
-            for (_, event) in parse_sse_events(&format!("{buffer}\n\n")) {
-
-                if event.as_str() != Some("[DONE]") && !ws_emit_json(&events, event).await { return; }
+        Ok(ProxyResult::Streaming(reply)) => {
+            // Use the HTTP streaming pipeline before framing WebSocket
+            // events. It owns protocol conversion, tool restoration,
+            // tracing and admission leases for both transports.
+            result.provider = Some(reply.provider.clone());
+            let mut upstream = streaming_response(reply).into_body().into_data_stream();
+            let mut decoder = SseDecoder::new();
+            let mut saw_terminal = false;
+            while let Some(chunk) = upstream.next().await {
+                match chunk {
+                    Ok(chunk) => {
+                        let batch = decoder.push(&chunk);
+                        for event in batch.events {
+                            if event.data == "[DONE]" {
+                                continue;
+                            }
+                            let Ok(mut value) = serde_json::from_str::<Value>(&event.data) else {
+                                continue;
+                            };
+                            normalize_ws_error_event(&mut value);
+                            if is_ws_terminal_event(&value) {
+                                saw_terminal = true;
+                            }
+                            if !ws_emit_json(&events, value).await {
+                                result.client_gone = true;
+                                return result;
+                            }
+                        }
+                        if batch.overflow {
+                            let message = "upstream SSE event exceeded the size limit";
+                            if !ws_emit_json(&events, ws_error_value(502, message)).await {
+                                result.client_gone = true;
+                                return result;
+                            }
+                            result.error = Some(message.to_owned());
+                            result.terminal = true;
+                            return result;
+                        }
+                    }
+                    Err(error) => {
+                        let message = error.to_string();
+                        if !ws_emit_json(&events, ws_error_value(502, &message)).await {
+                            result.client_gone = true;
+                            return result;
+                        }
+                        result.error = Some(message);
+                        result.terminal = true;
+                        return result;
+                    }
+                }
             }
+            for event in decoder.finish() {
+                if event.data == "[DONE]" {
+                    continue;
+                }
+                let Ok(mut value) = serde_json::from_str::<Value>(&event.data) else {
+                    continue;
+                };
+                normalize_ws_error_event(&mut value);
+                if is_ws_terminal_event(&value) {
+                    saw_terminal = true;
+                }
+                if !ws_emit_json(&events, value).await {
+                    result.client_gone = true;
+                    return result;
+                }
+            }
+            if !saw_terminal {
+                let message = "upstream stream ended before a terminal event";
+                if !ws_emit_json(&events, ws_error_value(502, message)).await {
+                    result.client_gone = true;
+                    return result;
+                }
+                result.error = Some(message.to_owned());
+            }
+            result.terminal = true;
         }
-
-    }
-    Err(error) => {
-        let status = error.status();
-        let bytes = to_bytes(error.into_body(), 1024 * 1024)
+        Err(error) => {
+            let status = error.status();
+            let bytes = to_bytes(error.into_body(), 1024 * 1024)
+                .await
+                .unwrap_or_default();
+            let parsed = serde_json::from_slice::<Value>(&bytes).ok();
+            let error_value = parsed
+                .as_ref()
+                .and_then(|body| body.get("error"))
+                .cloned()
+                .unwrap_or_else(|| {
+                    json!({
+                        "type": "upstream_error",
+                        "message": "upstream request failed",
+                    })
+                });
+            let message = value_string(error_value.get("message"))
+                .unwrap_or_else(|| "upstream request failed".to_owned());
+            if !ws_emit_json(
+                &events,
+                json!({
+                    "type": "error",
+                    "status": status.as_u16(),
+                    "error": error_value,
+                }),
+            )
             .await
-            .unwrap_or_default();
-        let parsed = serde_json::from_slice::<Value>(&bytes).ok();
-        let error = parsed
-            .as_ref()
-            .and_then(|body| body.get("error"))
-            .cloned()
-            .unwrap_or_else(|| json!({
-                "type": "upstream_error",
-                "message": "upstream request failed",
-            }));
-        if !ws_emit_json(&events, json!({
-            "type": "error",
-            "status": status.as_u16(),
-            "error": error,
-        })).await { return; }
+            {
+                result.client_gone = true;
+                return result;
+            }
+            result.error = Some(message);
+            result.terminal = true;
+        }
     }
-}
+    result
 }
 
 fn ws_interrupt_ack(control: &Value, accepted: bool) -> Value {
@@ -12907,135 +13790,598 @@ async fn handle_websocket(
     application: String,
     path: String,
 ) {
+    let mut log = WsConnectionLog::new(&headers, &application, &path);
     let mut conversation = WsConversation::default();
     let mut last_response: Option<Value> = None;
-    let mut queued_message = None;
-    loop {
-        let message = match queued_message.take() {
-            Some(message) => message,
-            None => {
-                let Some(Ok(message)) = socket.next().await else { break; };
-                message
+    let mut queued_message: Option<Message> = None;
+    let mut shutdown_rx = state.shutdown.subscribe();
+    let mut shutdown_requested = state.drain.is_draining();
+    let mut shutdown_deadline: Option<Instant> = None;
+    let ping_interval = state.config.websocket_ping_interval;
+    let pong_timeout = state.config.websocket_pong_timeout;
+    let close_timeout = state.config.websocket_close_timeout;
+    let idle_timeout = state.config.websocket_idle_timeout;
+    let mut next_ping = Instant::now() + ping_interval;
+    let mut last_pong = Instant::now();
+    let mut awaiting_pong = false;
+    let mut idle_since = Instant::now();
+    let mut close_code: Option<u16> = None;
+    let mut close_reason: &'static str = "";
+    let mut peer_close: Option<Option<CloseFrame>> = None;
+
+    'connection: loop {
+        if idle_timeout.is_some_and(|limit| idle_since.elapsed() > limit) {
+            log.close_cause = "idle_timeout";
+            close_code = Some(1000);
+            close_reason = "idle timeout";
+            break 'connection;
+        }
+        if shutdown_requested {
+            log.close_cause = "server_shutdown";
+            close_code = Some(1001);
+            close_reason = "server shutting down";
+            break 'connection;
+        }
+        let message: Option<Result<Message, axum::Error>> =
+            if let Some(message) = queued_message.take() {
+                Some(Ok(message))
+            } else {
+                tokio::select! {
+                biased;
+                message = socket.next() => message,
+                _ = tokio::time::sleep_until(next_ping.into()) => {
+                    next_ping = Instant::now() + ping_interval;
+                    if awaiting_pong && last_pong.elapsed() > pong_timeout {
+                        log.close_cause = "heartbeat_timeout";
+                        close_code = Some(1001);
+                        close_reason = "heartbeat timeout";
+                        break 'connection;
+                    }
+                    if !ws_send_ping(&mut socket, close_timeout).await {
+                        log.close_cause = "network";
+                        break 'connection;
+                    }
+                    log.last_ping_at = Some(Instant::now());
+                    log.pings_sent = log.pings_sent.saturating_add(1);
+                    awaiting_pong = true;
+                    continue;
+                }
+                _ = shutdown_rx.recv() => {
+                    shutdown_requested = true;
+                    if shutdown_deadline.is_none() {
+                        shutdown_deadline = Some(Instant::now() + state.config.shutdown_grace);
+                    }
+                    continue;
+                }
             }
+        };
+        let Some(Ok(message)) = message else {
+            log.close_cause = if log.terminal_event.is_some() {
+                "client_closed"
+            } else {
+                "network"
+            };
+            break 'connection;
         };
         match message {
             Message::Text(text) => {
                 let Ok(mut frame) = serde_json::from_str::<Value>(&text) else {
-                    if !ws_send_json(&mut socket, json!({"type": "error", "status": 400, "error": {"type": "invalid_request_error", "code": "invalid_json", "message": "expected a JSON text frame with type='response.create'"}})).await { break; }
+                    if !ws_send_json(
+                        &mut socket,
+                        json!({
+                            "type": "error",
+                            "status": 400,
+                            "error": {
+                                "type": "invalid_request_error",
+                                "code": "invalid_json",
+                                "message": "expected a JSON text frame with type='response.create'"
+                            }
+                        }),
+                    )
+                    .await
+                    {
+                        log.close_cause = "network";
+                        break 'connection;
+                    }
                     continue;
                 };
                 if frame["type"] == "response.interrupt" {
                     // An interrupt may race with completion: acknowledge the last
                     // delivered response without cancelling a subsequent request.
                     let accepted = frame["mode"] == "discard_partial_items"
-                        && last_response.as_ref().is_some_and(|response| response["id"].is_string() && frame["response_id"] == response["id"]);
-                    if !ws_send_json(&mut socket, ws_interrupt_ack(&frame, accepted)).await { break; }
+                        && last_response.as_ref().is_some_and(|response| {
+                            response["id"].is_string() && frame["response_id"] == response["id"]
+                        });
+                    let ack = ws_interrupt_ack(&frame, accepted);
+                    if !ws_send_event(
+                        &mut socket,
+                        ack,
+                        conversation.stream_id.as_deref(),
+                    )
+                    .await
+                    {
+                        log.close_cause = "network";
+                        break 'connection;
+                    }
                     continue;
                 }
                 if frame.get("type").and_then(Value::as_str) != Some("response.create") {
-                    if !ws_send_json(&mut socket, json!({"type": "error", "status": 400, "error": {"type": "invalid_request_error", "message": "expected a JSON text frame with type='response.create'"}})).await { break; }
+                    if !ws_send_json(
+                        &mut socket,
+                        json!({
+                            "type": "error",
+                            "status": 400,
+                            "error": {
+                                "type": "invalid_request_error",
+                                "message": "expected a JSON text frame with type='response.create'"
+                            }
+                        }),
+                    )
+                    .await
+                    {
+                        log.close_cause = "network";
+                        break 'connection;
+                    }
+                    continue;
+                }
+                if let Some(stream_id) = frame.get("stream_id").and_then(Value::as_str)
+                    && (stream_id.is_empty()
+                        || stream_id.len() > 256
+                        || !stream_id.chars().all(|character| {
+                            character.is_ascii_alphanumeric()
+                                || matches!(character, '_' | '.' | '-')
+                        }))
+                {
+                    if !ws_send_json(
+                        &mut socket,
+                        json!({
+                            "type": "error",
+                            "status": 400,
+                            "error": {
+                                "type": "invalid_request_error",
+                                "code": "invalid_stream_id",
+                                "param": "stream_id",
+                                "message": "stream_id must match ^[A-Za-z0-9_.-]+$ and be 1-256 characters"
+                            }
+                        }),
+                    )
+                    .await
+                    {
+                        log.close_cause = "network";
+                        break 'connection;
+                    }
+                    continue;
+                }
+                if frame.get("background").and_then(Value::as_bool) == Some(true) {
+                    if !ws_send_json(
+                        &mut socket,
+                        json!({
+                            "type": "error",
+                            "status": 400,
+                            "error": {
+                                "type": "invalid_request_error",
+                                "code": "background_not_supported",
+                                "message": "background is not supported over WebSocket"
+                            }
+                        }),
+                    )
+                    .await
+                    {
+                        log.close_cause = "network";
+                        break 'connection;
+                    }
                     continue;
                 }
                 if state.drain.is_draining() {
-                    if !ws_send_json(&mut socket, json!({
-                        "type": "error",
-                        "status": StatusCode::SERVICE_UNAVAILABLE.as_u16(),
-                        "error": {
-                            "type": "service_unavailable",
-                            "code": "host_update_draining",
-                            "message": "MultiVibe Host is draining for a verified update",
-                        }
-                    })).await { break; }
+                    if !ws_send_json(
+                        &mut socket,
+                        json!({
+                            "type": "error",
+                            "status": StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+                            "error": {
+                                "type": "service_unavailable",
+                                "code": "host_update_draining",
+                                "message": "MultiVibe Host is draining for a verified update",
+                            }
+                        }),
+                    )
+                    .await
+                    {
+                        log.close_cause = "network";
+                        break 'connection;
+                    }
                     continue;
                 }
                 if frame.get("generate").and_then(Value::as_bool) == Some(false) {
                     // Items registered without a generation still belong to
-                    // the conversation the next continuation replays.
-                    if !conversation.opaque {
-                        conversation.items.extend(ws_input_items(&frame));
-                    }
+                    // the conversation the next continuation replays. Folding
+                    // also preserves request-scoped parameters so a later
+                    // continuation inherits instructions and tools.
+                    fold_ws_frame(&mut conversation, &mut frame);
                     let id = new_id("resp");
-                    let model = value_string(frame.get("model")).unwrap_or_else(|| "unknown".to_owned());
-                    if !ws_send_json(&mut socket, json!({"type": "response.created", "response": {"id": id, "object": "response", "model": model, "status": "in_progress"}})).await { break; }
-                    let response = json!({"id": id, "object": "response", "model": model, "status": "completed", "output": [], "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}});
-                    if !ws_send_json(&mut socket, json!({"type": "response.completed", "response": response})).await { break; }
+                    let model = value_string(frame.get("model"))
+                        .unwrap_or_else(|| "unknown".to_owned());
+                    log.model = Some(model.clone());
+                    log.response_id = Some(id.clone());
+                    let created = json!({
+                        "type": "response.created",
+                        "response": {
+                            "id": id,
+                            "object": "response",
+                            "model": model,
+                            "status": "in_progress"
+                        }
+                    });
+                    log.record_event(&created);
+                    if !ws_send_event(
+                        &mut socket,
+                        created,
+                        conversation.stream_id.as_deref(),
+                    )
+                    .await
+                    {
+                        log.close_cause = "network";
+                        break 'connection;
+                    }
+                    let response = json!({
+                        "id": id,
+                        "object": "response",
+                        "model": model,
+                        "status": "completed",
+                        "output": [],
+                        "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+                    });
+                    let completed =
+                        json!({"type": "response.completed", "response": response});
+                    log.record_event(&completed);
+                    if !ws_send_event(
+                        &mut socket,
+                        completed,
+                        conversation.stream_id.as_deref(),
+                    )
+                    .await
+                    {
+                        log.close_cause = "network";
+                        break 'connection;
+                    }
                     last_response = Some(response);
+                    idle_since = Instant::now();
                     continue;
                 }
                 fold_ws_frame(&mut conversation, &mut frame);
+                log.model = value_string(frame.get("model")).or(log.model.clone());
+                let stream_id = conversation.stream_id.clone();
                 last_response = None;
                 let (events, mut incoming_events) = tokio::sync::mpsc::channel(1);
                 let mut interrupted = false;
+                let mut turn_result: Option<WsTurnResult> = None;
                 {
-                    let work = produce_ws_response(&state, &path, &headers, &frame, &application, events);
+                    let work =
+                        produce_ws_response(&state, &path, &headers, &frame, &application, events);
                     tokio::pin!(work);
                     let mut finished = false;
                     loop {
+                        let shutdown_deadline_at = shutdown_deadline.unwrap_or_else(|| {
+                            Instant::now() + Duration::from_secs(365 * 24 * 60 * 60)
+                        });
                         tokio::select! {
                             // Prioritize controls; drain queued events before retiring the producer.
                             biased;
                             message = socket.next() => {
                                 match message {
                                     Some(Ok(Message::Text(text))) => {
-                                        let control = serde_json::from_str::<Value>(&text).unwrap_or(Value::Null);
+                                        let control =
+                                            serde_json::from_str::<Value>(&text).unwrap_or(Value::Null);
                                         if control["type"] == "response.interrupt" {
+                                            // Drain events already produced so a completion
+                                            // that raced with the interrupt is delivered before
+                                            // deciding whether the response is still active.
+                                            while let Ok(mut event) = incoming_events.try_recv() {
+                                                capture_ws_event(&mut conversation, &event);
+                                                if let Some(response) = event.get("response") {
+                                                    last_response = Some(response.clone());
+                                                }
+                                                log.record_event(&event);
+                                                if !ws_send_event(
+                                                    &mut socket,
+                                                    std::mem::take(&mut event),
+                                                    stream_id.as_deref(),
+                                                )
+                                                .await
+                                                {
+                                                    log.close_cause = "network";
+                                                    break 'connection;
+                                                }
+                                            }
                                             let response = last_response.as_ref();
-                                            let matches = response.is_some_and(|response| response["id"].is_string() && control["response_id"] == response["id"]);
-                                            let valid = matches && control["mode"] == "discard_partial_items";
-                                            if !ws_send_json(&mut socket, ws_interrupt_ack(&control, valid)).await { return; }
+                                            let matches = response.is_some_and(|response| {
+                                                response["id"].is_string()
+                                                    && control["response_id"] == response["id"]
+                                            });
+                                            let valid = matches
+                                                && control["mode"] == "discard_partial_items";
+                                            let ack = ws_interrupt_ack(&control, valid);
+                                            if !ws_send_event(
+                                                &mut socket,
+                                                ack,
+                                                stream_id.as_deref(),
+                                            )
+                                            .await
+                                            {
+                                                log.close_cause = "network";
+                                                break 'connection;
+                                            }
                                             if valid {
                                                 interrupted = !last_response.as_ref().is_some_and(|response| {
-                                                    matches!(response["status"].as_str(), Some("completed" | "incomplete" | "failed"))
+                                                    matches!(
+                                                        response["status"].as_str(),
+                                                        Some("completed" | "incomplete" | "failed")
+                                                    )
                                                 });
                                                 break;
                                             }
-                                        } else if control["type"] == "response.create" && last_response.as_ref().is_some_and(|response| {
-                                            matches!(response["status"].as_str(), Some("completed" | "incomplete" | "failed"))
-                                        }) {
+                                        } else if control["type"] == "response.create"
+                                            && last_response.as_ref().is_some_and(|response| {
+                                                matches!(
+                                                    response["status"].as_str(),
+                                                    Some("completed" | "incomplete" | "failed")
+                                                )
+                                            })
+                                        {
                                             // The client can continue immediately after the
                                             // terminal event, before the HTTP stream reaches EOF.
                                             queued_message = Some(Message::Text(text));
                                             break;
-                                        } else if !ws_send_json(&mut socket, json!({"type":"error","status":400,"error":{"type":"invalid_request_error","code":"response_in_progress","message":"a response is already in progress"}})).await { return; }
+                                        } else if control["type"] == "response.create" {
+                                            if !ws_send_json(
+                                                &mut socket,
+                                                json!({
+                                                    "type": "error",
+                                                    "status": 400,
+                                                    "error": {
+                                                        "type": "invalid_request_error",
+                                                        "code": "response_in_progress",
+                                                        "message": "a response is already in progress"
+                                                    }
+                                                }),
+                                            )
+                                            .await
+                                            {
+                                                log.close_cause = "network";
+                                                break 'connection;
+                                            }
+                                        } else if !ws_send_json(
+                                            &mut socket,
+                                            json!({
+                                                "type": "error",
+                                                "status": 400,
+                                                "error": {
+                                                    "type": "invalid_request_error",
+                                                    "message": "expected a JSON text frame with type='response.create'"
+                                                }
+                                            }),
+                                        )
+                                        .await
+                                        {
+                                            log.close_cause = "network";
+                                            break 'connection;
+                                        }
                                     }
-                                    Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+                                    Some(Ok(Message::Ping(payload))) => {
+                                        if socket.send(Message::Pong(payload)).await.is_err() {
+                                            log.close_cause = "network";
+                                            break 'connection;
+                                        }
+                                    }
+                                    Some(Ok(Message::Pong(_))) => {
+                                        last_pong = Instant::now();
+                                        awaiting_pong = false;
+                                        log.last_pong_at = Some(last_pong);
+                                        log.pongs_received = log.pongs_received.saturating_add(1);
+                                    }
                                     Some(Ok(Message::Binary(_))) => {
-                                        if !ws_send_json(&mut socket, json!({"type":"error","status":400,"error":{"type":"invalid_request_error","message":"binary websocket frames are not supported"}})).await { return; }
+                                        if !ws_send_json(
+                                            &mut socket,
+                                            json!({
+                                                "type": "error",
+                                                "status": 400,
+                                                "error": {
+                                                    "type": "invalid_request_error",
+                                                    "message": "binary websocket frames are not supported"
+                                                }
+                                            }),
+                                        )
+                                        .await
+                                        {
+                                            log.close_cause = "network";
+                                            break 'connection;
+                                        }
                                     }
-                                    _ => return,
+                                    Some(Ok(Message::Close(frame))) => {
+                                        log.close_code = frame.as_ref().map(|frame| frame.code);
+                                        log.close_cause = "peer";
+                                        peer_close = Some(frame);
+                                        break 'connection;
+                                    }
+                                    Some(Err(_)) | None => {
+                                        log.close_cause = if log.terminal_event.is_some() {
+                                            "client_closed"
+                                        } else {
+                                            "network"
+                                        };
+                                        break 'connection;
+                                    }
                                 }
                             }
                             event = incoming_events.recv() => {
-                                let Some(event) = event else { break; };
+                                let Some(mut event) = event else { break; };
                                 capture_ws_event(&mut conversation, &event);
                                 if let Some(response) = event.get("response") {
                                     last_response = Some(response.clone());
                                 }
-                                if !ws_send_json(&mut socket, event).await { return; }
+                                log.record_event(&event);
+                                if !ws_send_event(
+                                    &mut socket,
+                                    std::mem::take(&mut event),
+                                    stream_id.as_deref(),
+                                )
+                                .await
+                                {
+                                    log.close_cause = "network";
+                                    break 'connection;
+                                }
                             }
-                            _ = &mut work, if !finished => { finished = true; }
+                            result = &mut work, if !finished => {
+                                finished = true;
+                                turn_result = Some(result);
+                            }
+                            _ = tokio::time::sleep_until(next_ping.into()) => {
+                                next_ping = Instant::now() + ping_interval;
+                                if awaiting_pong && last_pong.elapsed() > pong_timeout {
+                                    log.close_cause = "heartbeat_timeout";
+                                    close_code = Some(1001);
+                                    close_reason = "heartbeat timeout";
+                                    break 'connection;
+                                }
+                                if !ws_send_ping(&mut socket, close_timeout).await {
+                                    log.close_cause = "network";
+                                    break 'connection;
+                                }
+                                log.last_ping_at = Some(Instant::now());
+                                log.pings_sent = log.pings_sent.saturating_add(1);
+                                awaiting_pong = true;
+                            }
+                            _ = shutdown_rx.recv() => {
+                                shutdown_requested = true;
+                                if shutdown_deadline.is_none() {
+                                    shutdown_deadline = Some(
+                                        Instant::now() + state.config.shutdown_grace,
+                                    );
+                                }
+                            }
+                            _ = tokio::time::sleep_until(shutdown_deadline_at.into()),
+                                if shutdown_deadline.is_some() =>
+                            {
+                                log.close_cause = "shutdown_timeout";
+                                close_code = Some(1001);
+                                close_reason = "server shutdown grace expired";
+                                break 'connection;
+                            }
                         }
                     }
                 }
                 if interrupted {
+                    log.interrupted = true;
                     // Only output_item.done items already delivered to the client survive.
                     // Partial text/tool arguments and queued, undelivered events are discarded.
                     if let Some(response) = last_response.as_mut().and_then(Value::as_object_mut) {
-                        response.insert("status".to_owned(), json!("completed"));
+                        response.insert("status".to_owned(), json!("incomplete"));
                         response.insert("output".to_owned(), json!(conversation.pending));
-                        let event = json!({"type":"response.completed","response":response});
-                        if !ws_send_json(&mut socket, event).await { return; }
+                        response.insert(
+                            "incomplete_details".to_owned(),
+                            json!({"reason": "interrupted"}),
+                        );
+                    }
+                    if let Some(response) = last_response.clone() {
+                        let event = json!({
+                            "type": "response.incomplete",
+                            "response": response
+                        });
+                        log.record_event(&event);
+                        if !ws_send_event(
+                            &mut socket,
+                            event,
+                            stream_id.as_deref(),
+                        )
+                        .await
+                        {
+                            log.close_cause = "network";
+                            break 'connection;
+                        }
                     }
                 }
                 commit_ws_response(&mut conversation);
+                if let Some(result) = turn_result {
+                    if result.client_gone {
+                        log.close_cause = "network";
+                        break 'connection;
+                    }
+                    log.provider = result.provider;
+                    log.upstream_error = result.error;
+                    if !result.terminal {
+                        // Defensive: every producer path must end in a terminal
+                        // event or an explicit error.
+                        log.close_cause = "internal_error";
+                        close_code = Some(1011);
+                        close_reason = "internal error";
+                        break 'connection;
+                    }
+                }
+                idle_since = Instant::now();
+                if shutdown_requested {
+                    log.close_cause = "server_shutdown";
+                    close_code = Some(1001);
+                    close_reason = "server shutting down";
+                    break 'connection;
+                }
             }
             Message::Binary(_) => {
-                if !ws_send_json(&mut socket, json!({"type": "error", "status": 400, "error": {"type": "invalid_request_error", "message": "binary websocket frames are not supported"}})).await { break; }
+                if !ws_send_json(
+                    &mut socket,
+                    json!({
+                        "type": "error",
+                        "status": 400,
+                        "error": {
+                            "type": "invalid_request_error",
+                            "message": "binary websocket frames are not supported"
+                        }
+                    }),
+                )
+                .await
+                {
+                    log.close_cause = "network";
+                    break 'connection;
+                }
             }
-            Message::Close(_) => break,
-            Message::Ping(_) | Message::Pong(_) => {}
+            Message::Close(frame) => {
+                log.close_code = frame.as_ref().map(|frame| frame.code);
+                log.close_cause = "peer";
+                peer_close = Some(frame);
+                break 'connection;
+            }
+            Message::Ping(payload) => {
+                if socket.send(Message::Pong(payload)).await.is_err() {
+                    log.close_cause = "network";
+                    break 'connection;
+                }
+            }
+            Message::Pong(_) => {
+                last_pong = Instant::now();
+                awaiting_pong = false;
+                log.last_pong_at = Some(last_pong);
+                log.pongs_received = log.pongs_received.saturating_add(1);
+            }
         }
     }
+
+    if let Some(frame) = peer_close {
+        // Echo the peer's Close frame to complete the handshake. A Close frame
+        // without a code cannot be echoed as-is (1005 is reserved), so answer
+        // with a normal 1000 closure instead.
+        let reply = frame.or_else(|| {
+            Some(CloseFrame {
+                code: 1000,
+                reason: Utf8Bytes::from_static(""),
+            })
+        });
+        let _ = timeout(close_timeout, socket.send(Message::Close(reply))).await;
+        let _ = timeout(close_timeout, futures_util::SinkExt::flush(&mut socket)).await;
+        log.close_code = log.close_code.or(Some(1005));
+    } else if let Some(code) = close_code {
+        ws_close_and_wait(&mut socket, code, close_reason, close_timeout).await;
+        log.close_code = log.close_code.or(Some(code));
+    }
+    log.finish();
 }
 
 async fn fallback_handler(State(state): State<EdgeState>, req: Request<Body>) -> Response {
@@ -18822,10 +20168,15 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         let ack = receive!();
         assert_eq!(ack["type"], "response.interrupt.accepted");
         assert_eq!(ack["response_id"], "resp-interrupt");
-        let completed = receive!();
-        assert_eq!(completed["type"], "response.completed");
-        assert_eq!(completed["response"]["output"].as_array().unwrap().len(), 1);
-        assert_eq!(completed["response"]["output"][0]["call_id"], "call_done");
+        let incomplete = receive!();
+        assert_eq!(incomplete["type"], "response.incomplete");
+        assert_eq!(incomplete["response"]["status"], "incomplete");
+        assert_eq!(
+            incomplete["response"]["incomplete_details"]["reason"],
+            "interrupted"
+        );
+        assert_eq!(incomplete["response"]["output"].as_array().unwrap().len(), 1);
+        assert_eq!(incomplete["response"]["output"][0]["call_id"], "call_done");
         // Completion can win the race; acknowledge a late interrupt too.
         send!(
             json!({"type":"response.interrupt","response_id":"resp-interrupt","mode":"discard_partial_items"})
@@ -19996,6 +21347,787 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         edge_task.abort();
         upstream_task.abort();
         control_plane_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[test]
+    fn sse_decoder_accepts_lf_crlf_and_bare_cr() {
+        for (line, blank) in [("\n", "\n\n"), ("\r\n", "\r\n\r\n"), ("\r", "\r\r")] {
+            let wire = format!(
+                "event: response.output_text.delta{line}data: {{\"type\":\"response.output_text.delta\",\"delta\":\"a\"}}{line}{blank}\
+                 event: response.output_text.delta{line}data: {{\"type\":\"response.output_text.delta\",\"delta\":\"b\"}}{line}{blank}",
+                line = line,
+                blank = blank
+            );
+            let events = parse_sse_events(&wire);
+            assert_eq!(events.len(), 2, "separator {line:?}");
+            assert_eq!(events[0].1["delta"], "a");
+            assert_eq!(events[1].1["delta"], "b");
+            assert_eq!(events[0].0, "response.output_text.delta");
+        }
+    }
+
+    #[test]
+    fn sse_decoder_preserves_utf8_split_across_chunks() {
+        let text = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"héllo 世界\"}\n\n";
+        let bytes = text.as_bytes();
+        // Split inside the two-byte UTF-8 encoding of 'é'.
+        let split = bytes
+            .windows(2)
+            .position(|pair| pair == [0xC3, 0xA9])
+            .expect("UTF-8 fixture")
+            + 1;
+        let mut decoder = SseDecoder::new();
+        let mut events = decoder.push(&bytes[..split]).events;
+        events.extend(decoder.push(&bytes[split..]).events);
+        events.extend(decoder.finish());
+        assert_eq!(events.len(), 1);
+        let value: Value = serde_json::from_str(&events[0].data).unwrap();
+        assert_eq!(value["delta"], "héllo 世界");
+    }
+
+    #[test]
+    fn sse_decoder_handles_multiple_events_and_multiline_data() {
+        let wire = concat!(
+            "data: {\"type\":\"response.output_text.delta\",\n",
+            "data: \"delta\":\"multi\"}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let events = parse_sse_events(wire);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].1["delta"], "multi");
+        assert_eq!(events[1].1, "[DONE]");
+    }
+
+    #[test]
+    fn sse_decoder_bounds_oversized_events() {
+        let mut decoder = SseDecoder::new();
+        let mut oversized = b"data: ".to_vec();
+        oversized.resize(SSE_MAX_EVENT_BYTES + 1, b'x');
+        let batch = decoder.push(&oversized);
+        assert!(batch.overflow);
+        assert!(decoder.push(b"data: {}\n\n").overflow);
+    }
+
+    #[test]
+    fn sse_transformer_crlf_and_fragmented_utf8_stream_correctly() {
+        let mut converter = SseStreamTransformer::new(StreamTransform::ChatToResponse, "qwen");
+        let wire = concat!(
+            "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"héllo\"},\"finish_reason\":null}]}\r\n\r\n",
+            "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\r\n\r\n",
+            "data: {\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\r\n\r\n",
+            "data: [DONE]\r\n\r\n"
+        );
+        let mut output = String::new();
+        for chunk in wire.as_bytes().chunks(17) {
+            output.push_str(&converter.push(chunk));
+        }
+        output.push_str(&converter.finish_eof());
+        let events = parse_sse_events(&output);
+        assert!(events.iter().any(|(_, event)| {
+            event["type"] == "response.output_text.delta" && event["delta"] == "héllo"
+        }));
+        assert!(events
+            .iter()
+            .any(|(_, event)| event["type"] == "response.completed"));
+        assert!(!events
+            .iter()
+            .any(|(_, event)| event["type"] == "response.failed"));
+    }
+
+    #[test]
+    fn sse_transformer_never_turns_an_error_or_truncation_into_completed() {
+        let mut failed = SseStreamTransformer::new(StreamTransform::ChatToResponse, "qwen");
+        failed.push(
+            br#"data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":"partial"},"finish_reason":null}]}
+
+"#,
+        );
+        let output = failed.fail("upstream reset");
+        assert!(output.contains("response.failed"));
+        assert!(!output.contains("response.completed"));
+        assert_eq!(failed.finish_eof(), "");
+
+        let mut truncated = SseStreamTransformer::new(StreamTransform::ChatToResponse, "qwen");
+        truncated.push(
+            br#"data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":"partial"},"finish_reason":null}]}
+
+"#,
+        );
+        let output = truncated.finish_eof();
+        assert!(output.contains("response.failed"));
+        assert!(!output.contains("response.completed"));
+    }
+
+    #[tokio::test]
+    async fn websocket_stream_id_is_echoed_but_not_forwarded() {
+        let bodies = Arc::new(StdMutex::new(Vec::new()));
+        let capture = bodies.clone();
+        let upstream = Router::new()
+            .route(
+                "/backend-api/codex/models",
+                get(|| async { Json(json!({"models": [{"slug": "gpt-lane"}]})) }),
+            )
+            .route(
+                "/backend-api/codex/responses",
+                post(move |Json(body): Json<Value>| {
+                    let capture = capture.clone();
+                    async move {
+                        capture.lock().unwrap().push(body);
+                        Response::builder()
+                            .header(header::CONTENT_TYPE, "text/event-stream")
+                            .body(Body::from(
+                                "event: response.created\r\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-lane\",\"model\":\"gpt-lane\",\"status\":\"in_progress\"}}\r\n\r\n\
+                                 event: response.completed\r\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-lane\",\"model\":\"gpt-lane\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\r\n\r\n\
+                                 data: [DONE]\r\n\r\n",
+                            ))
+                            .unwrap()
+                    }
+                }),
+            );
+        let (upstream_url, upstream_task) = start_server(upstream).await;
+        let store_path = temporary_path("websocket-lane");
+        let jobs_path = temporary_path("websocket-lane-jobs");
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(vec![account("websocket-lane")])).unwrap(),
+        )
+        .await
+        .unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.configured_api_keys =
+            vec![("websocket-app".to_owned(), "websocket-key".to_owned())];
+        config.chatgpt_base_url = upstream_url;
+        let state = EdgeState::new(config).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(state)).await;
+        let mut request = format!("{}/v1/responses", edge_url.replace("http://", "ws://"))
+            .into_client_request()
+            .unwrap();
+        request.headers_mut().insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer websocket-key"),
+        );
+        let (mut socket, _) = connect_async(request).await.unwrap();
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                r#"{"type":"response.create","stream_id":"lane-1","model":"gpt-lane","input":"hello"}"#
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        for _ in 0..2 {
+            let message = timeout(Duration::from_secs(5), socket.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let event: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+            assert_eq!(event["stream_id"], "lane-1");
+        }
+        let body = bodies.lock().unwrap()[0].clone();
+        assert!(body.get("stream_id").is_none());
+        assert_eq!(body["stream"], true);
+        socket.close(None).await.unwrap();
+        edge_task.abort();
+        upstream_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
+    async fn websocket_upstream_body_error_never_reports_completion() {
+        let upstream = Router::new()
+            .route(
+                "/backend-api/codex/models",
+                get(|| async { Json(json!({"models": [{"slug": "gpt-reset"}]})) }),
+            )
+            .route(
+                "/backend-api/codex/responses",
+                post(|| async {
+                    let stream = stream! {
+                        yield Ok::<Bytes, std::io::Error>(Bytes::from(sse_frame(
+                            "response.created",
+                            &json!({"type":"response.created","response":{"id":"resp-reset","model":"gpt-reset","status":"in_progress"}}),
+                        )));
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                        yield Err(std::io::Error::new(
+                            std::io::ErrorKind::ConnectionReset,
+                            "connection reset by peer",
+                        ));
+                    };
+                    Response::builder()
+                        .header(header::CONTENT_TYPE, "text/event-stream")
+                        .body(Body::from_stream(stream))
+                        .unwrap()
+                }),
+            );
+        let (upstream_url, upstream_task) = start_server(upstream).await;
+        let store_path = temporary_path("websocket-upstream-error");
+        let jobs_path = temporary_path("websocket-upstream-error-jobs");
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(vec![account("websocket-upstream-error")]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.configured_api_keys =
+            vec![("websocket-app".to_owned(), "websocket-key".to_owned())];
+        config.chatgpt_base_url = upstream_url;
+        let state = EdgeState::new(config).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(state)).await;
+        let mut request = format!("{}/v1/responses", edge_url.replace("http://", "ws://"))
+            .into_client_request()
+            .unwrap();
+        request.headers_mut().insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer websocket-key"),
+        );
+        let (mut socket, _) = connect_async(request).await.unwrap();
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                r#"{"type":"response.create","model":"gpt-reset","input":"hello"}"#.into(),
+            ))
+            .await
+            .unwrap();
+        let terminal = timeout(Duration::from_secs(5), async {
+            loop {
+                let message = socket.next().await.unwrap().unwrap();
+                let event: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+                if matches!(
+                    event["type"].as_str(),
+                    Some("response.completed" | "response.failed" | "response.incomplete" | "error")
+                ) {
+                    break event;
+                }
+            }
+        })
+        .await
+        .expect("terminal event");
+        assert_eq!(terminal["type"], "response.failed");
+        assert_eq!(terminal["response"]["status"], "failed");
+        assert_eq!(terminal["response"]["id"], "resp-reset");
+        socket.close(None).await.unwrap();
+        edge_task.abort();
+        upstream_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
+    async fn websocket_truncated_upstream_reports_failure_not_completion() {
+        let upstream = Router::new()
+            .route(
+                "/backend-api/codex/models",
+                get(|| async { Json(json!({"models": [{"slug": "gpt-truncated"}]})) }),
+            )
+            .route(
+                "/backend-api/codex/responses",
+                post(|| async {
+                    Response::builder()
+                        .header(header::CONTENT_TYPE, "text/event-stream")
+                        .body(Body::from(sse_frame(
+                            "response.created",
+                            &json!({"type":"response.created","response":{"id":"resp-truncated","model":"gpt-truncated","status":"in_progress"}}),
+                        )))
+                        .unwrap()
+                }),
+            );
+        let (upstream_url, upstream_task) = start_server(upstream).await;
+        let store_path = temporary_path("websocket-truncated");
+        let jobs_path = temporary_path("websocket-truncated-jobs");
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(vec![account("websocket-truncated")])).unwrap(),
+        )
+        .await
+        .unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.configured_api_keys =
+            vec![("websocket-app".to_owned(), "websocket-key".to_owned())];
+        config.chatgpt_base_url = upstream_url;
+        let state = EdgeState::new(config).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(state)).await;
+        let mut request = format!("{}/v1/responses", edge_url.replace("http://", "ws://"))
+            .into_client_request()
+            .unwrap();
+        request.headers_mut().insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer websocket-key"),
+        );
+        let (mut socket, _) = connect_async(request).await.unwrap();
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                r#"{"type":"response.create","model":"gpt-truncated","input":"hello"}"#.into(),
+            ))
+            .await
+            .unwrap();
+        let terminal = timeout(Duration::from_secs(5), async {
+            loop {
+                let message = socket.next().await.unwrap().unwrap();
+                let event: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+                if matches!(
+                    event["type"].as_str(),
+                    Some("response.completed" | "response.failed" | "response.incomplete" | "error")
+                ) {
+                    break event;
+                }
+            }
+        })
+        .await
+        .expect("terminal event");
+        assert_eq!(terminal["type"], "response.failed");
+        assert_eq!(terminal["response"]["status"], "failed");
+        socket.close(None).await.unwrap();
+        edge_task.abort();
+        upstream_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
+    async fn websocket_heartbeat_keeps_a_silent_generation_alive() {
+        let upstream = Router::new()
+            .route(
+                "/backend-api/codex/models",
+                get(|| async { Json(json!({"models": [{"slug": "gpt-silent"}]})) }),
+            )
+            .route(
+                "/backend-api/codex/responses",
+                post(|| async {
+                    let stream = stream! {
+                        yield Ok::<Bytes, Infallible>(Bytes::from(sse_frame(
+                            "response.created",
+                            &json!({"type":"response.created","response":{"id":"resp-silent","model":"gpt-silent","status":"in_progress"}}),
+                        )));
+                        std::future::pending::<()>().await;
+                    };
+                    Response::builder()
+                        .header(header::CONTENT_TYPE, "text/event-stream")
+                        .body(Body::from_stream(stream))
+                        .unwrap()
+                }),
+            );
+        let (upstream_url, upstream_task) = start_server(upstream).await;
+        let store_path = temporary_path("websocket-heartbeat");
+        let jobs_path = temporary_path("websocket-heartbeat-jobs");
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(vec![account("websocket-heartbeat")])).unwrap(),
+        )
+        .await
+        .unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.configured_api_keys =
+            vec![("websocket-app".to_owned(), "websocket-key".to_owned())];
+        config.chatgpt_base_url = upstream_url;
+        config.websocket_ping_interval = Duration::from_millis(40);
+        config.websocket_pong_timeout = Duration::from_millis(400);
+        config.websocket_close_timeout = Duration::from_millis(200);
+        let state = EdgeState::new(config).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(state)).await;
+        let mut request = format!("{}/v1/responses", edge_url.replace("http://", "ws://"))
+            .into_client_request()
+            .unwrap();
+        request.headers_mut().insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer websocket-key"),
+        );
+        let (mut socket, _) = connect_async(request).await.unwrap();
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                r#"{"type":"response.create","model":"gpt-silent","input":"hello"}"#.into(),
+            ))
+            .await
+            .unwrap();
+        let mut pings = 0;
+        let deadline = Instant::now() + Duration::from_millis(300);
+        while Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match timeout(remaining, socket.next()).await {
+                Ok(Some(Ok(tokio_tungstenite::tungstenite::Message::Ping(payload)))) => {
+                    socket
+                        .send(tokio_tungstenite::tungstenite::Message::Pong(payload))
+                        .await
+                        .unwrap();
+                    pings += 1;
+                }
+                Ok(Some(Ok(_))) => {}
+                Ok(Some(Err(error))) => panic!("heartbeat connection failed: {error}"),
+                Ok(None) => panic!("heartbeat connection closed"),
+                Err(_) => break,
+            }
+        }
+        assert!(pings >= 2, "expected periodic Ping frames, got {pings}");
+        // The generation is still silent; interrupting it proves the socket is usable.
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                r#"{"type":"response.interrupt","response_id":"resp-silent","mode":"discard_partial_items"}"#
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        let ack = timeout(Duration::from_secs(2), socket.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let ack: Value = serde_json::from_str(ack.to_text().unwrap()).unwrap();
+        assert_eq!(ack["type"], "response.interrupt.accepted");
+        socket.close(None).await.unwrap();
+        edge_task.abort();
+        upstream_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
+    async fn websocket_dead_peer_is_closed_after_missed_pongs() {
+        let upstream = Router::new()
+            .route(
+                "/backend-api/codex/models",
+                get(|| async { Json(json!({"models": [{"slug": "gpt-dead"}]})) }),
+            )
+            .route(
+                "/backend-api/codex/responses",
+                post(|| async {
+                    let stream = stream! {
+                        yield Ok::<Bytes, Infallible>(Bytes::from(sse_frame(
+                            "response.created",
+                            &json!({"type":"response.created","response":{"id":"resp-dead","model":"gpt-dead","status":"in_progress"}}),
+                        )));
+                        std::future::pending::<()>().await;
+                    };
+                    Response::builder()
+                        .header(header::CONTENT_TYPE, "text/event-stream")
+                        .body(Body::from_stream(stream))
+                        .unwrap()
+                }),
+            );
+        let (upstream_url, upstream_task) = start_server(upstream).await;
+        let store_path = temporary_path("websocket-dead-peer");
+        let jobs_path = temporary_path("websocket-dead-peer-jobs");
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(vec![account("websocket-dead-peer")])).unwrap(),
+        )
+        .await
+        .unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.configured_api_keys =
+            vec![("websocket-app".to_owned(), "websocket-key".to_owned())];
+        config.chatgpt_base_url = upstream_url;
+        config.websocket_ping_interval = Duration::from_millis(30);
+        config.websocket_pong_timeout = Duration::from_millis(80);
+        config.websocket_close_timeout = Duration::from_millis(200);
+        let state = EdgeState::new(config).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(state)).await;
+        let mut request = format!("{}/v1/responses", edge_url.replace("http://", "ws://"))
+            .into_client_request()
+            .unwrap();
+        request.headers_mut().insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer websocket-key"),
+        );
+        let (mut socket, _) = connect_async(request).await.unwrap();
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                r#"{"type":"response.create","model":"gpt-dead","input":"hello"}"#.into(),
+            ))
+            .await
+            .unwrap();
+        // Do not read: no Pong is sent, so the server must detect a dead peer.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let close = timeout(Duration::from_secs(2), async {
+            loop {
+                match socket.next().await {
+                    Some(Ok(tokio_tungstenite::tungstenite::Message::Close(frame))) => {
+                        break frame;
+                    }
+                    Some(Ok(_)) => {}
+                    Some(Err(error)) => panic!("unexpected socket error: {error}"),
+                    None => panic!("socket ended without a Close frame"),
+                }
+            }
+        })
+        .await
+        .expect("server-initiated Close");
+        let close = close.expect("Close frame with code");
+        assert_eq!(close.code, tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Away);
+        edge_task.abort();
+        upstream_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
+    async fn websocket_graceful_shutdown_closes_idle_connections_with_1001() {
+        let store_path = temporary_path("websocket-shutdown");
+        let jobs_path = temporary_path("websocket-shutdown-jobs");
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(Vec::new())).unwrap(),
+        )
+        .await
+        .unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.configured_api_keys =
+            vec![("websocket-app".to_owned(), "websocket-key".to_owned())];
+        config.websocket_close_timeout = Duration::from_millis(200);
+        config.shutdown_grace = Duration::from_millis(200);
+        let state = EdgeState::new(config).await.unwrap();
+        let shutdown = state.clone();
+        let (edge_url, edge_task) = start_server(build_router(state)).await;
+        let mut request = format!("{}/v1/responses", edge_url.replace("http://", "ws://"))
+            .into_client_request()
+            .unwrap();
+        request.headers_mut().insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer websocket-key"),
+        );
+        let (mut socket, _) = connect_async(request).await.unwrap();
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                r#"{"type":"response.create","model":"gpt-shutdown","generate":false}"#.into(),
+            ))
+            .await
+            .unwrap();
+        for _ in 0..2 {
+            let event = timeout(Duration::from_secs(2), socket.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert!(event.is_text());
+        }
+        shutdown.begin_shutdown();
+        let close = timeout(Duration::from_secs(2), async {
+            loop {
+                match socket.next().await {
+                    Some(Ok(tokio_tungstenite::tungstenite::Message::Close(frame))) => {
+                        break frame;
+                    }
+                    Some(Ok(_)) => {}
+                    Some(Err(error)) => panic!("unexpected socket error: {error}"),
+                    None => panic!("socket ended without a Close frame"),
+                }
+            }
+        })
+        .await
+        .expect("server-initiated Close");
+        let close = close.expect("Close frame with code");
+        assert_eq!(close.code, tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Away);
+        edge_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
+    async fn websocket_rejects_background_and_invalid_stream_ids() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let upstream = Router::new()
+            .route(
+                "/backend-api/codex/models",
+                get(|| async { Json(json!({"models": [{"slug": "gpt-validation"}]})) }),
+            )
+            .route(
+                "/backend-api/codex/responses",
+                post(move || {
+                    let counter = counter.clone();
+                    async move {
+                        counter.fetch_add(1, AtomicOrdering::SeqCst);
+                        Response::builder()
+                            .header(header::CONTENT_TYPE, "text/event-stream")
+                            .body(Body::from(
+                                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-validation\",\"status\":\"completed\",\"output\":[]}}\n\n",
+                            ))
+                            .unwrap()
+                    }
+                }),
+            );
+        let (upstream_url, upstream_task) = start_server(upstream).await;
+        let store_path = temporary_path("websocket-validation");
+        let jobs_path = temporary_path("websocket-validation-jobs");
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(vec![account("websocket-validation")])).unwrap(),
+        )
+        .await
+        .unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.configured_api_keys =
+            vec![("websocket-app".to_owned(), "websocket-key".to_owned())];
+        config.chatgpt_base_url = upstream_url;
+        let state = EdgeState::new(config).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(state)).await;
+        let mut request = format!("{}/v1/responses", edge_url.replace("http://", "ws://"))
+            .into_client_request()
+            .unwrap();
+        request.headers_mut().insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer websocket-key"),
+        );
+        let (mut socket, _) = connect_async(request).await.unwrap();
+        for frame in [
+            json!({"type":"response.create","model":"gpt-validation","background":true}),
+            json!({"type":"response.create","model":"gpt-validation","stream_id":"bad lane"}),
+        ] {
+            socket
+                .send(tokio_tungstenite::tungstenite::Message::Text(
+                    frame.to_string().into(),
+                ))
+                .await
+                .unwrap();
+            let error = timeout(Duration::from_secs(2), socket.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let error: Value = serde_json::from_str(error.to_text().unwrap()).unwrap();
+            assert_eq!(error["type"], "error");
+            assert_eq!(error["status"], 400);
+        }
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
+        socket.close(None).await.unwrap();
+        edge_task.abort();
+        upstream_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
+    async fn websocket_client_disconnect_releases_the_active_turn() {
+        let upstream = Router::new()
+            .route(
+                "/backend-api/codex/models",
+                get(|| async { Json(json!({"models": [{"slug": "gpt-disconnect"}]})) }),
+            )
+            .route(
+                "/backend-api/codex/responses",
+                post(|| async {
+                    let stream = stream! {
+                        yield Ok::<Bytes, Infallible>(Bytes::from(sse_frame(
+                            "response.created",
+                            &json!({"type":"response.created","response":{"id":"resp-disconnect","model":"gpt-disconnect","status":"in_progress"}}),
+                        )));
+                        std::future::pending::<()>().await;
+                    };
+                    Response::builder()
+                        .header(header::CONTENT_TYPE, "text/event-stream")
+                        .body(Body::from_stream(stream))
+                        .unwrap()
+                }),
+            );
+        let (upstream_url, upstream_task) = start_server(upstream).await;
+        let store_path = temporary_path("websocket-disconnect");
+        let jobs_path = temporary_path("websocket-disconnect-jobs");
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(vec![account("websocket-disconnect")])).unwrap(),
+        )
+        .await
+        .unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.configured_api_keys =
+            vec![("websocket-app".to_owned(), "websocket-key".to_owned())];
+        config.chatgpt_base_url = upstream_url;
+        let state = EdgeState::new(config).await.unwrap();
+        let drain = state.drain.clone();
+        let (edge_url, edge_task) = start_server(build_router(state)).await;
+        let mut request = format!("{}/v1/responses", edge_url.replace("http://", "ws://"))
+            .into_client_request()
+            .unwrap();
+        request.headers_mut().insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer websocket-key"),
+        );
+        let (mut socket, _) = connect_async(request).await.unwrap();
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                r#"{"type":"response.create","model":"gpt-disconnect","input":"hello"}"#.into(),
+            ))
+            .await
+            .unwrap();
+        let created = timeout(Duration::from_secs(5), socket.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let created: Value = serde_json::from_str(created.to_text().unwrap()).unwrap();
+        assert_eq!(created["type"], "response.created");
+        assert_eq!(drain.snapshot().2, 1);
+        drop(socket);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline && drain.snapshot().2 != 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            drain.snapshot().2,
+            0,
+            "abrupt client disconnect must release the websocket turn"
+        );
+        edge_task.abort();
+        upstream_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
+    async fn websocket_peer_close_is_acknowledged() {
+        let store_path = temporary_path("websocket-peer-close");
+        let jobs_path = temporary_path("websocket-peer-close-jobs");
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(Vec::new())).unwrap(),
+        )
+        .await
+        .unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.configured_api_keys =
+            vec![("websocket-app".to_owned(), "websocket-key".to_owned())];
+        config.websocket_close_timeout = Duration::from_millis(200);
+        let state = EdgeState::new(config).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(state)).await;
+        let mut request = format!("{}/v1/responses", edge_url.replace("http://", "ws://"))
+            .into_client_request()
+            .unwrap();
+        request.headers_mut().insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer websocket-key"),
+        );
+        let (mut socket, _) = connect_async(request).await.unwrap();
+        socket.close(None).await.unwrap();
+        let reply = timeout(Duration::from_secs(2), socket.next())
+            .await
+            .expect("server Close reply")
+            .expect("socket message")
+            .expect("valid frame");
+        assert!(matches!(
+            reply,
+            tokio_tungstenite::tungstenite::Message::Close(_)
+        ));
+        edge_task.abort();
         let _ = fs::remove_file(store_path).await;
         let _ = fs::remove_file(jobs_path).await;
     }
