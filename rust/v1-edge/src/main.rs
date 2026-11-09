@@ -4,6 +4,9 @@ use tokio::net::TcpListener;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Both ring and aws-lc-rs are present in the dependency tree, so rustls
+    // cannot pick a process-level provider on its own.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let config = EdgeConfig::from_env();
     let bind_address = format!("{}:{}", config.listen_host, config.listen_port);
     let state = EdgeState::new(config.clone()).await?;
@@ -12,6 +15,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shutdown_state = state.clone();
     let router: Router = build_router(state);
     let listener = TcpListener::bind(&bind_address).await?;
+
+    if let (Some(port), Some(cert), Some(key)) = (
+        config.backend_relay_port,
+        config.backend_relay_cert_path.clone(),
+        config.backend_relay_key_path.clone(),
+    ) {
+        let relay_router = router.clone();
+        tokio::spawn(async move {
+            match axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert, &key).await {
+                Ok(tls) => {
+                    let address = std::net::SocketAddr::from(([0, 0, 0, 0], port));
+                    println!(
+                        "multivibe backend relay listening on https://0.0.0.0:{} (chatgpt_base_url=/backend-api)",
+                        port
+                    );
+                    if let Err(error) = axum_server::bind_rustls(address, tls)
+                        .serve(relay_router.into_make_service())
+                        .await
+                    {
+                        eprintln!(
+                            "{}",
+                            serde_json::json!({
+                                "event": "backend_relay.serve_error",
+                                "error": error.to_string(),
+                            })
+                        );
+                    }
+                }
+                Err(error) => eprintln!(
+                    "{}",
+                    serde_json::json!({
+                        "event": "backend_relay.tls_error",
+                        "error": error.to_string(),
+                    })
+                ),
+            }
+        });
+    }
 
     println!(
         "multivibe rust v1 edge listening on {}:{} (control_plane={})",
@@ -58,9 +99,12 @@ async fn shutdown_signal(state: multivibe_v1_edge::EdgeState) {
     // current generation and close with code 1001. Axum's graceful shutdown
     // waits for the remaining connections after this future resolves.
     state.begin_shutdown();
-    eprintln!("{}", serde_json::json!({
-        "event": "server.shutdown",
-        "draining": true,
-        "shutdownGraceMs": state.config.shutdown_grace.as_millis() as u64,
-    }));
+    eprintln!(
+        "{}",
+        serde_json::json!({
+            "event": "server.shutdown",
+            "draining": true,
+            "shutdownGraceMs": state.config.shutdown_grace.as_millis() as u64,
+        })
+    );
 }

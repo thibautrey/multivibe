@@ -9,6 +9,8 @@ services:
     init: true
     ports:
       - "1455:1455"
+      # HTTPS listener for the Codex Desktop `chatgpt_base_url` relay.
+      - "1457:1457"
     environment:
       - MULTIVIBE_CONTROL_PLANE=true
       - PORT=1456
@@ -28,6 +30,9 @@ services:
       - V1_EDGE_MODELS_CACHE_PATH=/data/v1-edge-models-cache.json
       - REQUEST_BODY_LIMIT=${REQUEST_BODY_LIMIT:-500mb}
       - CHATGPT_BASE_URL=https://chatgpt.com
+      - BACKEND_RELAY_PORT=${BACKEND_RELAY_PORT:-1457}
+      - BACKEND_RELAY_CERT=${BACKEND_RELAY_CERT:-/data/tls/server.pem}
+      - BACKEND_RELAY_KEY=${BACKEND_RELAY_KEY:-/data/tls/server.key}
       - REALTIME_PROVIDER=${REALTIME_PROVIDER:-openai}
       - REALTIME_WEBRTC_CALL_URL=${REALTIME_WEBRTC_CALL_URL:-}
       - REALTIME_REQUEST_TIMEOUT_MS=${REALTIME_REQUEST_TIMEOUT_MS:-30000}

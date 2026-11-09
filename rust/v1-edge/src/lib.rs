@@ -16,6 +16,7 @@ mod model_pricing;
 mod model_metadata;
 mod realtime_voice;
 mod token_refresh;
+mod backend_relay;
 
 use async_stream::stream;
 use axum::{
@@ -31,7 +32,7 @@ use axum::{
     },
     middleware::Next,
     response::Response,
-    routing::{get, post},
+    routing::{any, get, post},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use bytes::Bytes;
@@ -174,6 +175,11 @@ pub struct EdgeConfig {
     pub admin_token: String,
     pub configured_api_keys: Vec<(String, String)>,
     pub internal_job_token: Option<String>,
+    /// Optional HTTPS listener that serves the Codex `chatgpt_base_url`
+    /// backend relay (`/backend-api/*`).
+    pub backend_relay_port: Option<u16>,
+    pub backend_relay_cert_path: Option<PathBuf>,
+    pub backend_relay_key_path: Option<PathBuf>,
 }
 
 impl Default for EdgeConfig {
@@ -249,6 +255,9 @@ impl Default for EdgeConfig {
             admin_token: String::new(),
             configured_api_keys: Vec::new(),
             internal_job_token: None,
+            backend_relay_port: None,
+            backend_relay_cert_path: None,
+            backend_relay_key_path: None,
         }
     }
 }
@@ -458,6 +467,11 @@ impl EdgeConfig {
             admin_token: env("ADMIN_TOKEN").unwrap_or_default(),
             configured_api_keys,
             internal_job_token: env("V1_EDGE_INTERNAL_JOB_TOKEN"),
+            backend_relay_port: env("BACKEND_RELAY_PORT")
+                .and_then(|value| value.parse::<u16>().ok())
+                .filter(|port| *port > 0),
+            backend_relay_cert_path: env("BACKEND_RELAY_CERT").map(PathBuf::from),
+            backend_relay_key_path: env("BACKEND_RELAY_KEY").map(PathBuf::from),
         }
     }
 }
@@ -14857,6 +14871,9 @@ pub fn build_router(state: EdgeState) -> Router {
         // resource routes still fall back to the loopback control plane until
         // their business logic is migrated.
         .route("/health", get(dashboard::health))
+        // Codex Desktop `chatgpt_base_url` relay: keeps ChatGPT identity,
+        // forwards the backend, rewrites an exhausted `/wham/usage` payload.
+        .route("/backend-api/{*rest}", any(backend_relay::backend_relay_handler))
         .route(
             "/admin/session",
             get(dashboard::session_status)

@@ -53,5 +53,5 @@ COPY --from=build \
   ./scripts/
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./
-EXPOSE 1455 1456
+EXPOSE 1455 1456 1457
 CMD ["/usr/local/bin/start-multivibe.sh"]
