@@ -13,6 +13,7 @@ import {wavPcm24k} from './instance-voice-audio.js';
 const data=process.env.MULTIVIBE_HOST_DATA_DIR??path.join(os.homedir(),'Library/Application Support/MultiVibe');
 const config=JSON.parse(fs.readFileSync(path.join(data,'instance-voice.json'),'utf8')) as {
   llmModel:string;speechOrigin?:string;edgeBinary?:string;edgePort?:number;
+  sttModel?:string;kokoroModel?:string;qwenModel?:string;
 };
 if(typeof config.llmModel!=='string'||!config.llmModel||config.llmModel.length>256)throw Error('Explicit instance voice model configuration required');
 const credentials=JSON.parse(fs.readFileSync(path.join(data,'host-credentials.json'),'utf8'));
@@ -23,6 +24,7 @@ const catalog=await fetch(hostOrigin+'/v1/models',{headers:{authorization:'Beare
 if(!catalog.ok||!(await catalog.json() as {data:{id:string}[]}).data.some(m=>m.id===config.llmModel))throw Error('Selected language model is unavailable on this MultiVibe Host');
 const runtime=path.join(data,'instance-voice-runtime');fs.mkdirSync(runtime,{recursive:true,mode:0o700});
 const key=randomBytes(32).toString('base64url'),speech=loopbackOrigin(config.speechOrigin??'http://127.0.0.1:8000');
+const speechModels={stt:config.sttModel??SPEECH_MODELS.stt,kokoro:config.kokoroModel??SPEECH_MODELS.kokoro,qwen:config.qwenModel??SPEECH_MODELS.qwen};
 const store=path.join(runtime,'accounts.json');
 fs.writeFileSync(store,JSON.stringify({accounts:[{id:'instance-voice-llm',provider:'openai-compatible',upstreamMode:'responses',accessToken:apiKey,baseUrl:hostOrigin,enabled:true,sdkModels:[config.llmModel]}]}),{mode:0o600});
 fs.chmodSync(store,0o600);
@@ -56,8 +58,8 @@ const edge=spawn(config.edgeBinary??'/Applications/MultiVibe Host.app/Contents/H
   V1_EDGE_JOBS_PATH:path.join(runtime,'jobs.json'),JOBS_DB_PATH:path.join(runtime,'legacy-jobs.sqlite'),V1_EDGE_MODELS_CACHE_PATH:path.join(runtime,'models.json'),
   TRACE_FILE_PATH:path.join(runtime,'trace.jsonl'),TRACE_INCLUDE_BODY:'false',V1_EDGE_TRACE_INCLUDE_BODY:'false',
   REALTIME_CASCADE_ENABLED:'true',REALTIME_CASCADE_MODEL:'multivibe/voice',REALTIME_CASCADE_LLM_MODEL:config.llmModel,
-  REALTIME_STT_URL:speech+'/v1/audio/transcriptions',REALTIME_STT_MODEL:SPEECH_MODELS.stt,
-  REALTIME_TTS_URL:'http://127.0.0.1:'+address.port+'/speech',REALTIME_TTS_API_KEY:key,REALTIME_TTS_MODEL:SPEECH_MODELS.kokoro,REALTIME_TTS_VOICE:'kokoro:ff_siwis',REALTIME_TTS_RESPONSE_FORMAT:'pcm',
+  REALTIME_STT_URL:speech+'/v1/audio/transcriptions',REALTIME_STT_MODEL:speechModels.stt,
+  REALTIME_TTS_URL:'http://127.0.0.1:'+address.port+'/speech',REALTIME_TTS_API_KEY:key,REALTIME_TTS_MODEL:speechModels.kokoro,REALTIME_TTS_VOICE:'kokoro:ff_siwis',REALTIME_TTS_RESPONSE_FORMAT:'pcm',
 }});
 // Edge diagnostics can contain request URLs. Keep them in a private local file.
 const log=fs.createWriteStream(path.join(runtime,'edge.log'),{flags:'a',mode:0o600});edge.stdout.pipe(log);edge.stderr.pipe(log);
@@ -74,6 +76,6 @@ try{
     await delay(100);
   }
   if(!ready)throw Error('Voice edge did not start');
-  bridge=new InstanceVoiceBridge({stateFile:path.join(data,'instance-relay-v1.json'),edgeOrigin:origin,edgeKey:key,speechOrigin:speech,llmModel:config.llmModel});
+  bridge=new InstanceVoiceBridge({stateFile:path.join(data,'instance-relay-v1.json'),edgeOrigin:origin,edgeKey:key,speechOrigin:speech,llmModel:config.llmModel,speechModels});
   await bridge.run();
 }finally{stop();}

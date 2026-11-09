@@ -10,11 +10,17 @@ The independent `dist/host/instance-voice-main.js` companion opens one outbound
 WebSocket. It never polls completion jobs or restarts the Host or speech runtime.
 It starts a separate Rust voice edge bound to loopback, with separate private
 state. Whisper transcribes audio; installed Kokoro and Qwen3 TTS voices are
-discovered from the local oMLX runtime. The explicitly configured language model
+discovered from the local speech runtime. The companion accepts both the oMLX
+`/v1/audio/voices` endpoint and OpenAI-compatible model cards that publish a
+`voices` array (for example speaches). The explicitly configured language model
 uses the existing edge router. Credentials and audio adapter URLs stay on the Mac.
 
 The owner configures `instance-voice.json` in the Host data directory with an
-explicit `llmModel` already published by that Host. All language-model calls go
+explicit `llmModel` already published by that Host. Optional `sttModel`,
+`kokoroModel`, and `qwenModel` fields select the speech runtime's concrete model
+IDs; they default to the oMLX names. Use `llmModel: "multivibe/voice"` to let the
+Host edge keep simple turns on the local model and escalate complex turns to the
+configured advanced model. All language-model calls go
 through the running MultiVibe Host, using its private local proxy credential. Optional
 `speechOrigin` must be a loopback HTTP origin; `edgePort` defaults to 1457.
 Run the companion with the Host's bundled Node runtime after starting oMLX.

@@ -6,23 +6,26 @@ import path from "node:path";
 import test from "node:test";
 import express from "express";
 import { ModuleManager } from "./module-manager.js";
+import { AccountStore } from "./store.js";
 import { audioPluginManifest, createAudioPlugin } from "./audio-plugin.js";
 import { audioRoutes } from "./audio-routes.js";
 
-async function withAudioServer(run: (baseUrl: string, moduleManager: ModuleManager) => Promise<void>) {
+async function withAudioServer(run: (baseUrl: string, moduleManager: ModuleManager, store: AccountStore) => Promise<void>) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-audio-routes-"));
   const moduleManager = new ModuleManager(root);
   moduleManager.registerBuiltin(audioPluginManifest, createAudioPlugin());
   await moduleManager.initialize();
+  const store = new AccountStore(path.join(root, "accounts.json"));
+  await store.init();
   const app = express();
   app.use(express.json());
-  app.use("/admin/audio", audioRoutes({ moduleManager }));
+  app.use("/admin/audio", audioRoutes({ moduleManager, store }));
   const server = app.listen(0, "127.0.0.1");
   await new Promise<void>((resolve) => server.once("listening", resolve));
   const address = server.address();
   assert.ok(address && typeof address !== "string");
   try {
-    await run(`http://127.0.0.1:${address.port}`, moduleManager);
+    await run(`http://127.0.0.1:${address.port}`, moduleManager, store);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await fs.rm(root, { recursive: true, force: true });
@@ -72,6 +75,35 @@ test("audio route rejects malformed server URLs and saves valid settings", async
     assert.equal(body.settings.serverUrl, "http://127.0.0.1:8099");
     assert.equal(body.settings.ttsVoice, "marin");
     assert.equal(body.env.OPENGPT_VOICE_ASR_LANGUAGE, "fr");
+  });
+});
+
+test("audio route persists voice escalation settings for the Rust edge", async () => {
+  await withAudioServer(async (baseUrl, _moduleManager, store) => {
+    const saved = await fetch(`${baseUrl}/admin/audio`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ settings: {
+        llmModel: "local-voice",
+        escalationModel: "deepseek",
+        escalationThreshold: 0.4,
+        voiceRoutingEnabled: true,
+      } }),
+    });
+    assert.equal(saved.status, 200);
+    const body = await saved.json();
+    assert.equal(body.env.OPENGPT_VOICE_RESPONSES_MODEL, "multivibe/voice");
+    assert.deepEqual(body.routing, {
+      enabled: true,
+      localModel: "local-voice",
+      advancedModel: "deepseek",
+      threshold: 0.4,
+    });
+    const settings = await store.getSettings();
+    assert.equal(settings.voiceLocalModel, "local-voice");
+    assert.equal(settings.voiceAdvancedModel, "deepseek");
+    assert.equal(settings.voiceEscalationThreshold, 0.4);
+    assert.equal(settings.voiceEscalationEnabled, true);
   });
 });
 

@@ -28,6 +28,8 @@ export type ModuleVirtualModel = {
   role?: "parent" | "worker";
   /** Human-readable purpose, surfaced in the model catalog. */
   description?: string;
+  /** Managed alias marker. Defaults to the coding-economy marker for compatibility. */
+  aliasDescription?: string;
 };
 
 export type ModuleManifest = {
