@@ -646,6 +646,14 @@ pub struct ApplicationPolicy {
 #[serde(rename_all = "camelCase")]
 pub struct StoreSettings {
     pub image_request_model_override: Option<String>,
+    #[serde(default)]
+    pub voice_local_model: Option<String>,
+    #[serde(default)]
+    pub voice_advanced_model: Option<String>,
+    #[serde(default)]
+    pub voice_escalation_threshold: Option<f64>,
+    #[serde(default)]
+    pub voice_escalation_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -1392,7 +1400,7 @@ fn select_accounts(
         .iter()
         .filter(|account| {
             normalize_provider(account) == route.provider.as_deref().unwrap_or("")
-                && (!is_cloud_model_selector(&route.requested_model)
+                && (!is_cloud_model_selector(&route.model)
                     || account.multivibe_cloud == Some(true))
                 && retired_local_model_route_allowed(route)
                 && (route.account_ids.is_empty() || route.account_ids.contains(&account.id))
@@ -1525,6 +1533,152 @@ fn retired_local_model_route_allowed(route: &RouteCandidate) -> bool {
 
 fn is_cloud_model_selector(model: &str) -> bool {
     model.starts_with("multivibe/")
+}
+
+const VOICE_MODEL: &str = "multivibe/voice";
+const VOICE_COMPLEXITY_KEYWORDS: &[&str] = &[
+    "pourquoi", "explique", "analyse", "compare", "démontre", "demontre", "raisonne",
+    "calcule", "code", "programme", "débogue", "debogue", "debug", "architecture",
+    "plan", "stratégie", "strategie", "étape", "etape", "rédige", "redige",
+    "traduis", "traduire", "résume", "resume", "synthèse", "synthese",
+    "justifie", "argumente", "optimise", "corrige", "implémente", "implemente",
+    "explain", "analyze", "compare", "design", "implement", "refactor",
+    "why", "how does", "step by step", "reason", "calculate", "write code",
+];
+
+/// Extract the recent user text from either Chat Completions messages or
+/// Responses input items. System instructions are deliberately excluded: the
+/// escalation decision is about the user's task, not the voice persona.
+fn voice_request_text(body: &Value) -> String {
+    if let Some(text) = body.get("input").and_then(Value::as_str) {
+        return text.to_owned();
+    }
+    let items = body
+        .get("input")
+        .and_then(Value::as_array)
+        .or_else(|| body.get("messages").and_then(Value::as_array));
+    let Some(items) = items else {
+        return String::new();
+    };
+    let mut texts = Vec::new();
+    for item in items.iter().rev().take(4) {
+        let role = item.get("role").and_then(Value::as_str).unwrap_or("");
+        if !role.is_empty() && role != "user" {
+            continue;
+        }
+        if let Some(content) = item.get("content") {
+            if let Some(text) = content.as_str() {
+                texts.push(text.to_owned());
+            } else if let Some(parts) = content.as_array() {
+                for part in parts {
+                    if let Some(text) = part.get("text").and_then(Value::as_str) {
+                        texts.push(text.to_owned());
+                    }
+                }
+            }
+        }
+        if let Some(text) = item.get("text").and_then(Value::as_str) {
+            texts.push(text.to_owned());
+        }
+    }
+    texts.join("\n")
+}
+
+/// A fast, local heuristic for voice turns. It intentionally avoids a second
+/// model call: the classifier latency would defeat the purpose of the local
+/// voice lane. The threshold is configurable in Host settings.
+fn voice_complexity_score(text: &str, body: &Value) -> f64 {
+    let text = text.trim();
+    if text.is_empty() {
+        return 0.0;
+    }
+    let chars = text.chars().count();
+    let mut score = 0.0_f64;
+    if chars > 120 {
+        score += 0.2;
+    }
+    if chars > 400 {
+        score += 0.2;
+    }
+    if chars > 1200 {
+        score += 0.2;
+    }
+    let lower = text.to_lowercase();
+    let keywords = VOICE_COMPLEXITY_KEYWORDS
+        .iter()
+        .filter(|keyword| lower.contains(**keyword))
+        .count();
+    score += (keywords as f64 * 0.1).min(0.5);
+    if keywords >= 3 {
+        score += 0.1;
+    }
+    if body
+        .get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| !tools.is_empty())
+    {
+        score += 0.15;
+    }
+    if body.get("reasoning").is_some() || body.get("reasoning_effort").is_some() {
+        score += 0.2;
+    }
+    let items = body
+        .get("input")
+        .and_then(Value::as_array)
+        .or_else(|| body.get("messages").and_then(Value::as_array));
+    if items.is_some_and(|items| items.len() > 6) {
+        score += 0.1;
+    }
+    if text.matches('?').count() > 1 {
+        score += 0.1;
+    }
+    if chars < 80 && keywords == 0 {
+        score = score.min(0.2);
+    }
+    score.clamp(0.0, 1.0)
+}
+
+/// Resolve `multivibe/voice` to the configured local model, or to the advanced
+/// model when the heuristic crosses the threshold. Only catalog-visible models
+/// are eligible; an unavailable target falls back to the other configured one.
+fn voice_route_model(
+    store: &StoreFile,
+    body: &Value,
+    catalog: &[Value],
+    requested: &str,
+) -> Option<String> {
+    if !requested.eq_ignore_ascii_case(VOICE_MODEL) {
+        return None;
+    }
+    let local = store
+        .settings
+        .voice_local_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .filter(|model| catalog_model(catalog, model).is_some());
+    let advanced = store
+        .settings
+        .voice_advanced_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .filter(|model| catalog_model(catalog, model).is_some());
+    let enabled = store.settings.voice_escalation_enabled.unwrap_or(true);
+    let threshold = store
+        .settings
+        .voice_escalation_threshold
+        .unwrap_or(0.55)
+        .clamp(0.0, 1.0);
+    let text = voice_request_text(body);
+    let escalate = enabled && voice_complexity_score(&text, body) >= threshold;
+    match (escalate, advanced, local) {
+        (true, Some(advanced), _) => Some(advanced.to_owned()),
+        (true, None, Some(local)) => Some(local.to_owned()),
+        (false, _, Some(local)) => Some(local.to_owned()),
+        (false, Some(advanced), None) => Some(advanced.to_owned()),
+        _ => None,
+    }
 }
 
 fn routes_for_model(
@@ -6577,7 +6731,26 @@ async fn proxy_inference(
     } else {
         image_aware_routing_model(&store, &catalog, body, &routing_model)
     };
-    let mut routes = routes_for_model(&store, &routing_model, default_model, &catalog);
+    let mut routes = if routing_model.eq_ignore_ascii_case(VOICE_MODEL) {
+        match voice_route_model(&store, body, &catalog, &routing_model) {
+            Some(chosen) => {
+                let mut routes = routes_for_model(&store, &chosen, default_model, &catalog);
+                for route in routes.iter_mut() {
+                    route.requested_model = routing_model.clone();
+                }
+                routes
+            }
+            None => {
+                return Err(error_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Configure voiceLocalModel and voiceAdvancedModel in Host settings",
+                    "voice_unconfigured",
+                ));
+            }
+        }
+    } else {
+        routes_for_model(&store, &routing_model, default_model, &catalog)
+    };
     // Embedding failover must preserve the indexed vector space.
     if embeddings_route && let Some(first) = routes.first() {
         let model = first.model.clone();
@@ -11169,6 +11342,27 @@ fn static_exposed_models(store: &StoreFile, config: &EdgeConfig) -> Vec<Value> {
                 model_entry(model, provider, Vec::new(), false, Vec::new()),
             );
         }
+    }
+    let voice_configured = store
+        .settings
+        .voice_local_model
+        .as_deref()
+        .is_some_and(|model| !model.trim().is_empty())
+        || store
+            .settings
+            .voice_advanced_model
+            .as_deref()
+            .is_some_and(|model| !model.trim().is_empty());
+    if voice_configured {
+        let mut voice = model_entry(VOICE_MODEL, "multivibe", Vec::new(), false, Vec::new());
+        voice["name"] = Value::String("MultiVibe Voice".to_owned());
+        voice["metadata"]["is_virtual"] = Value::Bool(true);
+        voice["metadata"]["type"] = Value::String("voice".to_owned());
+        voice["metadata"]["input_modalities"] = json!(["text"]);
+        voice["metadata"]["output_modalities"] = json!(["text"]);
+        voice["metadata"]["supports_tools"] = Value::Bool(true);
+        voice["metadata"]["supported_tool_types"] = json!(["function"]);
+        upsert_model(&mut models, voice);
     }
     for alias in store.model_aliases.iter().filter(|alias| alias.enabled) {
         let targets = alias
@@ -22897,4 +23091,83 @@ fn image_pricing_separates_input_modalities() {
     }
     assert_eq!(trace_pricing(Some("gpt-image-2.5-unknown"), 1), None);
     assert_eq!(image_trace_cost(Some("other/gpt-image-2"), &usage), None);
+}
+
+#[cfg(test)]
+mod voice_router_tests {
+    use super::*;
+
+    #[test]
+    fn voice_heuristic_escalates_complex_and_tool_requests() {
+        let simple = json!({"input": "Quel temps fera-t-il demain ?"});
+        assert!(
+            voice_complexity_score(&voice_request_text(&simple), &simple) < 0.55,
+            "a short question must stay on the local model"
+        );
+
+        let complex = json!({
+            "input": "Explique en détail pourquoi cette architecture est lente, compare trois options, puis propose un plan étape par étape."
+        });
+        assert!(
+            voice_complexity_score(&voice_request_text(&complex), &complex) >= 0.55,
+            "a multi-step reasoning request must escalate"
+        );
+
+        let tools = json!({
+            "input": "Bonjour",
+            "tools": [{"type": "function", "name": "lookup"}]
+        });
+        assert!(
+            voice_complexity_score(&voice_request_text(&tools), &tools) >= 0.15,
+            "tool-enabled turns carry more risk than a greeting"
+        );
+    }
+
+    #[test]
+    fn voice_route_uses_local_then_escalates() {
+        let mut store = StoreFile::default();
+        store.settings.voice_local_model = Some("local-voice".to_owned());
+        store.settings.voice_advanced_model = Some("deepseek".to_owned());
+        store.settings.voice_escalation_threshold = Some(0.55);
+        let catalog = vec![json!({"id": "local-voice"}), json!({"id": "deepseek"})];
+
+        let simple = json!({"input": "Bonjour"});
+        assert_eq!(
+            voice_route_model(&store, &simple, &catalog, VOICE_MODEL).as_deref(),
+            Some("local-voice")
+        );
+
+        let complex = json!({
+            "input": "Explique en détail pourquoi cette architecture est lente et propose un plan étape par étape avec des compromis."
+        });
+        assert_eq!(
+            voice_route_model(&store, &complex, &catalog, VOICE_MODEL).as_deref(),
+            Some("deepseek")
+        );
+
+        store.settings.voice_escalation_enabled = Some(false);
+        assert_eq!(
+            voice_route_model(&store, &complex, &catalog, VOICE_MODEL).as_deref(),
+            Some("local-voice")
+        );
+    }
+
+    #[test]
+    fn voice_route_falls_back_when_a_target_is_missing() {
+        let mut store = StoreFile::default();
+        store.settings.voice_local_model = Some("local-voice".to_owned());
+        store.settings.voice_advanced_model = Some("missing-advanced".to_owned());
+        let catalog = vec![json!({"id": "local-voice"})];
+        let complex = json!({
+            "input": "Explique en détail pourquoi cette architecture est lente et propose un plan étape par étape."
+        });
+        assert_eq!(
+            voice_route_model(&store, &complex, &catalog, VOICE_MODEL).as_deref(),
+            Some("local-voice")
+        );
+
+        store.settings.voice_local_model = None;
+        store.settings.voice_advanced_model = None;
+        assert_eq!(voice_route_model(&store, &complex, &catalog, VOICE_MODEL), None);
+    }
 }

@@ -8,6 +8,7 @@ import {
   AUDIO_PLUGIN,
   audioPluginManifest,
   audioServerEnv,
+  audioVoiceRouting,
   createAudioPlugin,
   normalizeAudioServerUrl,
 } from "./audio-plugin.js";
@@ -19,6 +20,11 @@ test("audio plugin is a discoverable built-in with a model schema", () => {
   assert.equal(audioPluginManifest.categories?.[0], "Audio");
   const properties = (audioPluginManifest.settingsSchema as any).properties;
   assert.equal(properties.llmModel.format, "multivibe-model");
+  assert.equal(properties.escalationModel.format, "multivibe-model");
+  assert.equal(properties.escalationThreshold.type, "number");
+  assert.equal(properties.voiceRoutingEnabled.type, "boolean");
+  assert.equal(audioPluginManifest.virtualModels?.[0].id, "multivibe/voice");
+  assert.equal(audioPluginManifest.virtualModels?.[0].targetSetting, "llmModel");
   assert.equal(properties.sttModel.type, "string");
   assert.equal(properties.ttsModel.type, "string");
   assert.equal(properties.ttsVoice.type, "string");
@@ -46,6 +52,28 @@ test("audio settings map to the local GPT-Live environment", () => {
     OPENGPT_VOICE_ASR_LANGUAGE: "fr",
   });
   assert.equal(audioServerEnv({ language: "auto" }).OPENGPT_VOICE_ASR_LANGUAGE, undefined);
+});
+
+test("audio routing publishes multivibe/voice and clamps the escalation threshold", () => {
+  assert.equal(
+    audioServerEnv({ llmModel: "local-voice", escalationModel: "deepseek", voiceRoutingEnabled: true })
+      .OPENGPT_VOICE_RESPONSES_MODEL,
+    "multivibe/voice",
+  );
+  assert.equal(
+    audioServerEnv({ llmModel: "local-voice", escalationModel: "deepseek", voiceRoutingEnabled: false })
+      .OPENGPT_VOICE_RESPONSES_MODEL,
+    "local-voice",
+  );
+  assert.deepEqual(
+    audioVoiceRouting({
+      llmModel: "local-voice",
+      escalationModel: "deepseek",
+      voiceRoutingEnabled: true,
+      escalationThreshold: 1.7,
+    }),
+    { enabled: true, localModel: "local-voice", advancedModel: "deepseek", threshold: 1 },
+  );
 });
 
 test("audio server URLs are bounded to credential-free HTTP(S)", () => {

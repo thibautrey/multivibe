@@ -1,6 +1,7 @@
 import type { ModuleManifest, MultivibeModule } from "./module-sdk.js";
 
 export const AUDIO_PLUGIN = "multivibe.audio";
+export const VOICE_ROUTER_MODEL = "multivibe/voice";
 
 export type AudioModelOption = {
   id: string;
@@ -57,6 +58,9 @@ export const AUDIO_DELEGATION_MODES = [
 
 export const AUDIO_DEFAULT_SETTINGS = {
   llmModel: "",
+  escalationModel: "",
+  escalationThreshold: 0.55,
+  voiceRoutingEnabled: false,
   sttModel: "whisper-large-v3-turbo-asr-4bit",
   ttsModel: "Kokoro-82M-bf16",
   ttsVoice: "ff_siwis",
@@ -105,8 +109,25 @@ export const audioPluginManifest: ModuleManifest = {
     properties: {
       llmModel: modelSetting(
         "Reasoning model",
-        "Answers after transcription, routed through MultiVibe.",
+        "Local model used for voice turns that stay on the low-latency lane.",
       ),
+      escalationModel: modelSetting(
+        "Escalation model",
+        "Stronger model used when a voice turn needs more reasoning than the local model.",
+      ),
+      escalationThreshold: {
+        type: "number",
+        title: "Escalation threshold",
+        description: "0..1 heuristic threshold. Higher values keep more turns on the local model.",
+        minimum: 0,
+        maximum: 1,
+      },
+      voiceRoutingEnabled: {
+        type: "boolean",
+        title: "Escalate complex voice requests",
+        description:
+          "Publish multivibe/voice: route to the local model by default, and to the escalation model for complex turns.",
+      },
       sttModel: {
         type: "string",
         title: "Transcription model",
@@ -150,6 +171,15 @@ export const audioPluginManifest: ModuleManifest = {
       },
     },
   },
+  virtualModels: [
+    {
+      id: VOICE_ROUTER_MODEL,
+      targetSetting: "llmModel",
+      aliasDescription: "Managed by the MultiVibe audio module",
+      description:
+        "Local-first voice reasoning with escalation to a stronger model for complex turns.",
+    },
+  ],
 };
 
 export function createAudioPlugin(): MultivibeModule {
@@ -165,17 +195,44 @@ export function audioServerEnv(
   const text = (key: string) =>
     typeof settings[key] === "string" ? String(settings[key]).trim() : "";
   const language = text("language");
+  const routing = audioVoiceRouting(settings);
   const env: Record<string, string> = {
     OPENGPT_VOICE_ASR_MODEL: text("sttModel"),
     OPENGPT_VOICE_TTS_MODEL: text("ttsModel"),
     OPENGPT_VOICE_TTS_VOICE: text("ttsVoice"),
     OPENGPT_VOICE_DELEGATION_MODE: text("delegationMode"),
-    OPENGPT_VOICE_RESPONSES_MODEL: text("llmModel"),
+    OPENGPT_VOICE_RESPONSES_MODEL: routing.enabled ? VOICE_ROUTER_MODEL : text("llmModel"),
     OPENGPT_VOICE_TURN_PROVIDER: text("turnDetection"),
     OPENGPT_VOICE_MAX_SESSION_DURATION_S: String(settings.maxSessionSeconds ?? ""),
   };
   if (language && language !== "auto") env.OPENGPT_VOICE_ASR_LANGUAGE = language;
   return Object.fromEntries(Object.entries(env).filter(([, value]) => value));
+}
+
+export type AudioVoiceRouting = {
+  enabled: boolean;
+  localModel: string;
+  advancedModel: string;
+  threshold: number;
+};
+
+/** Host-side settings consumed by the Rust edge's multivibe/voice router. */
+export function audioVoiceRouting(
+  settings: Readonly<Record<string, unknown>>,
+): AudioVoiceRouting {
+  const text = (key: string) =>
+    typeof settings[key] === "string" ? String(settings[key]).trim() : "";
+  const rawThreshold = settings.escalationThreshold;
+  const threshold =
+    typeof rawThreshold === "number" && Number.isFinite(rawThreshold)
+      ? Math.min(1, Math.max(0, rawThreshold))
+      : 0.55;
+  return {
+    enabled: settings.voiceRoutingEnabled === true && Boolean(text("escalationModel")),
+    localModel: text("llmModel"),
+    advancedModel: text("escalationModel"),
+    threshold,
+  };
 }
 
 export function normalizeAudioServerUrl(value: unknown): string {
