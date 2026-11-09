@@ -3742,6 +3742,27 @@ enum StreamTransform {
     ResponseToAnthropic,
 }
 
+/// The wire dialect the *client* speaks. Passthrough streams keep the client's
+/// own format, so a keepalive has to be shaped for that dialect rather than
+/// for the upstream one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClientDialect {
+    Chat,
+    Responses,
+    Other,
+}
+
+fn client_dialect(path: &str) -> ClientDialect {
+    if path.contains("chat/completions") {
+        ClientDialect::Chat
+    } else if path.contains("/responses") {
+        ClientDialect::Responses
+    } else {
+        ClientDialect::Other
+    }
+}
+
+
 #[derive(Clone)]
 struct BufferedReply {
     status: StatusCode,
@@ -3755,6 +3776,7 @@ struct StreamingReply {
     headers: Vec<(String, String)>,
     upstream: reqwest::Response,
     transform: StreamTransform,
+    dialect: ClientDialect,
     requested_model: String,
     provider: String,
     trace: Option<StreamingTrace>,
@@ -7414,6 +7436,7 @@ async fn proxy_inference(
                         headers: stream_headers,
                         upstream: response,
                         transform,
+                        dialect: client_dialect(path),
                         requested_model: requested_model.clone().if_empty_then(default_model),
                         provider: provider.clone(),
                         trace: Some(streaming_trace),
@@ -8656,37 +8679,46 @@ impl PassthroughSseState {
 /// Heartbeat frames keep the client stream alive while upstream prefill runs.
 const STREAM_HEARTBEAT: Duration = Duration::from_secs(15);
 
+fn chat_keepalive_frame(model: &str) -> String {
+    let created = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0);
+    format!(
+        "data: {}\n\n",
+        json!({
+            "id": "keepalive",
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": []
+        })
+    )
+}
+
+fn responses_keepalive_frame() -> String {
+    sse_frame("response.in_progress", &json!({ "type": "response.in_progress" }))
+}
+
 /// A heartbeat the client's SSE reader actually surfaces as an event.
 ///
 /// Comment frames (`: keepalive`) keep Cloudflare's 100s origin timer alive but
 /// are swallowed by eventsource parsers, so clients that time out on *events*
-/// (Codex: `stream_idle_timeout_ms`, 300s by default) still abort a long
-/// prefill. Emit a data frame in the client's own dialect instead.
-fn keepalive_frame(transform: StreamTransform, model: &str) -> Bytes {
+/// (Codex: `stream_idle_timeout_ms`; Hermes: 180s stream stale timeout) still
+/// abort a long prefill. Emit a data frame in the client's own dialect instead
+/// — including on passthrough streams, whose wire format is the client's own.
+fn keepalive_frame(transform: StreamTransform, dialect: ClientDialect, model: &str) -> Bytes {
     let frame = match transform {
-        StreamTransform::ChatToResponse => {
-            sse_frame("response.in_progress", &json!({ "type": "response.in_progress" }))
-        }
-        StreamTransform::ResponseToChat => {
-            let created = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|elapsed| elapsed.as_secs())
-                .unwrap_or(0);
-            format!(
-                "data: {}\n\n",
-                json!({
-                    "id": "keepalive",
-                    "object": "chat.completion.chunk",
-                    "created": created,
-                    "model": model,
-                    "choices": []
-                })
-            )
-        }
+        StreamTransform::ChatToResponse => responses_keepalive_frame(),
+        StreamTransform::ResponseToChat => chat_keepalive_frame(model),
         StreamTransform::ResponseToAnthropic => sse_frame("ping", &json!({ "type": "ping" })),
-        // Passthrough: the wire format is the client's own, so a comment is the
-        // only frame that cannot confuse an unknown parser.
-        StreamTransform::None => ": keepalive\n\n".to_owned(),
+        // Passthrough: match the client's dialect so its parser sees a valid
+        // event instead of a comment it would silently discard.
+        StreamTransform::None => match dialect {
+            ClientDialect::Chat => chat_keepalive_frame(model),
+            ClientDialect::Responses => responses_keepalive_frame(),
+            ClientDialect::Other => ": keepalive\n\n".to_owned(),
+        },
     };
     Bytes::from(frame)
 }
@@ -8700,6 +8732,7 @@ fn streaming_response(reply: StreamingReply) -> Response {
     }
     builder = set_response_headers(builder, &headers);
     let transform = reply.transform;
+    let dialect = reply.dialect;
     let model = reply.requested_model;
     let chat_tools = reply.chat_tools;
     let status = reply.status.as_u16();
@@ -8717,19 +8750,26 @@ fn streaming_response(reply: StreamingReply) -> Response {
         // Emit one heartbeat immediately: a proxied client only receives response
         // headers once the first body byte arrives. Upstream prefill on a long
         // conversation can otherwise idle past Cloudflare's 100s origin timeout.
-        yield Ok::<Bytes, Infallible>(keepalive_frame(transform, &model));
+        yield Ok::<Bytes, Infallible>(keepalive_frame(transform, dialect, &model));
         let mut heartbeat = tokio::time::interval(heartbeat_interval);
         heartbeat.tick().await;
         if transform == StreamTransform::None {
-            let mut state = PassthroughSseState::default();
+            // Only a native Responses passthrough can be inspected for its
+            // terminal event. Chat/completions passthrough is a chat stream:
+            // running the Responses state machine there would append a bogus
+            // error frame to every answer that completed normally.
+            let mut state =
+                (dialect == ClientDialect::Responses).then(PassthroughSseState::default);
             loop {
                 tokio::select! {
                     next = upstream.next() => match next {
                         Some(Ok(chunk)) => {
                             if let Some(trace) = trace.as_mut() { trace.observe(&chunk); }
-                            if let Err(message) = state.observe(&chunk) {
-                                stream_error = Some(message);
-                                break;
+                            if let Some(state) = state.as_mut() {
+                                if let Err(message) = state.observe(&chunk) {
+                                    stream_error = Some(message);
+                                    break;
+                                }
                             }
                             yield Ok::<Bytes, Infallible>(chunk)
                         }
@@ -8740,16 +8780,18 @@ fn streaming_response(reply: StreamingReply) -> Response {
                         None => break,
                     },
                     _ = heartbeat.tick() => {
-                        yield Ok::<Bytes, Infallible>(keepalive_frame(transform, &model));
+                        yield Ok::<Bytes, Infallible>(keepalive_frame(transform, dialect, &model));
                     }
                 }
             }
-            if !state.terminal {
-                let message = stream_error
-                    .clone()
-                    .unwrap_or_else(|| "upstream stream ended before a terminal event".to_owned());
-                stream_error = Some(message.clone());
-                yield Ok::<Bytes, Infallible>(Bytes::from(state.failure_frame(&message)));
+            if let Some(state) = state.as_ref() {
+                if !state.terminal {
+                    let message = stream_error
+                        .clone()
+                        .unwrap_or_else(|| "upstream stream ended before a terminal event".to_owned());
+                    stream_error = Some(message.clone());
+                    yield Ok::<Bytes, Infallible>(Bytes::from(state.failure_frame(&message)));
+                }
             }
         } else {
             let mut converter = SseStreamTransformer::new(transform, &model);
@@ -8776,7 +8818,7 @@ fn streaming_response(reply: StreamingReply) -> Response {
                         None => break,
                     },
                     _ = heartbeat.tick() => {
-                        yield Ok::<Bytes, Infallible>(keepalive_frame(transform, &model));
+                        yield Ok::<Bytes, Infallible>(keepalive_frame(transform, dialect, &model));
                     }
                 }
             }
@@ -15066,6 +15108,33 @@ mod tests {
     }
 
     #[test]
+    fn passthrough_keepalives_match_the_client_dialect() {
+        assert_eq!(client_dialect("/v1/chat/completions"), ClientDialect::Chat);
+        assert_eq!(client_dialect("/v1/responses"), ClientDialect::Responses);
+        assert_eq!(client_dialect("/v1/responses/compact"), ClientDialect::Responses);
+        assert_eq!(client_dialect("/v1/messages"), ClientDialect::Other);
+
+        let chat = String::from_utf8(
+            keepalive_frame(StreamTransform::None, ClientDialect::Chat, "m").to_vec(),
+        )
+        .unwrap();
+        assert!(chat.starts_with("data: "), "chat keepalive must be a data frame: {chat:?}");
+        assert!(chat.contains("chat.completion.chunk"));
+
+        let responses = String::from_utf8(
+            keepalive_frame(StreamTransform::None, ClientDialect::Responses, "m").to_vec(),
+        )
+        .unwrap();
+        assert_eq!(responses, responses_keepalive_frame());
+
+        let other = String::from_utf8(
+            keepalive_frame(StreamTransform::None, ClientDialect::Other, "m").to_vec(),
+        )
+        .unwrap();
+        assert_eq!(other, ": keepalive\n\n");
+    }
+
+    #[test]
     fn opencode_headers_resolve_current_token_and_workspace_for_inference_and_discovery() {
         let mut account: Account = serde_json::from_value(serde_json::json!({
             "id": "console", "provider": "opencode", "enabled": true,
@@ -16589,8 +16658,8 @@ mod tests {
                 .send()
                 .await
                 .unwrap();
-            // The first body byte is a keepalive comment so a proxied client
-            // receives headers before upstream prefill completes.
+            // The first body byte is a data-bearing keepalive so a proxied
+            // client receives headers before upstream prefill completes.
             let mut received = String::new();
             while !received.contains(event) {
                 let chunk = response.chunk().await.unwrap().unwrap();
@@ -19766,7 +19835,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
     }
 
     #[tokio::test]
-    async fn stalled_prefill_keeps_the_stream_open_with_keepalive_comments() {
+    async fn stalled_prefill_keeps_the_stream_open_with_data_keepalives() {
         let upstream = Router::new()
             .route(
                 "/backend-api/codex/models",
@@ -19823,14 +19892,15 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
             .expect("headers and first byte must not wait for prefill")
             .unwrap()
             .unwrap();
-        assert_eq!(String::from_utf8_lossy(&first), ": keepalive\n\n");
+        let expected = responses_keepalive_frame();
+        assert_eq!(String::from_utf8_lossy(&first), expected);
         // And it repeats while the upstream stays idle, so no 100s gap can form.
         let second = timeout(Duration::from_secs(2), response.chunk())
             .await
             .expect("idle upstream must keep receiving heartbeat frames")
             .unwrap()
             .unwrap();
-        assert_eq!(String::from_utf8_lossy(&second), ": keepalive\n\n");
+        assert_eq!(String::from_utf8_lossy(&second), expected);
 
         drop(response);
         edge_task.abort();
@@ -20068,7 +20138,8 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         assert_eq!(
             body,
             format!(
-                ": keepalive\n\n{}",
+                "{}{}",
+                responses_keepalive_frame(),
                 concat!(
                     "event: response.failed\r\n",
                     "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_overloaded\",\"message\":\"Selected model is at capacity\"}}}\r\n\r\n",
@@ -20492,12 +20563,19 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         }
         macro_rules! receive {
             () => {{
-                let message = timeout(Duration::from_secs(5), socket.next())
-                    .await
-                    .expect("WebSocket stalled")
-                    .unwrap()
-                    .unwrap();
-                serde_json::from_str::<Value>(&message.into_text().unwrap()).unwrap()
+                loop {
+                    let message = timeout(Duration::from_secs(5), socket.next())
+                        .await
+                        .expect("WebSocket stalled")
+                        .unwrap()
+                        .unwrap();
+                    let event = serde_json::from_str::<Value>(&message.into_text().unwrap()).unwrap();
+                    // Heartbeats are data-bearing now, so they surface as
+                    // response.in_progress before the real response starts.
+                    if event["type"] != "response.in_progress" {
+                        break event;
+                    }
+                }
             }};
         }
         send!(json!({"type":"response.create","model":"gpt-interrupt","input":"hello"}));
@@ -20685,7 +20763,11 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                         if completed { break (event["response"].clone(), events); }
                     }
                 }).await.expect("Responses stream must complete without a Codex idle timeout");
-                assert_eq!(events[0]["type"], "response.created");
+                let first = events
+                    .iter()
+                    .find(|event| event["type"] != "response.in_progress")
+                    .expect("a real event follows the keepalives");
+                assert_eq!(first["type"], "response.created");
                 assert_eq!(response["usage"]["input_tokens"], 12);
                 assert_eq!(response["usage"]["output_tokens"], 3);
                 assert!(!events.iter().any(|event| event.to_string().contains("private reasoning")));
@@ -22415,12 +22497,28 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
             ))
             .await
             .unwrap();
-        let created = timeout(Duration::from_secs(5), socket.next())
-            .await
-            .unwrap()
-            .unwrap()
+        let mut created: Value = serde_json::from_str(
+            timeout(Duration::from_secs(5), socket.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+                .to_text()
+                .unwrap(),
+        )
+        .unwrap();
+        while created["type"] == "response.in_progress" {
+            created = serde_json::from_str(
+                timeout(Duration::from_secs(5), socket.next())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap()
+                    .to_text()
+                    .unwrap(),
+            )
             .unwrap();
-        let created: Value = serde_json::from_str(created.to_text().unwrap()).unwrap();
+        }
         assert_eq!(created["type"], "response.created");
         assert_eq!(drain.snapshot().2, 1);
         drop(socket);
