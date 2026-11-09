@@ -1400,7 +1400,7 @@ fn select_accounts(
         .iter()
         .filter(|account| {
             normalize_provider(account) == route.provider.as_deref().unwrap_or("")
-                && (!is_cloud_model_selector(&route.requested_model)
+                && (!is_cloud_model_selector(&route.model)
                     || account.multivibe_cloud == Some(true))
                 && retired_local_model_route_allowed(route)
                 && (route.account_ids.is_empty() || route.account_ids.contains(&account.id))
