@@ -111,3 +111,30 @@ script, settings and LaunchAgent only after the original routing is restored.
 
 Official configuration reference:
 [Codex advanced configuration](https://learn.chatgpt.com/docs/config-file/config-advanced).
+
+## Exhausted ChatGPT plan with a third-party provider
+
+Codex Desktop locks the composer when the signed-in ChatGPT plan is out of
+messages, even while a custom `model_provider` is selected
+(openai/codex#59175). The lock comes from `GET /backend-api/wham/usage` on
+`chatgpt_base_url`, so it cannot be fixed by the provider response alone.
+
+v1-edge exposes that backend as an optional HTTPS listener
+(`BACKEND_RELAY_PORT`, `BACKEND_RELAY_CERT`, `BACKEND_RELAY_KEY`). Point Codex
+at it while keeping the real ChatGPT sign-in:
+
+```toml
+chatgpt_base_url = "https://<multivibe-host>:1457/backend-api"
+```
+
+The edge forwards every `/backend-api/*` request (account check, plugin
+catalogue, voice SDP) to `CHATGPT_BASE_URL` with the caller's ChatGPT bearer,
+and rewrites only an exhausted `/wham/usage` payload: `allowed` becomes true,
+`used_percent` 1, credits present, upsell and `rate_limit_reached_type`
+cleared. A payload that still has quota is returned untouched, so the usage
+display stays truthful. The custom provider keeps `requires_openai_auth =
+true`, which preserves the ChatGPT identity and native voice. The listener
+trusts a private CA; set `CODEX_CA_CERTIFICATE` on the Codex host to that CA
+bundle. Official OpenAI models remain bound to the real plan and will still
+return a quota error if selected.
+

@@ -13,6 +13,7 @@ path = "src/main.rs"
 aes-gcm = "0.10"
 async-stream = "0.3"
 axum = { version = "0.8", features = ["ws", "multipart"] }
+axum-server = { version = "0.7", features = ["tls-rustls"] }
 base64 = "0.22"
 bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
@@ -25,6 +26,7 @@ http = "1"
 http-body-util = "0.1"
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rusqlite = { version = "0.32", features = ["backup", "bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
