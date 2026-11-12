@@ -22,6 +22,19 @@ export V1_EDGE_BASE_URL="${V1_EDGE_BASE_URL:-http://127.0.0.1:${V1_EDGE_PORT}}"
 export PORT="$CONTROL_PLANE_PORT"
 export HOST=127.0.0.1
 
+# Do not start a TLS listener without its certificate: the Rust edge would
+# only log a tls_error and Codex would see a connection failure. The relay is
+# optional, so disable it explicitly and leave a diagnostic instead.
+if [ -n "${BACKEND_RELAY_PORT:-}" ]; then
+  relay_cert="${BACKEND_RELAY_CERT:-/data/tls/server.pem}"
+  relay_key="${BACKEND_RELAY_KEY:-/data/tls/server.key}"
+  if [ ! -f "$relay_cert" ] || [ ! -f "$relay_key" ]; then
+    echo "backend relay disabled: missing TLS certificate/key ($relay_cert, $relay_key)" >&2
+    echo "run scripts/generate-backend-relay-cert.sh or mount existing files" >&2
+    unset BACKEND_RELAY_PORT
+  fi
+fi
+
 node --import ./dist/instrument.js dist/server.js &
 node_pid=$!
 

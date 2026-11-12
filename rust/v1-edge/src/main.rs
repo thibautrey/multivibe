@@ -1,5 +1,5 @@
 use axum::Router;
-use multivibe_v1_edge::{EdgeConfig, EdgeState, build_router};
+use multivibe_v1_edge::{EdgeConfig, EdgeState, build_relay_router, build_router};
 use tokio::net::TcpListener;
 
 #[tokio::main]
@@ -13,7 +13,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let model_catalog_monitor = state.start_model_catalog_monitor();
     let job_runner = state.start_job_runner();
     let shutdown_state = state.clone();
-    let router: Router = build_router(state);
+    let router: Router = build_router(state.clone());
     let listener = TcpListener::bind(&bind_address).await?;
 
     if let (Some(port), Some(cert), Some(key)) = (
@@ -21,7 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.backend_relay_cert_path.clone(),
         config.backend_relay_key_path.clone(),
     ) {
-        let relay_router = router.clone();
+        let relay_router = build_relay_router(state.clone());
         tokio::spawn(async move {
             match axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert, &key).await {
                 Ok(tls) => {

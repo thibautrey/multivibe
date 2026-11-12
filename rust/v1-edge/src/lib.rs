@@ -180,6 +180,9 @@ pub struct EdgeConfig {
     pub backend_relay_port: Option<u16>,
     pub backend_relay_cert_path: Option<PathBuf>,
     pub backend_relay_key_path: Option<PathBuf>,
+    /// Maximum time to wait for the ChatGPT backend to return response
+    /// headers. Body streaming is not bounded by this timeout.
+    pub backend_relay_timeout: Duration,
 }
 
 impl Default for EdgeConfig {
@@ -258,6 +261,7 @@ impl Default for EdgeConfig {
             backend_relay_port: None,
             backend_relay_cert_path: None,
             backend_relay_key_path: None,
+            backend_relay_timeout: Duration::from_secs(60),
         }
     }
 }
@@ -472,6 +476,10 @@ impl EdgeConfig {
                 .filter(|port| *port > 0),
             backend_relay_cert_path: env("BACKEND_RELAY_CERT").map(PathBuf::from),
             backend_relay_key_path: env("BACKEND_RELAY_KEY").map(PathBuf::from),
+            backend_relay_timeout: env("BACKEND_RELAY_TIMEOUT_MS")
+                .and_then(|value| value.parse::<u64>().ok())
+                .map(Duration::from_millis)
+                .unwrap_or(defaults.backend_relay_timeout),
         }
     }
 }
@@ -5649,6 +5657,7 @@ pub struct EdgeState {
     pub config: Arc<EdgeConfig>,
     pub store: AccountStore,
     pub client: reqwest::Client,
+    backend_relay_client: reqwest::Client,
     control_plane_client: reqwest::Client,
     webhook_client: reqwest::Client,
     blocked: Arc<Mutex<HashMap<String, u64>>>,
@@ -5696,6 +5705,13 @@ impl EdgeState {
             .redirect(Policy::limited(5))
             .build()
             .map_err(|error| format!("failed to create upstream HTTP client: {error}"))?;
+        // The backend relay must surface redirects instead of following them:
+        // a login redirect must remain a redirect for the Codex client, never
+        // become a 200 HTML page that the JSON parser rejects.
+        let backend_relay_client = reqwest::Client::builder()
+            .redirect(Policy::none())
+            .build()
+            .map_err(|error| format!("failed to create backend relay HTTP client: {error}"))?;
         let control_plane_client = reqwest::Client::builder()
             .redirect(Policy::none())
             .build()
@@ -5735,6 +5751,7 @@ impl EdgeState {
             }),
             config: Arc::new(config),
             client,
+            backend_relay_client,
             control_plane_client,
             webhook_client,
             blocked: Arc::new(Mutex::new(HashMap::new())),
@@ -14707,6 +14724,11 @@ async fn handle_websocket(
 
 async fn fallback_handler(State(state): State<EdgeState>, req: Request<Body>) -> Response {
     let path = req.uri().path().to_owned();
+    // The ChatGPT backend relay is TLS-only. Reject its paths on the public
+    // plain-HTTP listener instead of serving the dashboard with a 200.
+    if path == "/backend-api" || path.starts_with("/backend-api/") {
+        return error_response(StatusCode::NOT_FOUND, "Not found", "not_found");
+    }
     if path == "/internal/ai-sdk" || path.starts_with("/internal/ai-sdk/") {
         return error_response(StatusCode::NOT_FOUND, "Not found", "not_found");
     }
@@ -14864,16 +14886,13 @@ async fn drain_resume_handler(State(state): State<EdgeState>, headers: HeaderMap
     drain_status_response(&state)
 }
 
-pub fn build_router(state: EdgeState) -> Router {
+fn build_base_router(state: &EdgeState) -> Router<EdgeState> {
     Router::new()
         // Rust owns the dashboard REST boundary incrementally. Session
         // establishment and access control terminate here; authenticated
         // resource routes still fall back to the loopback control plane until
         // their business logic is migrated.
         .route("/health", get(dashboard::health))
-        // Codex Desktop `chatgpt_base_url` relay: keeps ChatGPT identity,
-        // forwards the backend, rewrites an exhausted `/wham/usage` payload.
-        .route("/backend-api/{*rest}", any(backend_relay::backend_relay_handler))
         .route(
             "/admin/session",
             get(dashboard::session_status)
@@ -14967,6 +14986,21 @@ pub fn build_router(state: EdgeState) -> Router {
         // conversion (authorization, routing, idempotency, upstream failure).
         .layer(axum::middleware::from_fn(anthropic_error_envelope_layer))
         .fallback(fallback_handler)
+}
+
+/// Public HTTP router. The ChatGPT backend relay is intentionally absent here:
+/// it must only be exposed by the dedicated TLS listener (`build_relay_router`).
+pub fn build_router(state: EdgeState) -> Router {
+    build_base_router(&state).with_state(state)
+}
+
+/// TLS router used by the optional backend relay listener. It serves the same
+/// routes as the public router plus the `/backend-api/*` pass-through.
+pub fn build_relay_router(state: EdgeState) -> Router {
+    build_base_router(&state)
+        .route("/backend-api", any(backend_relay::backend_relay_handler))
+        .route("/backend-api/", any(backend_relay::backend_relay_handler))
+        .route("/backend-api/{*rest}", any(backend_relay::backend_relay_handler))
         .with_state(state)
 }
 
