@@ -127,14 +127,35 @@ at it while keeping the real ChatGPT sign-in:
 chatgpt_base_url = "https://<multivibe-host>:1457/backend-api"
 ```
 
-The edge forwards every `/backend-api/*` request (account check, plugin
-catalogue, voice SDP) to `CHATGPT_BASE_URL` with the caller's ChatGPT bearer,
-and rewrites only an exhausted `/wham/usage` payload: `allowed` becomes true,
+The relay is mounted only on the TLS listener (`1457`), never on the public
+`1455` HTTP listener. It handles `/backend-api`, `/backend-api/` and every
+subpath, forwarding method, path, query, headers and body to
+`CHATGPT_BASE_URL` with the caller's ChatGPT bearer. Responses are streamed;
+redirects are returned to the caller instead of being followed, and the wait
+for upstream response headers is bounded by `BACKEND_RELAY_TIMEOUT_MS`
+(default 60 s). Each request emits a structured `backend_relay.request` log
+with method, path, status, duration and whether the usage payload was
+rewritten; tokens and headers are never logged.
+
+It rewrites only an exhausted `/wham/usage` payload: `allowed` becomes true,
 `used_percent` 1, credits present, upsell and `rate_limit_reached_type`
 cleared. A payload that still has quota is returned untouched, so the usage
 display stays truthful. The custom provider keeps `requires_openai_auth =
-true`, which preserves the ChatGPT identity and native voice. The listener
-trusts a private CA; set `CODEX_CA_CERTIFICATE` on the Codex host to that CA
-bundle. Official OpenAI models remain bound to the real plan and will still
-return a quota error if selected.
+true`, which preserves the ChatGPT identity and native voice. Official OpenAI
+models remain bound to the real plan and will still return a quota error if
+selected.
+
+The listener needs a private CA and a server certificate whose SANs match the
+host used by Codex. Generate them once (existing files are never overwritten):
+
+```sh
+BACKEND_RELAY_SAN=192.168.1.149,multivibe.local,localhost \
+  ./scripts/generate-backend-relay-cert.sh
+```
+
+The script writes the CA to `BACKEND_RELAY_CA` (default
+`/data/tls/ca.pem`) and the server files to `BACKEND_RELAY_CERT`/`_KEY`. Set
+`CODEX_CA_CERTIFICATE` on the Codex host to that CA bundle. If the certificate
+or key is missing at startup, the supervisor disables the relay and logs the
+reason instead of starting a TLS listener that Codex cannot reach.
 

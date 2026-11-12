@@ -29,7 +29,7 @@ FROM node:22-bookworm-slim
 WORKDIR /app
 RUN chmod 1777 /tmp \
   && apt-get update \
-  && apt-get install -y --no-install-recommends git libstdc++6 \
+  && apt-get install -y --no-install-recommends git libstdc++6 openssl \
   && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production
 ENV MULTIVIBE_CONTROL_PLANE=true
@@ -44,6 +44,7 @@ COPY --from=build /app/web-dist ./web-dist
 COPY --from=rust-build /src/target/release/libmultivibe_proxy_core.so ./native/multivibe-proxy-core.node
 COPY --from=rust-build /src/target/release/multivibe-v1-edge /opt/multivibe/bin/multivibe-v1-edge
 COPY --chmod=0555 scripts/start-multivibe.sh /usr/local/bin/start-multivibe.sh
+COPY --chmod=0555 scripts/generate-backend-relay-cert.sh /usr/local/bin/generate-backend-relay-cert.sh
 COPY modules/security ./modules/security
 COPY --from=build \
   /app/scripts/export-trace-analytics.mjs \
