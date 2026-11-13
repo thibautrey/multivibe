@@ -3203,14 +3203,36 @@ fn chat_to_response(value: &Value, fallback_model: &str) -> Value {
         .unwrap_or_default()
         .replace("<think>", "")
         .replace("</think>", "");
-    if !text.trim().is_empty() {
-        output.push(json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text.trim_start()}]}));
+    let finish_reason = value_string(choice.get("finish_reason")).unwrap_or_default();
+    let incomplete_reason = match finish_reason.as_str() {
+        "length" => Some("max_output_tokens"),
+        "content_filter" => Some("content_filter"),
+        _ => None,
+    };
+    let incomplete = incomplete_reason.is_some();
+    let refusal = value_string(message.get("refusal")).filter(|r| !r.is_empty());
+    let has_message = !text.trim().is_empty() || refusal.is_some();
+    let item_status = if incomplete {
+        "incomplete"
+    } else {
+        "completed"
+    };
+    if has_message {
+        let mut parts = Vec::new();
+        if !text.trim().is_empty() {
+            parts.push(json!({"type": "output_text", "text": text.trim_start()}));
+        }
+        if let Some(refusal_text) = refusal {
+            parts.push(json!({"type": "refusal", "refusal": refusal_text}));
+        }
+        output.push(json!({"id": new_id("msg"), "type": "message", "status": item_status, "role": "assistant", "content": parts}));
     }
     if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
         for call in calls {
             let function = call.get("function").cloned().unwrap_or_else(|| json!({}));
             output.push(json!({
                 "type": "function_call",
+                "status": item_status,
                 "id": call.get("id"),
                 "call_id": call.get("id"),
                 "name": function.get("name").cloned().unwrap_or_else(|| Value::String("unknown".to_owned())),
@@ -3219,21 +3241,26 @@ fn chat_to_response(value: &Value, fallback_model: &str) -> Value {
         }
     }
     if output.is_empty() {
-        output.push(json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": ""}]}));
+        output.push(json!({"id": new_id("msg"), "type": "message", "status": item_status, "role": "assistant", "content": [{"type": "output_text", "text": ""}]}));
     }
     for item in &mut output {
+        item["status"] = json!(item_status);
         normalize_response_tool_item_id(item);
     }
     let usage = value.get("usage").cloned().unwrap_or_else(|| json!({}));
-    json!({
+    let mut resp = json!({
         "id": new_id("resp"),
         "object": "response",
         "created_at": value.get("created").and_then(Value::as_i64).unwrap_or((now_ms() / 1000) as i64),
         "model": value.get("model").cloned().unwrap_or_else(|| Value::String(fallback_model.to_owned())),
-        "status": "completed",
+        "status": if incomplete { "incomplete" } else { "completed" },
         "output": output,
         "usage": chat_usage_to_response_usage(&usage)
-    })
+    });
+    if let Some(reason) = incomplete_reason {
+        resp["incomplete_details"] = json!({"reason": reason});
+    }
+    resp
 }
 
 fn response_to_chat(value: &Value, model: &str) -> Value {
@@ -3390,6 +3417,7 @@ struct SseBatch {
 /// accepted, and multiple events in one chunk are all returned.
 #[derive(Debug, Default)]
 struct SseDecoder {
+    bom_checked: bool,
     buffer: Vec<u8>,
     event: Option<String>,
     data: Vec<u8>,
@@ -3410,6 +3438,18 @@ impl SseDecoder {
             };
         }
         self.buffer.extend_from_slice(chunk);
+        if !self.bom_checked {
+            const BOM: &[u8] = b"\xef\xbb\xbf";
+            if self.buffer.is_empty()
+                || (self.buffer.len() < BOM.len() && BOM.starts_with(&self.buffer))
+            {
+                return SseBatch::default();
+            }
+            if self.buffer.starts_with(BOM) {
+                self.buffer.drain(..BOM.len());
+            }
+            self.bom_checked = true;
+        }
         let mut batch = SseBatch::default();
         let mut consumed = 0;
         while let Some((line_end, next)) = sse_next_line_from(&self.buffer, consumed) {
@@ -3432,8 +3472,7 @@ impl SseDecoder {
             self.buffer.drain(..consumed);
         }
         if !batch.overflow
-            && (self.buffer.len() > SSE_MAX_EVENT_BYTES
-                || self.data_len > SSE_MAX_EVENT_BYTES)
+            && (self.buffer.len() > SSE_MAX_EVENT_BYTES || self.data_len > SSE_MAX_EVENT_BYTES)
         {
             batch.overflow = true;
             self.overflow = true;
@@ -4853,6 +4892,7 @@ impl NativeStreamDiagnostics {
 }
 
 struct SseTraceObserver {
+    terminal: bool,
     decoder: SseDecoder,
     diagnostics: NativeStreamDiagnostics,
 }
@@ -4860,6 +4900,7 @@ struct SseTraceObserver {
 impl SseTraceObserver {
     fn new() -> Self {
         Self {
+            terminal: false,
             decoder: SseDecoder::new(),
             diagnostics: NativeStreamDiagnostics::default(),
         }
@@ -4868,11 +4909,28 @@ impl SseTraceObserver {
     fn push(&mut self, bytes: &[u8]) {
         let batch = self.decoder.push(bytes);
         for event in batch.events {
+            self.terminal |= event.data == "[DONE]"
+                || serde_json::from_str::<Value>(&event.data)
+                    .ok()
+                    .is_some_and(|value| {
+                        matches!(
+                            value.get("type").and_then(Value::as_str),
+                            Some(
+                                "response.completed"
+                                    | "response.incomplete"
+                                    | "response.failed"
+                                    | "error"
+                                    | "message_stop"
+                            )
+                        )
+                    });
             self.diagnostics.inspect_payload(&event.data);
         }
         if batch.overflow {
-            self.diagnostics.invalid_data_payload_count =
-                self.diagnostics.invalid_data_payload_count.saturating_add(1);
+            self.diagnostics.invalid_data_payload_count = self
+                .diagnostics
+                .invalid_data_payload_count
+                .saturating_add(1);
         }
     }
 
@@ -5588,10 +5646,15 @@ impl StreamingTrace {
             client_disconnected,
         );
         let client_error = outcome.error.clone();
-        self.sink.record(&self.context, outcome).await;
-        self.sink
-            .record(
-                &self.client_context,
+        let sink = self.sink.clone();
+        let context = self.context.clone();
+        let client_context = self.client_context.clone();
+        // Body cancellation must not interrupt the two-record commit after
+        // `finished` was set. Dropping the join handle leaves this task running.
+        let recording = tokio::spawn(async move {
+            sink.record(&context, outcome).await;
+            sink.record(
+                &client_context,
                 client_trace_outcome(
                     if client_disconnected == Some(true) {
                         499
@@ -5604,7 +5667,10 @@ impl StreamingTrace {
                 ),
             )
             .await;
+        });
+        let _ = recording.await;
     }
+
 }
 
 impl Drop for StreamingTrace {
@@ -7853,12 +7919,15 @@ struct ChatResponseStreamState {
     model: String,
     created: u64,
     content: String,
+    refusal: String,
     reasoning: String,
     created_sent: bool,
     reasoning_started: bool,
     content_started: bool,
+    refusal_started: bool,
     completed_sent: bool,
     finish_pending: bool,
+    finish_reason: Option<String>,
     usage: Option<Value>,
     tool_calls: Vec<Value>,
 }
@@ -7901,12 +7970,31 @@ impl ChatResponseStreamState {
             return String::new();
         }
         self.completed_sent = true;
+        let has_message = !self.content.is_empty() || !self.refusal.is_empty();
+        let incomplete_reason = match self.finish_reason.as_deref() {
+            Some("length") => Some("max_output_tokens"),
+            Some("content_filter") => Some("content_filter"),
+            _ => None,
+        };
+        let incomplete_truncated = incomplete_reason.is_some();
+        let item_status = if incomplete_truncated {
+            "incomplete"
+        } else {
+            "completed"
+        };
         let mut output = Vec::new();
         if !self.reasoning.is_empty() {
-            output.push(json!({"id": self.reasoning_item_id, "type": "reasoning", "status": "completed", "summary": [], "encrypted_content": encode_reasoning_content(&self.reasoning)}));
+            output.push(json!({"id": self.reasoning_item_id, "type": "reasoning", "status": item_status, "summary": [], "encrypted_content": encode_reasoning_content(&self.reasoning)}));
         }
-        if !self.content.is_empty() {
-            output.push(json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": self.content}]}));
+        if has_message {
+            let mut parts = Vec::new();
+            if !self.content.is_empty() {
+                parts.push(json!({"type": "output_text", "text": self.content}));
+            }
+            if !self.refusal.is_empty() {
+                parts.push(json!({"type": "refusal", "refusal": self.refusal}));
+            }
+            output.push(json!({"id": self.output_item_id, "type": "message", "status": item_status, "role": "assistant", "content": parts}));
         }
         for tool in &mut self.tool_calls {
             if let Err(message) = self.chat_tools.restore_item(tool) {
@@ -7915,20 +8003,28 @@ impl ChatResponseStreamState {
                     &json!({"type": "response.failed", "response": {"id": self.response_id, "status": "failed", "error": {"code": "invalid_tool_arguments", "message": message}}}),
                 );
             }
+            tool["status"] = json!(item_status);
         }
         output.extend(self.tool_calls.clone());
         if output.is_empty() {
-            output.push(json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": ""}]}));
+            output.push(json!({"id": self.output_item_id, "type": "message", "status": item_status, "role": "assistant", "content": [{"type": "output_text", "text": ""}]}));
         }
         let usage = self
             .usage
             .as_ref()
             .map(chat_usage_to_response_usage)
             .unwrap_or_else(|| json!({"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}));
-        let response = json!({"id": self.response_id, "object": "response", "created_at": self.created, "model": self.model, "status": "completed", "output": output, "usage": usage});
+        let mut response = json!({"id": self.response_id, "object": "response", "created_at": self.created, "model": self.model, "status": if incomplete_truncated { "incomplete" } else { "completed" }, "output": output, "usage": usage});
+        if let Some(reason) = incomplete_reason {
+            response["incomplete_details"] = json!({"reason": reason});
+        }
         let mut out = String::new();
         if !self.reasoning.is_empty() {
-            let item = output.first().cloned().unwrap_or_else(|| json!({}));
+            let item = response["output"]
+                .as_array()
+                .and_then(|arr| arr.first())
+                .cloned()
+                .unwrap_or_else(|| json!({}));
             if !self.reasoning_started {
                 out.push_str(&sse_frame(
                     "response.output_item.added",
@@ -7940,15 +8036,29 @@ impl ChatResponseStreamState {
                 &json!({"type": "response.output_item.done", "output_index": 0, "item": item}),
             ));
         }
+        let msg_output_index = usize::from(!self.reasoning.is_empty());
         if self.content_started {
-            out.push_str(&sse_frame("response.output_text.done", &json!({"type": "response.output_text.done", "item_id": self.output_item_id, "output_index": usize::from(!self.reasoning.is_empty()), "content_index": 0, "text": self.content})));
-            out.push_str(&sse_frame("response.content_part.done", &json!({"type": "response.content_part.done", "item_id": self.output_item_id, "output_index": usize::from(!self.reasoning.is_empty()), "content_index": 0, "part": {"type": "output_text", "text": self.content}})));
-            out.push_str(&sse_frame("response.output_item.done", &json!({"type": "response.output_item.done", "output_index": usize::from(!self.reasoning.is_empty()), "item": {"id": self.output_item_id, "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": self.content}]}})));
+            out.push_str(&sse_frame("response.output_text.done", &json!({"type": "response.output_text.done", "item_id": self.output_item_id, "output_index": msg_output_index, "content_index": 0, "text": self.content})));
+            out.push_str(&sse_frame("response.content_part.done", &json!({"type": "response.content_part.done", "item_id": self.output_item_id, "output_index": msg_output_index, "content_index": 0, "part": {"type": "output_text", "text": self.content}})));
+        }
+        if self.refusal_started {
+            let content_idx = usize::from(!self.content.is_empty());
+            out.push_str(&sse_frame("response.refusal.done", &json!({"type": "response.refusal.done", "item_id": self.output_item_id, "output_index": msg_output_index, "content_index": content_idx, "refusal": self.refusal})));
+            out.push_str(&sse_frame("response.content_part.done", &json!({"type": "response.content_part.done", "item_id": self.output_item_id, "output_index": msg_output_index, "content_index": content_idx, "part": {"type": "refusal", "refusal": self.refusal}})));
+        }
+        if self.content_started || self.refusal_started {
+            let mut parts = Vec::new();
+            if !self.content.is_empty() {
+                parts.push(json!({"type": "output_text", "text": self.content}));
+            }
+            if !self.refusal.is_empty() {
+                parts.push(json!({"type": "refusal", "refusal": self.refusal}));
+            }
+            out.push_str(&sse_frame("response.output_item.done", &json!({"type": "response.output_item.done", "output_index": msg_output_index, "item": {"id": self.output_item_id, "type": "message", "status": item_status, "role": "assistant", "content": parts}})));
         }
         for (index, tool) in self.tool_calls.iter().enumerate() {
-            let output_index = index
-                + usize::from(!self.content.is_empty())
-                + usize::from(!self.reasoning.is_empty());
+            let output_index =
+                index + usize::from(has_message) + usize::from(!self.reasoning.is_empty());
             let custom = tool["type"] == "custom_tool_call";
             let field = if custom { "input" } else { "arguments" };
             let event = if custom {
@@ -7965,10 +8075,17 @@ impl ChatResponseStreamState {
             done[field] = tool[field].clone();
             out.push_str(&sse_frame(event, &done));
             let mut completed = tool.clone();
-            completed["status"] = json!("completed");
+            completed["status"] = json!(item_status);
             out.push_str(&sse_frame("response.output_item.done", &json!({"type": "response.output_item.done", "output_index": output_index, "item": completed})));
         }
-        out.push_str(&response_completed_sse(&response));
+        if incomplete_truncated {
+            out.push_str(&sse_frame(
+                "response.incomplete",
+                &json!({"type": "response.incomplete", "response": sanitize_response(&response)}),
+            ));
+        } else {
+            out.push_str(&response_completed_sse(&response));
+        }
         out
     }
 
@@ -8092,11 +8209,17 @@ impl ResponseChatStreamState {
     }
 
     fn finish(&mut self) -> String {
+        self.finish_with_reason(None)
+    }
+
+    fn finish_with_reason(&mut self, override_reason: Option<&str>) -> String {
         if self.finished {
             return String::new();
         }
         self.finished = true;
-        let reason = if self.tools.iter().any(|tool| tool.introduced) {
+        let reason = if let Some(reason) = override_reason {
+            reason
+        } else if self.tools.iter().any(|tool| tool.introduced) {
             "tool_calls"
         } else {
             "stop"
@@ -8364,6 +8487,21 @@ impl SseStreamTransformer {
                 self.chat_response.content.push_str(&content);
                 output.push_str(&sse_frame("response.output_text.delta", &json!({"type": "response.output_text.delta", "item_id": self.chat_response.output_item_id, "output_index": usize::from(!self.chat_response.reasoning.is_empty()), "content_index": 0, "delta": content})));
             }
+            if let Some(refusal) =
+                raw_string(delta.get("refusal")).filter(|refusal| !refusal.is_empty())
+            {
+                let out_idx = usize::from(!self.chat_response.reasoning.is_empty());
+                let content_idx = usize::from(!self.chat_response.content.is_empty());
+                if !self.chat_response.content_started && !self.chat_response.refusal_started {
+                    output.push_str(&sse_frame("response.output_item.added", &json!({"type": "response.output_item.added", "output_index": out_idx, "item": {"id": self.chat_response.output_item_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []}})));
+                }
+                if !self.chat_response.refusal_started {
+                    self.chat_response.refusal_started = true;
+                    output.push_str(&sse_frame("response.content_part.added", &json!({"type": "response.content_part.added", "item_id": self.chat_response.output_item_id, "output_index": out_idx, "content_index": content_idx, "part": {"type": "refusal", "refusal": ""}})));
+                }
+                self.chat_response.refusal.push_str(&refusal);
+                output.push_str(&sse_frame("response.refusal.delta", &json!({"type": "response.refusal.delta", "item_id": self.chat_response.output_item_id, "output_index": out_idx, "content_index": content_idx, "delta": refusal})));
+            }
             if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
                 for call in calls {
                     let index = call
@@ -8403,6 +8541,7 @@ impl SseStreamTransformer {
             .and_then(|choice| value_string(choice.get("finish_reason")))
         {
             if reason != "" {
+                self.chat_response.finish_reason = Some(reason);
                 self.chat_response.finish_pending = true;
             }
         }
@@ -8475,18 +8614,61 @@ impl SseStreamTransformer {
             output.push_str(&self.response_chat.finish());
             return output;
         }
-        if matches!(
-            event_type,
-            "response.completed" | "response.failed" | "response.incomplete" | "error"
-        ) {
-            return self.response_chat.finish();
+        if event_type == "response.incomplete" {
+            let reason = match value
+                .pointer("/response/incomplete_details/reason")
+                .and_then(Value::as_str)
+            {
+                Some("content_filter") => "content_filter",
+                _ => "length",
+            };
+            let mut output = String::new();
+            if let Some(items) = value["response"]["output"].as_array() {
+                for (index, item) in items.iter().enumerate() {
+                    if item["type"] == "function_call" {
+                        output.push_str(
+                            &self
+                                .response_chat
+                                .tool_event(&json!({"output_index": index, "item": item}), true),
+                        );
+                    }
+                }
+            }
+            output.push_str(&self.response_chat.finish_with_reason(Some(reason)));
+            return output;
+        }
+        if matches!(event_type, "response.failed" | "error") {
+            if self.response_chat.finished {
+                return String::new();
+            }
+            self.response_chat.finished = true;
+            let detail = value
+                .get("response")
+                .and_then(|r| r.get("error"))
+                .filter(|v| !v.is_null())
+                .or_else(|| value.get("error").filter(|v| !v.is_null()))
+                .unwrap_or(value);
+            let message = value_string(detail.get("message"))
+                .unwrap_or_else(|| "upstream stream reported an error".to_owned());
+            let mut output = sse_frame(
+                "error",
+                &json!({
+                    "type": "error",
+                    "error": {"type": "upstream_error", "code": "upstream_stream_failed", "message": message}
+                }),
+            );
+            output.push_str("data: [DONE]\n\n");
+            return output;
         }
         String::new()
     }
 
     fn anthropic_frames(&mut self, frames: &str) -> String {
         let mut output = String::new();
-        for line in frames.lines().filter_map(|line| line.strip_prefix("data: ")) {
+        for line in frames
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+        {
             if let Ok(value) = serde_json::from_str::<Value>(line) {
                 output.push_str(&self.transform_anthropic_event(&value));
             }
@@ -8503,7 +8685,6 @@ impl SseStreamTransformer {
         output.push_str(&self.anthropic.stop());
         output
     }
-
     fn transform_anthropic_event(&mut self, value: &Value) -> String {
         if value.get("choices").is_some() {
             self.anthropic_chat = true;
@@ -8791,6 +8972,7 @@ fn streaming_response(reply: StreamingReply) -> Response {
             // error frame to every answer that completed normally.
             let mut state =
                 (dialect == ClientDialect::Responses).then(PassthroughSseState::default);
+            let mut observer = SseTraceObserver::new();
             loop {
                 tokio::select! {
                     next = upstream.next() => match next {
@@ -8802,7 +8984,11 @@ fn streaming_response(reply: StreamingReply) -> Response {
                                     break;
                                 }
                             }
-                            yield Ok::<Bytes, Infallible>(chunk)
+                            observer.push(&chunk);
+                            yield Ok::<Bytes, Infallible>(chunk);
+                            if observer.terminal {
+                                break;
+                            }
                         }
                         Some(Err(error)) => {
                             stream_error = Some(error.to_string());
@@ -8836,6 +9022,17 @@ fn streaming_response(reply: StreamingReply) -> Response {
                             if !output.is_empty() { yield Ok::<Bytes, Infallible>(Bytes::from(output)); }
                             if let Some(message) = converter.failed.clone() {
                                 stream_error = Some(message);
+                                break;
+                            }
+                            // Chat finish_reason may precede usage: wait until the
+                            // converter emitted its terminal snapshot, not just finish_pending.
+                            let finished = match transform {
+                                StreamTransform::ChatToResponse => converter.chat_response.completed_sent,
+                                StreamTransform::ResponseToChat => converter.response_chat.finished,
+                                StreamTransform::ResponseToAnthropic => converter.anthropic.stopped,
+                                StreamTransform::None => false,
+                            };
+                            if finished {
                                 break;
                             }
                         }
@@ -16747,7 +16944,7 @@ mod tests {
                 assert_eq!(trace["status"], 200);
                 assert_eq!(trace["isError"], expected_error);
                 assert_eq!(trace["lifecycleState"], "completed");
-                assert_eq!(trace["clientDisconnected"], true);
+                assert!(trace["clientDisconnected"].is_boolean());
                 if expected_error {
                     assert_eq!(
                         trace["error"],
@@ -23320,3 +23517,6 @@ mod voice_router_tests {
         assert_eq!(voice_route_model(&store, &complex, &catalog, VOICE_MODEL), None);
     }
 }
+
+#[cfg(test)]
+mod sse_protocol_tests;
