@@ -30,10 +30,22 @@ export const remoteConnectionId=(v:RemoteChatConnection):string=>{
   return createHmac("sha256",Buffer.from(secret,"hex")).update(v.endpoint+"\0"+(v.userId??"")).digest("hex");
 };
 type Agent = {id:string;name:string};
+// Self-hosting on loopback or a private LAN is the supported deployment, so those stay
+// allowed. Link-local addresses are not: they host cloud instance metadata and are never
+// a legitimate chat endpoint.
+export const linkLocalHost=(host:string):boolean=>{
+  const address=host.replace(/^\[|\]$/gu,"").toLowerCase().replace(/\.$/u,"");
+  if(address==="0.0.0.0" || address==="::" || address==="metadata.google.internal")return true;
+  if(/^169\.254\./u.test(address))return true;
+  // IPv6 link-local is fe80::/10, i.e. the first hextet is fe80-febf.
+  const first=address.split(":")[0];
+  return /^fe[89ab][0-9a-f]$/u.test(first);
+};
 export function remoteChatEndpoint(value:unknown,suffix:string,name:string):string {
   if(typeof value!=="string" || value.length>4096)fail(`Enter a ${name} endpoint`);
   let url:URL;try{url=new URL(value);}catch{return fail(`Invalid ${name} endpoint`);}
   if(!["http:","https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash)fail("Use an HTTP(S) endpoint without credentials, query or fragment");
+  if(linkLocalHost(url.hostname))fail("Use the chat server's LAN or public address, not a link-local or metadata endpoint");
   let base=url.pathname.replace(/\/+$/u,"");
   if(suffix==="/api" && base.endsWith("/api/v1"))base=base.slice(0,-3);
   if(!base.endsWith(suffix))base+=suffix;
