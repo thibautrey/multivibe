@@ -24,12 +24,14 @@ use futures_util::{SinkExt, StreamExt};
 use reqwest::multipart::{Form, Part};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
-use sha2::{Digest, Sha256};
+use hmac::{Hmac, Mac};
+use rand::RngCore;
+use sha2::Sha256;
 use std::{
     collections::{HashMap, VecDeque},
     fmt,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
@@ -253,8 +255,26 @@ impl SecretStore {
     }
 }
 
+/// Per-process key for keyed digests of ephemeral client secrets.
+///
+/// A plain SHA-256 digest of a short bearer token is cheap to brute-force if the
+/// in-memory map ever leaks. HMAC with a random process key makes an offline
+/// attack useless while keeping O(1) lookup, and the tokens are short-lived
+/// with a bounded store, so memory-hard password hashing is unnecessary.
+fn digest_key() -> &'static [u8; 32] {
+    static KEY: OnceLock<[u8; 32]> = OnceLock::new();
+    KEY.get_or_init(|| {
+        let mut key = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut key);
+        key
+    })
+}
+
 fn digest_secret(secret: &str) -> String {
-    hex_bytes(&Sha256::digest(secret.as_bytes()))
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(digest_key())
+        .expect("HMAC accepts a 32-byte key");
+    mac.update(secret.as_bytes());
+    hex_bytes(&mac.finalize().into_bytes())
 }
 
 pub async fn client_secret_handler(
@@ -2652,9 +2672,15 @@ mod tests {
     }
 
     #[test]
-    fn ephemeral_tokens_are_stored_as_digests() {
+    fn ephemeral_tokens_are_stored_as_keyed_digests() {
         assert_ne!(digest_secret("ek_secret"), "ek_secret");
         assert_eq!(digest_secret("ek_secret"), digest_secret("ek_secret"));
+        assert_ne!(digest_secret("ek_secret"), digest_secret("ek_secret_2"));
+        // Not a plain SHA-256 digest of the token.
+        assert_ne!(
+            digest_secret("ek_secret"),
+            hex_bytes(&<Sha256 as sha2::Digest>::digest(b"ek_secret"))
+        );
     }
 
     #[tokio::test]

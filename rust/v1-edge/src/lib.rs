@@ -1956,13 +1956,37 @@ fn join_v1_api_url(base: &str, path: &str) -> String {
     format!("{base}{path}")
 }
 
+/// Reject an upstream URL that is not an absolute HTTP(S) URL, or that carries
+/// credentials, a query or a fragment. Upstream bases come from operator
+/// configuration and account records; validation keeps a malformed or hostile
+/// value from turning the edge into a request relay.
+fn validated_upstream_url(url: &str) -> Option<reqwest::Url> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    (matches!(parsed.scheme(), "http" | "https")
+        && parsed.host_str().is_some()
+        && parsed.username().is_empty()
+        && parsed.password().is_none()
+        && parsed.query().is_none()
+        && parsed.fragment().is_none())
+    .then_some(parsed)
+}
+
 fn upstream_url(account: &Account, config: &EdgeConfig, sends_chat: bool, compact: bool) -> String {
     let base = account_base_url(account, config);
     let path = upstream_path(account, config, sends_chat, compact);
-    if normalize_provider(account) == "openai-compatible" {
-        join_v1_api_url(&base, &path)
+    let Some(base) = validated_upstream_url(&base) else {
+        return String::new();
+    };
+    // The route path comes from the fixed provider table above, never from the
+    // request body, so it cannot introduce an authority of its own.
+    let url = if normalize_provider(account) == "openai-compatible" {
+        join_v1_api_url(base.as_str(), &path)
     } else {
-        format!("{}{}", trim_slashes(&base), path)
+        format!("{}{}", base.as_str().trim_end_matches('/'), path)
+    };
+    match validated_upstream_url(&url) {
+        Some(validated) if validated.origin() == base.origin() => validated.to_string(),
+        _ => String::new(),
     }
 }
 
@@ -6576,6 +6600,14 @@ async fn send_upstream_with_retry(
     headers: &HeaderMap,
     body: &[u8],
 ) -> Result<UpstreamSendResult, UpstreamSendError> {
+    // Re-validate at the sink: this is the only place an upstream URL becomes a
+    // network request, so an unexpected or malformed value can never be fetched.
+    let Some(url) = validated_upstream_url(url) else {
+        return Err(UpstreamSendError::Transport(
+            "invalid upstream endpoint".to_owned(),
+        ));
+    };
+    let url = url.as_str().to_owned();
     // A transport failure can follow a billed generation. Never replay an
     // image request whose outcome is unknown.
     let image_request = url.ends_with("/images/generations") || url.ends_with("/images/edits");
@@ -6591,7 +6623,7 @@ async fn send_upstream_with_retry(
     for retry in 0..=max_retries {
         let request = state
             .client
-            .request(Method::POST, url)
+            .request(Method::POST, url.as_str())
             .headers(headers.clone())
             .body(body.to_vec());
         // Keep the complete image response bounded too, without imposing a
@@ -7064,12 +7096,20 @@ async fn proxy_inference(
                         model_discovery_url(&account, &state.config).trim_end_matches("/models")
                     )
                 } else {
-                    upstream_url(
+                    let url = upstream_url(
                         &account,
                         &state.config,
                         sends_chat,
                         path.ends_with("/responses/compact"),
-                    )
+                    );
+                    if url.is_empty() {
+                        return Err(error_response(
+                            StatusCode::BAD_GATEWAY,
+                            "The configured upstream endpoint is invalid",
+                            "invalid_upstream_endpoint",
+                        ));
+                    }
+                    url
                 };
                 let serialized = if let Some(upload) = image_upload { upload.to_vec() } else { match serde_json::to_vec(&payload) {
                     Ok(value) => value,
