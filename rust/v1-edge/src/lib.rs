@@ -11429,6 +11429,39 @@ fn upsert_model(models: &mut Vec<Value>, next: Value) {
     }
 }
 
+/// Publish every enabled alias whose first routing target the catalog can
+/// already serve.
+///
+/// Resolving an alias needs its target in the catalog, because that is where
+/// the provider and account ids come from. Account-discovered targets only
+/// arrive after the cached account lists are merged, so this runs at the end of
+/// `cached_exposed_models`: running it earlier silently dropped every alias
+/// pointing at an account model, leaving only aliases over proxy models and
+/// local runtimes in `/v1/models`.
+fn push_alias_models(store: &StoreFile, models: &mut Vec<Value>) {
+    for alias in store.model_aliases.iter().filter(|alias| alias.enabled) {
+        let targets = alias
+            .rules
+            .iter()
+            .flat_map(|rule| {
+                rule.candidates
+                    .iter()
+                    .map(|candidate| candidate.model.clone())
+            })
+            .collect::<Vec<_>>();
+        if targets.is_empty() {
+            continue;
+        }
+        let Some(provider) = providers_for_model(&targets[0], models).into_iter().next() else {
+            continue;
+        };
+        upsert_model(
+            models,
+            model_entry(&alias.id, &provider, Vec::new(), true, targets),
+        );
+    }
+}
+
 fn static_exposed_models(store: &StoreFile, config: &EdgeConfig) -> Vec<Value> {
     let mut models = Vec::new();
     if config.realtime_voice.operational() {
@@ -11476,27 +11509,6 @@ fn static_exposed_models(store: &StoreFile, config: &EdgeConfig) -> Vec<Value> {
         voice["metadata"]["supports_tools"] = Value::Bool(true);
         voice["metadata"]["supported_tool_types"] = json!(["function"]);
         upsert_model(&mut models, voice);
-    }
-    for alias in store.model_aliases.iter().filter(|alias| alias.enabled) {
-        let targets = alias
-            .rules
-            .iter()
-            .flat_map(|rule| {
-                rule.candidates
-                    .iter()
-                    .map(|candidate| candidate.model.clone())
-            })
-            .collect::<Vec<_>>();
-        if targets.is_empty() {
-            continue;
-        }
-        let Some(provider) = providers_for_model(&targets[0], &models).into_iter().next() else {
-            continue;
-        };
-        upsert_model(
-            &mut models,
-            model_entry(&alias.id, &provider, Vec::new(), true, targets),
-        );
     }
     models
 }
@@ -11929,6 +11941,9 @@ fn cached_exposed_models(
         }
     }
     model_metadata::enrich(&mut models);
+    // Aliases resolve against the merged catalog, so an alias over an
+    // account-discovered model is published like one over a static model.
+    push_alias_models(store, &mut models);
     models
 }
 
@@ -15351,6 +15366,119 @@ mod tests {
             enabled: true,
             ..Default::default()
         }
+    }
+
+    fn catalog_entry(id: &str, provider: &str, account_id: &str) -> Value {
+        model_entry_from_upstream(id, provider, account_id, &json!({}))
+    }
+
+    fn alias(id: &str, target: &str) -> ModelAlias {
+        ModelAlias {
+            id: id.to_owned(),
+            enabled: true,
+            rules: vec![RoutingRule {
+                id: "redirect".to_owned(),
+                candidates: vec![RoutingCandidate {
+                    model: target.to_owned(),
+                    ..Default::default()
+                }],
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn catalog_ids(models: &[Value]) -> Vec<String> {
+        let mut ids = models
+            .iter()
+            .filter_map(|entry| entry.get("id").and_then(Value::as_str))
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids
+    }
+
+    #[test]
+    fn alias_over_account_discovered_model_is_exposed() {
+        let upstream = account("spark");
+        let mut store = store_with_accounts(vec![upstream.clone()]);
+        store.model_aliases.push(alias("bigmama-cyber", "deepseek-v4.1-flash-weightless"));
+        let mut cache = ModelCatalogCache::default();
+        cache.accounts.insert(
+            upstream.id.clone(),
+            AccountModelCatalogCache {
+                models: vec![catalog_entry(
+                    "deepseek-v4.1-flash-weightless",
+                    "openai-compatible",
+                    &upstream.id,
+                )],
+                ..Default::default()
+            },
+        );
+        let models = cached_exposed_models(&cache, &store, &EdgeConfig::default(), &[upstream]);
+        let ids = catalog_ids(&models);
+        assert!(
+            ids.contains(&"bigmama-cyber".to_owned()),
+            "an alias over an account-discovered model must be published: {ids:?}"
+        );
+        let entry = models
+            .iter()
+            .find(|entry| entry.get("id").and_then(Value::as_str) == Some("bigmama-cyber"))
+            .expect("alias entry");
+        assert_eq!(entry["metadata"]["is_alias"], Value::Bool(true));
+        assert_eq!(
+            entry["metadata"]["alias_targets"],
+            json!(["deepseek-v4.1-flash-weightless"])
+        );
+        assert_eq!(entry["owned_by"], json!("openai-compatible"));
+    }
+
+    #[test]
+    fn alias_with_unresolvable_target_is_omitted() {
+        let upstream = account("spark");
+        let mut store = store_with_accounts(vec![upstream.clone()]);
+        store.model_aliases.push(alias("orphan", "model-no-account-serves"));
+        let mut cache = ModelCatalogCache::default();
+        cache.accounts.insert(
+            upstream.id.clone(),
+            AccountModelCatalogCache {
+                models: vec![catalog_entry(
+                    "deepseek-v4.1-flash",
+                    "openai-compatible",
+                    &upstream.id,
+                )],
+                ..Default::default()
+            },
+        );
+        let ids = catalog_ids(&cached_exposed_models(
+            &cache,
+            &store,
+            &EdgeConfig::default(),
+            &[upstream],
+        ));
+        assert!(
+            !ids.contains(&"orphan".to_owned()),
+            "an alias whose target nothing serves must stay unpublished: {ids:?}"
+        );
+    }
+
+    #[test]
+    fn alias_over_proxy_model_still_works() {
+        let mut store = StoreFile::default();
+        store.model_aliases.push(alias("fast-gpt", "gpt-5.6"));
+        let config = EdgeConfig {
+            proxy_models: vec!["gpt-5.6".to_owned()],
+            ..Default::default()
+        };
+        let ids = catalog_ids(&cached_exposed_models(
+            &ModelCatalogCache::default(),
+            &store,
+            &config,
+            &[],
+        ));
+        assert!(
+            ids.contains(&"fast-gpt".to_owned()),
+            "a static alias must keep being published: {ids:?}"
+        );
     }
 
     #[test]
