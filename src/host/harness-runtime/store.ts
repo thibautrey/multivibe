@@ -100,6 +100,9 @@ export class HarnessRuntimeStore {
   }
   saveSchedule(value:ReturnType<HarnessRuntimeStore["schedules"]>[number]) {this.db.prepare("INSERT INTO schedules VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value").run(value.id,value.sessionId,JSON.stringify(value));}
   removeSchedule(id:string,sessionId:string){this.db.prepare("DELETE FROM schedules WHERE id=? AND session_id=?").run(id,sessionId);}
+  private attachmentRoot(): string {
+    return path.join(this.root,"attachments");
+  }
   private executablePath(value: unknown): string {
     const requested=requiredText(value,4096);
     if(!path.isAbsolute(requested) || /[\r\n\0]/u.test(requested))fail("Choose an installed ACP executable by absolute path");
@@ -119,11 +122,14 @@ export class HarnessRuntimeStore {
       if(existing.sha256===sha256 && existing.name===path.basename(name as string) && existing.mimeType===mimeType){this.attachment(sessionId,existing.id);return existing;}
     }
     const info: HarnessAttachment={id:randomUUID(),name:path.basename(name as string),mimeType:mimeType as string,size:bytes.length,sha256};
-    const folder=path.resolve(this.root,"attachments",identifier(sessionId));
-    if(!folder.startsWith(path.resolve(this.root,"attachments")+path.sep))fail("Invalid session attachment directory");
+    const storage=this.attachmentRoot();
+    const folder=path.join(storage,path.basename(identifier(sessionId)));
+    const relative=path.relative(storage,folder);
+    if(!relative || relative.startsWith("..") || path.isAbsolute(relative))fail("Invalid session attachment directory");
     fs.mkdirSync(folder,{recursive:true,mode:0o700});
-    const file=path.resolve(folder,info.id);
-    if(!file.startsWith(folder+path.sep))fail("Invalid attachment identifier");
+    const file=path.join(folder,path.basename(info.id));
+    const fileRelative=path.relative(folder,file);
+    if(!fileRelative || fileRelative.startsWith("..") || path.isAbsolute(fileRelative))fail("Invalid attachment identifier");
     fs.writeFileSync(file,bytes,{mode:0o600,flag:"wx"});
     this.db.prepare("INSERT INTO attachments VALUES(?,?,?)").run(info.id,sessionId,JSON.stringify(info)); return info;
   }
@@ -131,10 +137,13 @@ export class HarnessRuntimeStore {
     const row=this.db.prepare("SELECT value FROM attachments WHERE id=? AND session_id=?").get(identifier(id),sessionId);
     if(!row) fail("Attachment does not belong to this session",404);
     const info=JSON.parse(row.value) as HarnessAttachment;
-    const folder=path.resolve(this.root,"attachments",identifier(sessionId));
-    if(!folder.startsWith(path.resolve(this.root,"attachments")+path.sep))fail("Invalid session attachment directory");
-    const file=path.resolve(folder,identifier(id));
-    if(!file.startsWith(folder+path.sep))fail("Invalid attachment identifier");
+    const storage=this.attachmentRoot();
+    const folder=path.join(storage,path.basename(identifier(sessionId)));
+    const relative=path.relative(storage,folder);
+    if(!relative || relative.startsWith("..") || path.isAbsolute(relative))fail("Invalid session attachment directory");
+    const file=path.join(folder,path.basename(identifier(id)));
+    const fileRelative=path.relative(folder,file);
+    if(!fileRelative || fileRelative.startsWith("..") || path.isAbsolute(fileRelative))fail("Invalid attachment identifier");
     const data=fs.readFileSync(file);
     if(createHash("sha256").update(data).digest("hex")!==info.sha256) fail("Attachment integrity check failed",409);
     return {info,path:file,data};
@@ -142,8 +151,10 @@ export class HarnessRuntimeStore {
   delete(sessionId: string) {
     const s=this.session(sessionId); if(s.activeTurnId) fail("Stop this session before deleting it",409);
     this.db.prepare("DELETE FROM sessions WHERE id=?").run(identifier(sessionId));
-    const folder=path.resolve(this.root,"attachments",identifier(sessionId));
-    if(!folder.startsWith(path.resolve(this.root,"attachments")+path.sep))fail("Invalid session attachment directory");
+    const storage=this.attachmentRoot();
+    const folder=path.join(storage,path.basename(identifier(sessionId)));
+    const relative=path.relative(storage,folder);
+    if(!relative || relative.startsWith("..") || path.isAbsolute(relative))fail("Invalid session attachment directory");
     fs.rmSync(folder,{recursive:true,force:true});
   }
   close() { this.db.close(); }

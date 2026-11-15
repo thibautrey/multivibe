@@ -210,8 +210,9 @@ export class HostHarnessRuntime {
     }
     else {
       if(target.kind==="container")fail("Specify a workspace inside the container");
-      const root=path.resolve(this.root,"workspaces");workspace=path.join(root,path.basename(identifier(id)));
-      if(workspace===root || !workspace.startsWith(root+path.sep))fail("Invalid session identifier");
+      const root=path.join(this.root,"workspaces");workspace=path.join(root,path.basename(identifier(id)));
+      const relative=path.relative(root,workspace);
+      if(!relative || relative.startsWith("..") || path.isAbsolute(relative))fail("Invalid session identifier");
       fs.mkdirSync(workspace,{recursive:true,mode:0o700});
     }
     if(input.nativeSessionId)fail("Use native-session discovery and its ownership check to resume an external session",409);
