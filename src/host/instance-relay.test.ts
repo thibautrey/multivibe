@@ -352,7 +352,9 @@ test('pinned HTTPS LAN transport executes control operations without Relay',asyn
  assert.equal(identity.publicKey.length,43);assert.match(identity.host,/^[a-z0-9-]+\.local$/);assert.ok(identity.port>0);
  const body=f.envelope({operation:'pair-capabilities'});
  const reply=await new Promise<{status:number;body:string}>((resolve,reject)=>{
-  const request=https.request({hostname:'localhost',port:identity.port,path:'/v1',method:'POST',rejectUnauthorized:false,headers:{'content-type':'application/json'}},response=>{
+  // Trust exactly the generated LAN certificate instead of disabling verification.
+  const pinnedCa=fs.readFileSync(path.join(path.dirname(f.file),'instance-lan-cert.pem'),'utf8');
+  const request=https.request({hostname:'localhost',port:identity.port,path:'/v1',method:'POST',ca:pinnedCa,servername:'multivibe.local',headers:{'content-type':'application/json'}},response=>{
    const chunks:Buffer[]=[];response.on('data',chunk=>chunks.push(chunk));response.on('end',()=>resolve({status:response.statusCode!,body:Buffer.concat(chunks).toString()}));
   });request.on('error',reject);request.end(JSON.stringify(body));
  });

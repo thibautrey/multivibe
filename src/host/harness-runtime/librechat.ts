@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { randomUUID, createHash } from "node:crypto";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { capabilities, fail, supported, unsupported, type AdapterContext, type HarnessAdapter, type HarnessDescriptor, type MessagePart } from "./types.js";
 
 // LibreChat protects browser-session agent routes with ua-parser-js and returns an SSE
@@ -8,8 +8,25 @@ import { capabilities, fail, supported, unsupported, type AdapterContext, type H
 const LIBRECHAT_BROWSER_USER_AGENT="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) MultiVibe/0.2 Chrome/140.0.0.0 Safari/537.36";
 const LIBRECHAT_AGENT_CATALOG_ROUTE="/agents/v1/agents?limit=100";
 
-export type RemoteChatConnection = {endpoint:string;apiKey:string;agentId:string;userId?:string;userToken?:string;cookies?:string};
-export const remoteConnectionId=(v:RemoteChatConnection)=>createHash("sha256").update(v.endpoint+"\0"+(v.userId??v.apiKey)).digest("hex");
+export type RemoteChatConnection = {endpoint:string;apiKey:string;agentId:string;userId?:string;userToken?:string;cookies?:string;connectionSecret?:string};
+// Every remote route is resolved against the configured endpoint and must keep its
+// origin. A route can add a path and query, never a host, credentials or traversal.
+const remoteRoute=(endpoint:string,route:string):URL=>{
+  if(typeof route!=="string" || !route.startsWith("/") || route.startsWith("//") || /[#\\\r\n\0]/u.test(route) || route.split(/[?#]/u)[0].split("/").includes(".."))fail("Invalid remote chat route");
+  const base=new URL(endpoint),target=new URL(endpoint);
+  target.pathname=(base.pathname.replace(/\/+$/u,"")+route.split("?")[0]).replace(/\/{2,}/gu,"/");
+  target.search=route.includes("?")?route.slice(route.indexOf("?")):"";
+  if(target.origin!==base.origin || target.protocol!==base.protocol || target.username || target.password || target.host!==base.host)fail("Remote chat route escaped its configured endpoint");
+  return target;
+};
+// Account identity binds the endpoint and account together so replacing credentials is
+// detected. It is keyed by a random per-connection secret, so stored credentials are never
+// exposed to an offline dictionary attack against a bare digest.
+export const remoteConnectionId=(v:RemoteChatConnection):string=>{
+  const secret=v.connectionSecret;
+  if(typeof secret!=="string" || !/^[a-f0-9]{64}$/u.test(secret))fail("Remote account identity is missing. Reconnect the original remote account.",409);
+  return createHmac("sha256",Buffer.from(secret,"hex")).update(v.endpoint+"\0"+(v.userId??"")+"\0"+v.apiKey).digest("hex");
+};
 type Agent = {id:string;name:string};
 export function remoteChatEndpoint(value:unknown,suffix:string,name:string):string {
   if(typeof value!=="string" || value.length>4096)fail(`Enter a ${name} endpoint`);
@@ -23,7 +40,7 @@ export function remoteChatEndpoint(value:unknown,suffix:string,name:string):stri
 export function libreChatEndpoint(value:unknown){return remoteChatEndpoint(value,"/api/agents/v1","LibreChat");}
 export async function remoteChatRequest(connection:RemoteChatConnection,route:string,body?:unknown,signal?:AbortSignal,name="LibreChat"):Promise<Response> {
   let response:Response;
-  try{response=await fetch(connection.endpoint+route,{method:body?"POST":"GET",headers:{authorization:`Bearer ${connection.apiKey}`,accept:body?"text/event-stream":"application/json",...(body?{"content-type":"application/json"}:{})},...(body?{body:JSON.stringify(body)}:{}),redirect:"error",signal:signal?AbortSignal.any([signal,AbortSignal.timeout(600_000)]):AbortSignal.timeout(15_000)});}
+  try{response=await fetch(remoteRoute(connection.endpoint,route),{method:body?"POST":"GET",headers:{authorization:`Bearer ${connection.apiKey}`,accept:body?"text/event-stream":"application/json",...(body?{"content-type":"application/json"}:{})},...(body?{body:JSON.stringify(body)}:{}),redirect:"error",signal:signal?AbortSignal.any([signal,AbortSignal.timeout(600_000)]):AbortSignal.timeout(15_000)});}
   catch{ return fail(`${name} connection failed or timed out. Check the endpoint and server.`,502); }
   if(!response.ok){await response.body?.cancel();fail(`${name} returned HTTP ${response.status}. Check the API key and permissions.`,response.status===401 || response.status===403?422:502);}
   return response;
@@ -44,10 +61,16 @@ export class RemoteChatConfiguration {
   private pendingConnection?:{id:string;endpoint:string;connection:RemoteChatConnection;expiresAt:number};
   constructor(root:string,private service:{id:"librechat"|"openwebui";name:string;suffix:string}={id:"librechat",name:"LibreChat",suffix:"/api/agents/v1"}){this.file=path.join(root,`${service.id}-connection.json`);}
   read():RemoteChatConnection|undefined {
-    try{const stat=fs.lstatSync(this.file);if(!stat.isFile() || (stat.mode&0o077)!==0)fail(`${this.service.name} credentials must be a private file`,409);return JSON.parse(fs.readFileSync(this.file,"utf8"));}catch(e:any){if(e.code==="ENOENT")return;throw e;}
+    try{const stat=fs.lstatSync(this.file);if(!stat.isFile() || (stat.mode&0o077)!==0)fail(`${this.service.name} credentials must be a private file`,409);const connection=JSON.parse(fs.readFileSync(this.file,"utf8")) as RemoteChatConnection;
+      // Older connection files predate the keyed identity. Provision the secret once so
+      // the account binding stays stable from now on.
+      if(!connection.connectionSecret){this.persist(connection);}
+      return connection;
+    }catch(e:any){if(e.code==="ENOENT")return;throw e;}
   }
-  publicConfiguration(){const v=this.read();return {endpoint:v?.endpoint??"",agentId:v?.agentId??"",configured:Boolean(v),hasApiKey:Boolean(v?.apiKey),hasUserSession:Boolean(v?.userToken),connectionId:v?remoteConnectionId(v):undefined};}
+  publicConfiguration(){const v=this.read();let connectionId:string|undefined;try{connectionId=v?remoteConnectionId(v):undefined;}catch{}return {endpoint:v?.endpoint??"",agentId:v?.agentId??"",configured:Boolean(v),hasApiKey:Boolean(v?.apiKey),hasUserSession:Boolean(v?.userToken),connectionId};}
   private persist(connection:RemoteChatConnection){
+    if(!connection.connectionSecret)connection.connectionSecret=randomBytes(32).toString("hex");
     fs.mkdirSync(path.dirname(this.file),{recursive:true,mode:0o700});
     const temporary=this.file+"."+randomUUID();
     try{fs.writeFileSync(temporary,JSON.stringify(connection),{mode:0o600,flag:"wx"});fs.renameSync(temporary,this.file);}finally{fs.rmSync(temporary,{force:true});}
@@ -62,7 +85,7 @@ export class RemoteChatConfiguration {
     if(isLibre && !connection.userToken)fail("Reconnect LibreChat with your account to synchronize conversations",409);
     const endpoint=isLibre?connection.endpoint.replace(/\/api\/agents\/v1$/u,"/api"):connection.endpoint;
     let response:Response;
-    try{response=await fetch(endpoint+route,{method,headers:{authorization:`Bearer ${isLibre?connection.userToken:connection.apiKey}`,accept:"application/json, text/event-stream",origin:new URL(endpoint).origin,...(isLibre?{"user-agent":LIBRECHAT_BROWSER_USER_AGENT}:{}),...(connection.cookies?{cookie:connection.cookies}:{}),...(body!==undefined?{"content-type":"application/json"}:{})},...(body!==undefined?{body:JSON.stringify(body)}:{}),redirect:"error",signal:signal?AbortSignal.any([signal,AbortSignal.timeout(600_000)]):AbortSignal.timeout(15_000)});}catch{return fail(`${this.service.name} connection failed or timed out`,502);}
+    try{response=await fetch(remoteRoute(endpoint,route),{method,headers:{authorization:`Bearer ${isLibre?connection.userToken:connection.apiKey}`,accept:"application/json, text/event-stream",origin:new URL(endpoint).origin,...(isLibre?{"user-agent":LIBRECHAT_BROWSER_USER_AGENT}:{}),...(connection.cookies?{cookie:connection.cookies}:{}),...(body!==undefined?{"content-type":"application/json"}:{})},...(body!==undefined?{body:JSON.stringify(body)}:{}),redirect:"error",signal:signal?AbortSignal.any([signal,AbortSignal.timeout(600_000)]):AbortSignal.timeout(15_000)});}catch{return fail(`${this.service.name} connection failed or timed out`,502);}
     if(response.status===401 && retry && isLibre && connection.cookies){
       await response.body?.cancel();
       if(!this.refreshing)this.refreshing=this.refresh(connection).finally(()=>{this.refreshing=undefined;});
@@ -79,7 +102,7 @@ export class RemoteChatConfiguration {
   private async refresh(connection:RemoteChatConnection){
     // Never replay a submitted prompt: only refresh after a rejected authentication check.
     const endpoint=connection.endpoint.replace(/\/api\/agents\/v1$/u,"/api");
-    let response:Response;try{response=await fetch(endpoint+"/auth/refresh",{method:"POST",headers:{cookie:connection.cookies!,origin:new URL(endpoint).origin},redirect:"error",signal:AbortSignal.timeout(15_000)});}catch{return fail("LibreChat session refresh failed. Reconnect your account.",422);}
+    let response:Response;try{response=await fetch(remoteRoute(endpoint,"/auth/refresh"),{method:"POST",headers:{cookie:connection.cookies!,origin:new URL(endpoint).origin},redirect:"error",signal:AbortSignal.timeout(15_000)});}catch{return fail("LibreChat session refresh failed. Reconnect your account.",422);}
     if(!response.ok){await response.body?.cancel();fail("LibreChat session expired. Reconnect your account.",422);}
     const result=await boundedJson(response);
     if(typeof result.token!=="string" || !result.token)fail("LibreChat session expired. Reconnect your account.",422);
@@ -110,7 +133,7 @@ export class RemoteChatConfiguration {
     const endpoint=remoteChatEndpoint(input.endpoint,this.service.suffix,this.service.name),old=this.read();
     const apiKey=input.apiKey || (old?.endpoint===endpoint?old.apiKey:undefined);
     if(apiKey && (typeof apiKey!=="string" || apiKey.length>4096 || /[\r\n\0]/u.test(apiKey)))fail(`Enter the ${this.service.name} API key`);
-    let connection:RemoteChatConnection={endpoint,apiKey:apiKey??"",agentId:typeof input.agentId==="string"?input.agentId:"",...(old?.endpoint===endpoint?{userToken:old.userToken,userId:old.userId,cookies:old.cookies}:{})};
+    let connection:RemoteChatConnection={endpoint,apiKey:apiKey??"",agentId:typeof input.agentId==="string"?input.agentId:"",...(old?.endpoint===endpoint?{userToken:old.userToken,userId:old.userId,cookies:old.cookies,connectionSecret:old.connectionSecret}:{})};
     if(this.service.id==="librechat" && input.connectionAttemptId){
       const pending=this.pendingConnection;
       if(!pending || pending.id!==input.connectionAttemptId || pending.endpoint!==endpoint || pending.expiresAt<Date.now()){this.pendingConnection=undefined;fail("LibreChat sign-in expired. Restart sign-in.",422);}
@@ -118,14 +141,14 @@ export class RemoteChatConfiguration {
     }else if(this.service.id==="librechat" && input.twoFactorToken){
       const base=endpoint.replace(/\/api\/agents\/v1$/u,"/api");
       const body={tempToken:input.twoFactorToken,...(input.twoFactorBackupCode?{backupCode:input.twoFactorBackupCode}:{token:input.twoFactorCode})};
-      let response:Response;try{response=await fetch(base+"/auth/2fa/verify-temp",{method:"POST",headers:{"content-type":"application/json",accept:"application/json",origin:new URL(base).origin},body:JSON.stringify(body),redirect:"error",signal:AbortSignal.timeout(15_000)});}catch{return fail("LibreChat two-factor verification failed",422);}
+      let response:Response;try{response=await fetch(remoteRoute(base,"/auth/2fa/verify-temp"),{method:"POST",headers:{"content-type":"application/json",accept:"application/json",origin:new URL(base).origin},body:JSON.stringify(body),redirect:"error",signal:AbortSignal.timeout(15_000)});}catch{return fail("LibreChat two-factor verification failed",422);}
       if(!response.ok){await response.body?.cancel();fail(response.status===401?"The LibreChat authentication code is invalid or expired. Try again or restart sign-in.":"LibreChat two-factor verification was refused.",422);}
       const result=await boundedJson(response,"LibreChat two-factor verification");
       if(typeof result.token!=="string" || !result.user?.id)fail("Invalid LibreChat two-factor verification response",502);
       connection={...connection,userToken:result.token,userId:result.user.id,cookies:this.cookies(response)};
     }else if(this.service.id==="librechat" && input.email && input.password){
       const base=endpoint.replace(/\/api\/agents\/v1$/u,"/api");
-      let response:Response;try{response=await fetch(base+"/auth/login",{method:"POST",headers:{"content-type":"application/json",accept:"application/json",origin:new URL(base).origin},body:JSON.stringify({email:input.email,password:input.password}),redirect:"error",signal:AbortSignal.timeout(15_000)});}catch{return fail("LibreChat sign-in failed",422);}
+      let response:Response;try{response=await fetch(remoteRoute(base,"/auth/login"),{method:"POST",headers:{"content-type":"application/json",accept:"application/json",origin:new URL(base).origin},body:JSON.stringify({email:input.email,password:input.password}),redirect:"error",signal:AbortSignal.timeout(15_000)});}catch{return fail("LibreChat sign-in failed",422);}
       if(!response.ok){await response.body?.cancel();fail("LibreChat sign-in refused. Check your account credentials.",422);}
       const result=await boundedJson(response,"LibreChat sign-in");
       if(result.twoFAPending===true){
