@@ -159,3 +159,12 @@ The script writes the CA to `BACKEND_RELAY_CA` (default
 or key is missing at startup, the supervisor disables the relay and logs the
 reason instead of starting a TLS listener that Codex cannot reach.
 
+The server certificate defaults to 365 days (`BACKEND_RELAY_CERT_DAYS`); the CA
+defaults to 3650 days (`BACKEND_RELAY_CA_DAYS`). Apple's TLS policy rejects a
+server certificate whose lifetime exceeds 825 days even when its CA is trusted,
+and the desktop reports that as an unreachable workspace backend. A leaf issued
+with the former 3650-day default therefore has to be reissued: move
+`server.pem`/`server.key` aside, keep the same CA, and rerun the script. Once the
+files exist the script never overwrites them; it only warns when the existing
+leaf is too long-lived to be accepted.
+
