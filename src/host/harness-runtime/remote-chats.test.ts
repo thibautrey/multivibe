@@ -35,7 +35,7 @@ async function fixture(t:any,id:"librechat"|"openwebui"){
     const expected=id==="librechat"?(refreshes?"private-user-token-refreshed":"private-user-token"):"private-ow-key";
     assert.equal(req.headers.authorization,`Bearer ${expected}`);
     if(refreshNeeded){send({},401);return;}
-    if(route==="/prefix/api/agents"){send({data:[{id:"agent-1",name:"Native agent"}]});return;}
+    if(route==="/prefix/api/agents/v1/agents"){send({data:[{id:"agent-1",name:"Native agent"}]});return;}
     if(route==="/prefix/api/models"){send({data:[{id:"agent-1"}]});return;}
     if(route==="/prefix/api/v1/auths/"){send({id:"account-1"});return;}
     if(route==="/prefix/api/convos"){
@@ -114,6 +114,8 @@ for(const id of ["librechat","openwebui"] as const){
     f.deny();await assert.rejects(f.remote.list(),e=>!String(e).includes("private-"));
     const file=path.join(f.root,`${id}-connection.json`);const saved=JSON.parse(fs.readFileSync(file,"utf8"));saved.userId="different-account";fs.writeFileSync(file,JSON.stringify(saved),{mode:0o600});
     assert.notEqual(remoteConnectionId(saved),identity.connectionId);assert.throws(()=>f.remote.identity(),/original remote account/u);
+    // A bare digest of the stored credentials must never be enough to impersonate the account.
+    const forged={...saved,connectionSecret:undefined};assert.throws(()=>remoteConnectionId(forged),/identity is missing/u);
     await assert.rejects(f.runtime.connectRemoteChat({harnessId:id,connectionId:identity.connectionId,remoteChatId:"remote-1"}),/original remote account/u);
   });
 }

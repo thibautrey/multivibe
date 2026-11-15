@@ -89,10 +89,10 @@ export class HarnessRuntimeStore {
   target(id: string): HarnessTarget { return this.targets().find(v=>v.id===id) ?? fail("Execution target not found",404); }
   registrations():Array<{id:string;name:string;executable:string;args:string[]}> { return this.db.prepare("SELECT value FROM registrations").all().map((r:any)=>JSON.parse(r.value)); }
   register(value:any) {
-    identifier(value.id);requiredText(value.name,128);requiredText(value.executable,4096);
-    if(!path.isAbsolute(value.executable) || !fs.statSync(value.executable).isFile())fail("Choose an installed ACP executable by absolute path");
+    identifier(value.id);requiredText(value.name,128);
+    const executable=this.executablePath(value.executable);
     if(!Array.isArray(value.args) || value.args.length>32 || value.args.some((v:any)=>typeof v!=="string" || v.includes("\0") || v.length>4096))fail("Invalid ACP launch arguments");
-    const registration={id:value.id,name:value.name,executable:value.executable,args:value.args};
+    const registration={id:value.id,name:value.name,executable,args:value.args};
     this.db.prepare("INSERT INTO registrations VALUES(?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value").run(value.id,JSON.stringify(registration));return registration;
   }
   schedules(sessionId?:string):Array<{id:string;sessionId:string;name:string;parts:unknown[];nextAt:number;intervalMs?:number;enabled:boolean;lastCommandId?:string}> {
@@ -100,6 +100,28 @@ export class HarnessRuntimeStore {
   }
   saveSchedule(value:ReturnType<HarnessRuntimeStore["schedules"]>[number]) {this.db.prepare("INSERT INTO schedules VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value").run(value.id,value.sessionId,JSON.stringify(value));}
   removeSchedule(id:string,sessionId:string){this.db.prepare("DELETE FROM schedules WHERE id=? AND session_id=?").run(id,sessionId);}
+  // Session and attachment identifiers are validated before they join a path, and the
+  // resolved file must stay inside the runtime's attachment directory.
+  private attachmentDirectory(sessionId: string): string {
+    const base=path.resolve(this.root,"attachments");
+    const directory=path.resolve(base,identifier(sessionId));
+    if(directory===base || !directory.startsWith(base+path.sep))fail("Invalid session attachment directory");
+    return directory;
+  }
+  private attachmentFile(sessionId: string,id: string): string {
+    const directory=this.attachmentDirectory(sessionId);
+    const file=path.resolve(directory,identifier(id));
+    if(file===directory || !file.startsWith(directory+path.sep))fail("Invalid attachment identifier");
+    return file;
+  }
+  private executablePath(value: unknown): string {
+    const requested=requiredText(value,4096);
+    if(!path.isAbsolute(requested) || /[\r\n\0]/u.test(requested))fail("Choose an installed ACP executable by absolute path");
+    let resolved:string;
+    try{resolved=fs.realpathSync(requested);}catch{fail("Choose an installed ACP executable by absolute path");}
+    if(!fs.statSync(resolved).isFile())fail("Choose an installed ACP executable by absolute path");
+    return resolved;
+  }
   attach(sessionId: string, name: unknown, mimeType: unknown, base64: unknown, expectedHash?: unknown): HarnessAttachment {
     this.session(sessionId); name=requiredText(name,255); mimeType=requiredText(mimeType,128);
     if(typeof base64!=="string" || base64.length>24*1024*1024 || !/^[A-Za-z0-9+/]*={0,2}$/u.test(base64)) fail("Invalid attachment or file exceeds 16 MiB",413);
@@ -111,21 +133,21 @@ export class HarnessRuntimeStore {
       if(existing.sha256===sha256 && existing.name===path.basename(name as string) && existing.mimeType===mimeType){this.attachment(sessionId,existing.id);return existing;}
     }
     const info: HarnessAttachment={id:randomUUID(),name:path.basename(name as string),mimeType:mimeType as string,size:bytes.length,sha256};
-    const folder=path.join(this.root,"attachments",sessionId); fs.mkdirSync(folder,{recursive:true,mode:0o700});
-    fs.writeFileSync(path.join(folder,info.id),bytes,{mode:0o600,flag:"wx"});
+    const folder=this.attachmentDirectory(sessionId); fs.mkdirSync(folder,{recursive:true,mode:0o700});
+    fs.writeFileSync(this.attachmentFile(sessionId,info.id),bytes,{mode:0o600,flag:"wx"});
     this.db.prepare("INSERT INTO attachments VALUES(?,?,?)").run(info.id,sessionId,JSON.stringify(info)); return info;
   }
   attachment(sessionId: string,id: string) {
     const row=this.db.prepare("SELECT value FROM attachments WHERE id=? AND session_id=?").get(identifier(id),sessionId);
     if(!row) fail("Attachment does not belong to this session",404);
-    const info=JSON.parse(row.value) as HarnessAttachment; const file=path.join(this.root,"attachments",sessionId,id); const data=fs.readFileSync(file);
+    const info=JSON.parse(row.value) as HarnessAttachment; const file=this.attachmentFile(sessionId,id); const data=fs.readFileSync(file);
     if(createHash("sha256").update(data).digest("hex")!==info.sha256) fail("Attachment integrity check failed",409);
     return {info,path:file,data};
   }
   delete(sessionId: string) {
     const s=this.session(sessionId); if(s.activeTurnId) fail("Stop this session before deleting it",409);
-    this.db.prepare("DELETE FROM sessions WHERE id=?").run(sessionId);
-    fs.rmSync(path.join(this.root,"attachments",sessionId),{recursive:true,force:true});
+    this.db.prepare("DELETE FROM sessions WHERE id=?").run(identifier(sessionId));
+    fs.rmSync(this.attachmentDirectory(sessionId),{recursive:true,force:true});
   }
   close() { this.db.close(); }
 }
