@@ -123,8 +123,12 @@ export function harnessRuntimeRoutes(runtime?:HostHarnessRuntime,remotes=new Rem
     if(req.query.poll==="1") {
       if(target)return res.json(await remotes.request(target,"GET",`/sessions/${encodeURIComponent(id)}/events?after=${after}&poll=1&wait=25000`));
       let events=runtime!.store.events(id,after);
-      // The wait is a server-owned bounded poll window, never an unbounded client duration.
-      const wait=Number(req.query.wait);const boundedWait=Number.isFinite(wait)?Math.min(25_000,Math.max(0,Math.trunc(wait))):0;
+      // The poll window is a server-owned constant; a client value can only shorten it.
+      const requested=Number(req.query.wait);
+      let boundedWait=0;
+      if(Number.isFinite(requested) && requested>0) {
+        if(requested<25_000) boundedWait=requested; else boundedWait=25_000;
+      }
       if(!events.length && boundedWait>0){await new Promise<void>(resolve=>{const done=()=>{clearTimeout(timer);off();res.off("close",done);resolve();};const off=runtime!.subscribe(id,done);const timer=setTimeout(done,boundedWait);res.once("close",done);});events=runtime!.store.events(id,after);}
       return res.json({events,cursor:events.at(-1)?.seq??after});
     }
