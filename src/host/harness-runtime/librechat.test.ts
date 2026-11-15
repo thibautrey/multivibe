@@ -4,7 +4,7 @@ import http from "node:http";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { LibreChatAdapter, LibreChatConfiguration, libreChatEndpoint } from "./librechat.js";
+import { LibreChatAdapter, LibreChatConfiguration, libreChatEndpoint, remoteChatEndpoint } from "./librechat.js";
 import { capabilities, type AdapterContext } from "./types.js";
 
 async function fixture(t:any) {
@@ -127,4 +127,15 @@ test("LibreChat rejects truncated streams, redirects and auth errors without sto
   const adapter=new LibreChatAdapter(ctx);await adapter.start();await adapter.prompt([{type:"text",text:"Test"}]);adapter.close();
   assert.ok(events.some(e=>e.type==="message.delta" && e.payload.text==="Non-streaming reply"));
   assert.ok(events.some(e=>e.type==="turn.status"));
+});
+
+test("remote chat endpoints refuse link-local and metadata hosts but keep loopback and LAN",()=>{
+  const expected:Record<string,string>={
+    "http://127.0.0.1:3080":"http://127.0.0.1:3080/api/agents/v1",
+    "http://192.168.1.5:3080":"http://192.168.1.5:3080/api/agents/v1",
+    "http://[::1]:3080":"http://[::1]:3080/api/agents/v1",
+    "https://chat.example.com":"https://chat.example.com/api/agents/v1",
+  };
+  for(const [host,result] of Object.entries(expected))assert.equal(remoteChatEndpoint(host,"/api/agents/v1","LibreChat"),result);
+  for(const host of ["http://169.254.169.254/latest","http://[fe80::1]:3080","http://metadata.google.internal"])assert.throws(()=>remoteChatEndpoint(host,"/api/agents/v1","LibreChat"),/link-local or metadata/u);
 });
