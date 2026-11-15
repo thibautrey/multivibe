@@ -123,7 +123,9 @@ export function harnessRuntimeRoutes(runtime?:HostHarnessRuntime,remotes=new Rem
     if(req.query.poll==="1") {
       if(target)return res.json(await remotes.request(target,"GET",`/sessions/${encodeURIComponent(id)}/events?after=${after}&poll=1&wait=25000`));
       let events=runtime!.store.events(id,after);
-      if(!events.length && req.query.wait){await new Promise<void>(resolve=>{const done=()=>{clearTimeout(timer);off();res.off("close",done);resolve();};const off=runtime!.subscribe(id,done);const timer=setTimeout(done,Math.min(25_000,Number(req.query.wait)||0));res.once("close",done);});events=runtime!.store.events(id,after);}
+      // The wait is a server-owned bounded poll window, never an unbounded client duration.
+      const wait=Number(req.query.wait);const boundedWait=Number.isFinite(wait)?Math.min(25_000,Math.max(0,Math.trunc(wait))):0;
+      if(!events.length && boundedWait>0){await new Promise<void>(resolve=>{const done=()=>{clearTimeout(timer);off();res.off("close",done);resolve();};const off=runtime!.subscribe(id,done);const timer=setTimeout(done,boundedWait);res.once("close",done);});events=runtime!.store.events(id,after);}
       return res.json({events,cursor:events.at(-1)?.seq??after});
     }
     // Reading/subscribing never starts work and disconnecting never aborts a turn.

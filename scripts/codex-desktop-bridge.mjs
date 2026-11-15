@@ -127,7 +127,11 @@ export function createDesktopBridge({ codexHome, upstream = 'http://127.0.0.1:14
     if (!auth) { reject(destination, 401, 'A current local ChatGPT sign-in is required'); return; }
     if (destination.destroyed) return;
     const upgrade = head !== undefined;
-    const outgoing = http.request(new URL(auth.pathname, target), {
+    // The destination is the loopback base validated above; only the allow-listed
+    // local path is applied, so no request can redirect the proxy to another host.
+    const destinationUrl = new URL(auth.pathname, target);
+    if (destinationUrl.origin !== target.origin) { reject(destination, 400, 'Invalid upstream path'); return; }
+    const outgoing = http.request(destinationUrl, {
       method: request.method, headers: upstreamHeaders(request.headers, auth.key, upgrade),
     });
     let upstreamSocket;

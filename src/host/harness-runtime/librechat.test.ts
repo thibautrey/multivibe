@@ -68,7 +68,9 @@ test("LibreChat completes two-factor and backup-code challenges without persisti
     assert.equal(req.headers.authorization,"Bearer private-user-token");
     assert.match(req.headers.cookie!,/private-refresh/u);
     if(route==="/api/agents"){res.writeHead(200,{"content-type":"text/event-stream"});res.end('event: error\ndata: {"message":"Legacy execution route is not an agent catalog"}\n\n');return;}
-    if(route.startsWith("/api/agents/v1/agents") && !/Mozilla\/5\.0.*(?:Chrome|Safari)\//u.test(req.headers["user-agent"]??"")){res.writeHead(200);res.end('event: error\ndata: {"message":"Illegal request"}\n\n');return;}
+    const agentRoute=route.startsWith("/api/agents/v1/agents"),agent=req.headers["user-agent"]??"";
+    const browserAgent=agent.startsWith("Mozilla/5.0 ") && (agent.includes("Chrome/") || agent.includes("Safari/"));
+    if(agentRoute && !browserAgent){res.writeHead(200);res.end('event: error\ndata: {"message":"Illegal request"}\n\n');return;}
     if(route==="/api/agents/v1/agents"){send({object:"list",data:[{id:"agent-1",name:"Native agent"}],has_more:false});return;}
     if(route==="/api/convos"){send({conversations:[]});return;}
     send({error:"unexpected"},404);

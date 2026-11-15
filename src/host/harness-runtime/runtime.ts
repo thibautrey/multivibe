@@ -204,8 +204,16 @@ export class HostHarnessRuntime {
       history=JSON.stringify(input.history);if(Buffer.byteLength(history)>16*1024*1024)fail("Conversation migration exceeds 16 MiB; export it before continuing",413);
     }
     let workspace:string;
-    if(input.workspace){workspace=requiredText(input.workspace,4096);if(!path.isAbsolute(workspace))fail("Workspace must be an absolute path");if(target.kind==="local"){workspace=fs.realpathSync(workspace);if(!fs.statSync(workspace).isDirectory())fail("Workspace is not a directory");}}
-    else {if(target.kind==="container")fail("Specify a workspace inside the container");workspace=path.join(this.root,"workspaces",id);fs.mkdirSync(workspace,{recursive:true,mode:0o700});}
+    if(input.workspace){
+      workspace=requiredText(input.workspace,4096);if(!path.isAbsolute(workspace))fail("Workspace must be an absolute path");
+      if(target.kind==="local"){workspace=fs.realpathSync(workspace);if(!fs.statSync(workspace).isDirectory())fail("Workspace is not a directory");}
+    }
+    else {
+      if(target.kind==="container")fail("Specify a workspace inside the container");
+      const root=path.resolve(this.root,"workspaces");workspace=path.resolve(root,id);
+      if(workspace===root || !workspace.startsWith(root+path.sep))fail("Invalid session identifier");
+      fs.mkdirSync(workspace,{recursive:true,mode:0o700});
+    }
     if(input.nativeSessionId)fail("Use native-session discovery and its ownership check to resume an external session",409);
     const now=Date.now();const s:HarnessSession={id,harnessId,targetId,workspace,title:typeof input.title==="string"?input.title.slice(0,200):"Nouvelle conversation",...(input.model?{model:requiredText(input.model,256)}:{}),authMode,state:"idle",queuePaused:false,revision:0,archived:false,pinned:false,createdAt:now,updatedAt:now,capabilities:descriptor.capabilities};
     if(harnessId==="librechat" || harnessId==="openwebui"){const connection=this[harnessId].read()!;s.model=s.model??connection.agentId;s.configuration={endpoint:connection.endpoint,connectionId:this.remoteChats(harnessId).identity().connectionId};}
