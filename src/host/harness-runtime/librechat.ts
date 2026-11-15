@@ -25,7 +25,9 @@ const remoteRoute=(endpoint:string,route:string):URL=>{
 export const remoteConnectionId=(v:RemoteChatConnection):string=>{
   const secret=v.connectionSecret;
   if(typeof secret!=="string" || !/^[a-f0-9]{64}$/u.test(secret))fail("Remote account identity is missing. Reconnect the original remote account.",409);
-  return createHmac("sha256",Buffer.from(secret,"hex")).update(v.endpoint+"\0"+(v.userId??"")+"\0"+v.apiKey).digest("hex");
+  // Deliberately excludes credentials: rotating a key must not invalidate the binding,
+  // and no secret is ever hashed or compared in a way that could leak it.
+  return createHmac("sha256",Buffer.from(secret,"hex")).update(v.endpoint+"\0"+(v.userId??"")).digest("hex");
 };
 type Agent = {id:string;name:string};
 export function remoteChatEndpoint(value:unknown,suffix:string,name:string):string {
