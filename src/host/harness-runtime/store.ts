@@ -100,20 +100,6 @@ export class HarnessRuntimeStore {
   }
   saveSchedule(value:ReturnType<HarnessRuntimeStore["schedules"]>[number]) {this.db.prepare("INSERT INTO schedules VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value").run(value.id,value.sessionId,JSON.stringify(value));}
   removeSchedule(id:string,sessionId:string){this.db.prepare("DELETE FROM schedules WHERE id=? AND session_id=?").run(id,sessionId);}
-  // Session and attachment identifiers are validated before they join a path, and the
-  // resolved file must stay inside the runtime's attachment directory.
-  private attachmentDirectory(sessionId: string): string {
-    const base=path.resolve(this.root,"attachments");
-    const directory=path.resolve(base,identifier(sessionId));
-    if(directory===base || !directory.startsWith(base+path.sep))fail("Invalid session attachment directory");
-    return directory;
-  }
-  private attachmentFile(sessionId: string,id: string): string {
-    const directory=this.attachmentDirectory(sessionId);
-    const file=path.resolve(directory,identifier(id));
-    if(file===directory || !file.startsWith(directory+path.sep))fail("Invalid attachment identifier");
-    return file;
-  }
   private executablePath(value: unknown): string {
     const requested=requiredText(value,4096);
     if(!path.isAbsolute(requested) || /[\r\n\0]/u.test(requested))fail("Choose an installed ACP executable by absolute path");
@@ -133,21 +119,32 @@ export class HarnessRuntimeStore {
       if(existing.sha256===sha256 && existing.name===path.basename(name as string) && existing.mimeType===mimeType){this.attachment(sessionId,existing.id);return existing;}
     }
     const info: HarnessAttachment={id:randomUUID(),name:path.basename(name as string),mimeType:mimeType as string,size:bytes.length,sha256};
-    const folder=this.attachmentDirectory(sessionId); fs.mkdirSync(folder,{recursive:true,mode:0o700});
-    fs.writeFileSync(this.attachmentFile(sessionId,info.id),bytes,{mode:0o600,flag:"wx"});
+    const folder=path.resolve(this.root,"attachments",identifier(sessionId));
+    if(!folder.startsWith(path.resolve(this.root,"attachments")+path.sep))fail("Invalid session attachment directory");
+    fs.mkdirSync(folder,{recursive:true,mode:0o700});
+    const file=path.resolve(folder,info.id);
+    if(!file.startsWith(folder+path.sep))fail("Invalid attachment identifier");
+    fs.writeFileSync(file,bytes,{mode:0o600,flag:"wx"});
     this.db.prepare("INSERT INTO attachments VALUES(?,?,?)").run(info.id,sessionId,JSON.stringify(info)); return info;
   }
   attachment(sessionId: string,id: string) {
     const row=this.db.prepare("SELECT value FROM attachments WHERE id=? AND session_id=?").get(identifier(id),sessionId);
     if(!row) fail("Attachment does not belong to this session",404);
-    const info=JSON.parse(row.value) as HarnessAttachment; const file=this.attachmentFile(sessionId,id); const data=fs.readFileSync(file);
+    const info=JSON.parse(row.value) as HarnessAttachment;
+    const folder=path.resolve(this.root,"attachments",identifier(sessionId));
+    if(!folder.startsWith(path.resolve(this.root,"attachments")+path.sep))fail("Invalid session attachment directory");
+    const file=path.resolve(folder,identifier(id));
+    if(!file.startsWith(folder+path.sep))fail("Invalid attachment identifier");
+    const data=fs.readFileSync(file);
     if(createHash("sha256").update(data).digest("hex")!==info.sha256) fail("Attachment integrity check failed",409);
     return {info,path:file,data};
   }
   delete(sessionId: string) {
     const s=this.session(sessionId); if(s.activeTurnId) fail("Stop this session before deleting it",409);
     this.db.prepare("DELETE FROM sessions WHERE id=?").run(identifier(sessionId));
-    fs.rmSync(this.attachmentDirectory(sessionId),{recursive:true,force:true});
+    const folder=path.resolve(this.root,"attachments",identifier(sessionId));
+    if(!folder.startsWith(path.resolve(this.root,"attachments")+path.sep))fail("Invalid session attachment directory");
+    fs.rmSync(folder,{recursive:true,force:true});
   }
   close() { this.db.close(); }
 }

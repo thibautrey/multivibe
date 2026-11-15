@@ -127,12 +127,15 @@ export function createDesktopBridge({ codexHome, upstream = 'http://127.0.0.1:14
     if (!auth) { reject(destination, 401, 'A current local ChatGPT sign-in is required'); return; }
     if (destination.destroyed) return;
     const upgrade = head !== undefined;
-    // The destination is the loopback base validated above; only the allow-listed
-    // local path is applied, so no request can redirect the proxy to another host.
-    const destinationUrl = new URL(auth.pathname, target);
-    if (destinationUrl.origin !== target.origin) { reject(destination, 400, 'Invalid upstream path'); return; }
-    const outgoing = http.request(destinationUrl, {
-      method: request.method, headers: upstreamHeaders(request.headers, auth.key, upgrade),
+    // Host, port and protocol come only from the validated loopback base; the request
+    // supplies nothing but an allow-listed path and query.
+    if (!allowedPath.test(new URL(auth.pathname, 'http://127.0.0.1').pathname)) {
+      reject(destination, 400, 'Invalid upstream path'); return;
+    }
+    const outgoing = http.request({
+      protocol: target.protocol, hostname: target.hostname, port: target.port,
+      path: auth.pathname, method: request.method,
+      headers: upstreamHeaders(request.headers, auth.key, upgrade),
     });
     let upstreamSocket;
     outgoing.setTimeout(300_000, () => outgoing.destroy(new Error('Upstream idle timeout')));

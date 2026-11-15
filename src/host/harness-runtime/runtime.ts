@@ -210,7 +210,7 @@ export class HostHarnessRuntime {
     }
     else {
       if(target.kind==="container")fail("Specify a workspace inside the container");
-      const root=path.resolve(this.root,"workspaces");workspace=path.resolve(root,id);
+      const root=path.resolve(this.root,"workspaces");workspace=path.join(root,path.basename(identifier(id)));
       if(workspace===root || !workspace.startsWith(root+path.sep))fail("Invalid session identifier");
       fs.mkdirSync(workspace,{recursive:true,mode:0o700});
     }
