@@ -1,10 +1,14 @@
 # Hermes mobile orchestration port
 
 The mobile loop is a **partial portable port**, not the complete Hermes agent.
-It replaces Pi orchestration. Upstream source is vendored without edits under
-`upstream/hermes-loop` at `6d49922875f60af5bc31e2bfbae78a81d2fa91fc` (MIT);
-`manifest.json` records file hashes checked by the bundle build. Existing tool
-schemas remain pinned separately under `upstream/hermes`.
+It replaces Pi orchestration. Upstream source is vendored under
+`upstream/hermes-loop` at `6d49922875f60af5bc31e2bfbae78a81d2fa91fc` (MIT); only
+the dependency pins documented in `manifest.json`'s `local_modifications` differ
+from upstream, and `manifest.json` records file hashes checked by the bundle
+build. Every reviewed pin bump in the vendored `pyproject.toml` must refresh its
+`sha256` entry there, or `npm run check` fails with `Hermes upstream snapshot
+changed: pyproject.toml`. Existing tool schemas remain pinned separately under
+`upstream/hermes`.
 
 ## Why a portable loop
 
