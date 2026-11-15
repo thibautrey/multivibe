@@ -20,7 +20,7 @@ fn decoder_strips_only_initial_bom_across_all_chunk_boundaries() {
 
 #[test]
 fn responses_failures_do_not_become_chat_stop() {
-    for kind in ["response.failed", "error"] {
+    for kind in ["response.failed", "response.error"] {
         let mut converter =
             SseStreamTransformer::new(StreamTransform::ResponseToChat, "test-model");
         let event = json!({"type":kind,"response":{"status":"failed","error":{"code":"test_failure","message":"fixture failure"}},"error":{"code":"test_failure","message":"fixture failure"}});
@@ -128,11 +128,13 @@ fn chat_terminal_snapshots_preserve_status_and_item_identity() {
                     "{output}"
                 );
                 assert_eq!(item["status"], status, "{output}");
-                if let Some((_, done)) = events.iter().find(|(_, e)| {
-                    e["type"] == "response.output_item.done" && e["item"]["id"] == item["id"]
-                }) {
-                    assert_eq!(&done["item"], item, "{output}");
-                }
+                let (_, done) = events
+                    .iter()
+                    .find(|(_, e)| {
+                        e["type"] == "response.output_item.done" && e["item"]["id"] == item["id"]
+                    })
+                    .unwrap_or_else(|| panic!("no response.output_item.done for {item}: {output}"));
+                assert_eq!(&done["item"], item, "{output}");
             }
             if finish != "stop" {
                 assert!(

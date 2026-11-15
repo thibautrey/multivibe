@@ -5673,9 +5673,10 @@ impl StreamingTrace {
         let sink = self.sink.clone();
         let context = self.context.clone();
         let client_context = self.client_context.clone();
-        // Body cancellation must not interrupt the two-record commit after
-        // `finished` was set. Dropping the join handle leaves this task running.
-        let recording = tokio::spawn(async move {
+        // Detached on purpose: the two-record commit is already past the
+        // `finished` guard, and awaiting it here would let request
+        // cancellation drop the handle and lose both records.
+        tokio::spawn(async move {
             sink.record(&context, outcome).await;
             sink.record(
                 &client_context,
@@ -5692,7 +5693,6 @@ impl StreamingTrace {
             )
             .await;
         });
-        let _ = recording.await;
     }
 
 }
@@ -7965,6 +7965,9 @@ struct ChatResponseStreamState {
     reasoning_started: bool,
     content_started: bool,
     refusal_started: bool,
+    /// Index of the refusal part, fixed when the part opens. Recomputing it
+    /// per delta would move the part if later content shifted the count.
+    refusal_content_index: usize,
     completed_sent: bool,
     finish_pending: bool,
     finish_reason: Option<String>,
@@ -8082,7 +8085,7 @@ impl ChatResponseStreamState {
             out.push_str(&sse_frame("response.content_part.done", &json!({"type": "response.content_part.done", "item_id": self.output_item_id, "output_index": msg_output_index, "content_index": 0, "part": {"type": "output_text", "text": self.content}})));
         }
         if self.refusal_started {
-            let content_idx = usize::from(!self.content.is_empty());
+            let content_idx = self.refusal_content_index;
             out.push_str(&sse_frame("response.refusal.done", &json!({"type": "response.refusal.done", "item_id": self.output_item_id, "output_index": msg_output_index, "content_index": content_idx, "refusal": self.refusal})));
             out.push_str(&sse_frame("response.content_part.done", &json!({"type": "response.content_part.done", "item_id": self.output_item_id, "output_index": msg_output_index, "content_index": content_idx, "part": {"type": "refusal", "refusal": self.refusal}})));
         }
@@ -8531,16 +8534,17 @@ impl SseStreamTransformer {
                 raw_string(delta.get("refusal")).filter(|refusal| !refusal.is_empty())
             {
                 let out_idx = usize::from(!self.chat_response.reasoning.is_empty());
-                let content_idx = usize::from(!self.chat_response.content.is_empty());
                 if !self.chat_response.content_started && !self.chat_response.refusal_started {
                     output.push_str(&sse_frame("response.output_item.added", &json!({"type": "response.output_item.added", "output_index": out_idx, "item": {"id": self.chat_response.output_item_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []}})));
                 }
                 if !self.chat_response.refusal_started {
                     self.chat_response.refusal_started = true;
-                    output.push_str(&sse_frame("response.content_part.added", &json!({"type": "response.content_part.added", "item_id": self.chat_response.output_item_id, "output_index": out_idx, "content_index": content_idx, "part": {"type": "refusal", "refusal": ""}})));
+                    self.chat_response.refusal_content_index =
+                        usize::from(!self.chat_response.content.is_empty());
+                    output.push_str(&sse_frame("response.content_part.added", &json!({"type": "response.content_part.added", "item_id": self.chat_response.output_item_id, "output_index": out_idx, "content_index": self.chat_response.refusal_content_index, "part": {"type": "refusal", "refusal": ""}})));
                 }
                 self.chat_response.refusal.push_str(&refusal);
-                output.push_str(&sse_frame("response.refusal.delta", &json!({"type": "response.refusal.delta", "item_id": self.chat_response.output_item_id, "output_index": out_idx, "content_index": content_idx, "delta": refusal})));
+                output.push_str(&sse_frame("response.refusal.delta", &json!({"type": "response.refusal.delta", "item_id": self.chat_response.output_item_id, "output_index": out_idx, "content_index": self.chat_response.refusal_content_index, "delta": refusal})));
             }
             if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
                 for call in calls {
@@ -8660,7 +8664,8 @@ impl SseStreamTransformer {
                 .and_then(Value::as_str)
             {
                 Some("content_filter") => "content_filter",
-                _ => "length",
+                Some("max_output_tokens") => "length",
+                _ => "stop",
             };
             let mut output = String::new();
             if let Some(items) = value["response"]["output"].as_array() {
@@ -8677,7 +8682,7 @@ impl SseStreamTransformer {
             output.push_str(&self.response_chat.finish_with_reason(Some(reason)));
             return output;
         }
-        if matches!(event_type, "response.failed" | "error") {
+        if matches!(event_type, "response.failed" | "response.error") {
             if self.response_chat.finished {
                 return String::new();
             }
@@ -8817,7 +8822,7 @@ impl SseStreamTransformer {
                 self.anthropic.max_tokens = value.pointer("/response/incomplete_details/reason").and_then(Value::as_str) == Some("max_output_tokens");
                 output.push_str(&self.anthropic.stop())
             }
-            "response.failed" | "error" => {
+            "response.failed" | "response.error" | "error" => {
                 self.anthropic.stopped = true;
                 let message = value.pointer("/response/error/message").or_else(|| value.pointer("/error/message")).and_then(Value::as_str).unwrap_or("Upstream stream failed");
                 output.push_str(&sse_frame("error", &anthropic_error_value(StatusCode::BAD_GATEWAY, message)));
@@ -8879,7 +8884,7 @@ impl PassthroughSseState {
                         self.output = items.clone();
                     }
                 }
-                "response.failed" | "error" => {
+                "response.failed" | "response.error" | "error" => {
                     self.terminal = true;
                     self.error = value
                         .pointer("/response/error/message")
@@ -13872,7 +13877,7 @@ impl WsConnectionLog {
         self.events_sent = self.events_sent.saturating_add(1);
         if is_ws_terminal_event(event) {
             self.terminal_event = Some(event_type.to_owned());
-            if matches!(event_type, "response.failed" | "error") {
+            if matches!(event_type, "response.failed" | "response.error" | "error") {
                 self.upstream_error = event
                     .pointer("/response/error/message")
                     .or_else(|| event.pointer("/error/message"))
@@ -16948,12 +16953,13 @@ mod tests {
                 .unwrap();
             // The first body byte is a data-bearing keepalive so a proxied
             // client receives headers before upstream prefill completes.
-            let mut received = String::new();
-            while !received.contains(event) {
-                let chunk = response.chunk().await.unwrap().unwrap();
-                received.push_str(&String::from_utf8_lossy(&chunk));
-            }
-            assert!(received.contains(event));
+            let chunk = response.chunk().await.unwrap().unwrap();
+            let received = String::from_utf8_lossy(&chunk).to_owned();
+            let (first_name, _) = parse_sse_events(&received)
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| panic!("first chunk carried no SSE event: {received}"));
+            assert_eq!(first_name, event, "{received}");
             drop(response);
 
             let traces = timeout(Duration::from_secs(2), async {
