@@ -110,6 +110,75 @@ test("dashboard API keys are persisted and can be revoked", async () => {
   await fs.rm(directory, { recursive: true, force: true });
 });
 
+test("an admission share survives the round trip the edge reads", async () => {
+  // The admin API writes these fields and the Rust edge reads them from the same
+  // file. A silent drop on either side would leave the fair share at its default
+  // while the dashboard showed the configured value.
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-store-"));
+  const filePath = path.join(directory, "accounts.json");
+  const store = new AccountStore(filePath);
+  await store.init();
+
+  await store.upsertApplicationPolicy({
+    application: "hermes-client",
+    fairnessWeight: 1,
+    maxConcurrentShare: 0.1,
+    burst: 0,
+    shareWindows: [
+      { startHour: 22, endHour: 6, days: [5, 6], multiplier: 3 },
+    ],
+    webhooks: [],
+  });
+
+  const onDisk = JSON.parse(await fs.readFile(filePath, "utf8")) as {
+    applicationPolicies: Array<Record<string, unknown>>;
+  };
+  const written = onDisk.applicationPolicies.find(
+    (policy) => policy.application === "hermes-client",
+  );
+  assert.equal(written?.maxConcurrentShare, 0.1);
+  assert.equal(written?.burst, 0);
+  assert.deepEqual(written?.shareWindows, [
+    { startHour: 22, endHour: 6, days: [5, 6], multiplier: 3 },
+  ]);
+
+  await fs.rm(directory, { recursive: true, force: true });
+});
+
+test("out-of-range share values are clamped rather than written through", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-store-"));
+  const filePath = path.join(directory, "accounts.json");
+  const store = new AccountStore(filePath);
+  await store.init();
+
+  await store.upsertApplicationPolicy({
+    application: "wild",
+    fairnessWeight: 1,
+    maxConcurrentShare: 4,
+    burst: 99,
+    // An empty window is a no-op, not a period that matches nothing.
+    shareWindows: [
+      { startHour: 9, endHour: 9, multiplier: 2 },
+      { startHour: 22, endHour: 6, multiplier: 40 },
+    ],
+    webhooks: [],
+  });
+
+  const onDisk = JSON.parse(await fs.readFile(filePath, "utf8")) as {
+    applicationPolicies: Array<Record<string, unknown>>;
+  };
+  const written = onDisk.applicationPolicies.find((policy) => policy.application === "wild");
+  assert.equal(written?.maxConcurrentShare, 1, "a share is a fraction");
+  assert.equal(written?.burst, 8, "burst is bounded");
+  assert.deepEqual(
+    written?.shareWindows,
+    [{ startHour: 22, endHour: 6, multiplier: 8 }],
+    "the empty window is dropped and the multiplier is bounded",
+  );
+
+  await fs.rm(directory, { recursive: true, force: true });
+});
+
 test("new and upgraded stores materialize anonymous sharing as future-only and enabled", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-store-"));
   const filePath = path.join(directory, "accounts.json");
