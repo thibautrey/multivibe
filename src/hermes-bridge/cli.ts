@@ -190,7 +190,14 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   }
 
   if (args.command === "doctor") {
-    const report = await runDoctor({ config, secrets, mappings: config.mappings });
+    const report = await runDoctor({
+      config,
+      secrets,
+      mappings: config.mappings,
+      // Offline operators should not be told "unknown" when the real answer is
+      // "the enrollment path is gated and nobody can enrol".
+      checkEnrollment: true,
+    });
     if (json) {
       process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
     } else {
