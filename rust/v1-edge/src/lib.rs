@@ -13998,14 +13998,23 @@ async fn admission_lease_handler(
         .get("renew")
         .is_some_and(|value| matches!(value.as_str(), "1" | "true"));
     let mut leases = state.admission_leases.lock().await;
-    let Some((lease_state, expires_at, renewals)) = leases.peek(&auth.application, &lease_id, now)
-    else {
+    let (found, released) = leases.peek(&auth.application, &lease_id, now);
+    drop(leases);
+    // Any reservation freed by the sweep is returned to the pool before the read
+    // completes, so capacity never lags behind an expiry.
+    for expired in released {
+        state
+            .admission
+            .release_for(&expired.account_id, Some(&expired.application));
+    }
+    let Some((lease_state, expires_at, renewals)) = found else {
         return error_response(
             StatusCode::NOT_FOUND,
             "unknown admission lease",
             "lease_not_found",
         );
     };
+    let mut leases = state.admission_leases.lock().await;
     if lease_state != lease::LeaseState::Admitted {
         return json_response(
             StatusCode::OK,
@@ -14019,7 +14028,14 @@ async fn admission_lease_handler(
         );
     }
     let (renewals, expires_at) = if renew {
-        match leases.renew(&auth.application, &lease_id, now) {
+        let (outcome, renewed_released) = leases.renew(&auth.application, &lease_id, now);
+        drop(leases);
+        for expired in renewed_released {
+            state
+                .admission
+                .release_for(&expired.account_id, Some(&expired.application));
+        }
+        match outcome {
             Some(values) => values,
             None => {
                 return json_response(

@@ -168,30 +168,62 @@ impl LeaseRegistry {
     /// Read a lease without consuming it. Scoped by application so one tenant
     /// cannot probe another tenant's lease.
     #[must_use]
-    pub fn peek(&mut self, application: &str, id: &str, now: u64) -> Option<(LeaseState, u64, u32)> {
-        self.prune(now);
-        let entry = self.entries.get(id)?;
-        if entry.application != application {
-            return None;
-        }
-        Some((entry.state, entry.expires_at, entry.renewals))
+    pub fn peek(
+        &mut self,
+        application: &str,
+        id: &str,
+        now: u64,
+    ) -> (Option<(LeaseState, u64, u32)>, Vec<ExpiredReservation>) {
+        let released = self.prune(now);
+        let found = self.entries.get(id).filter(|entry| entry.application == application).map(|entry| {
+            (entry.state, entry.expires_at, entry.renewals)
+        });
+        (found, released)
     }
 
     /// Extend a waiting lease. Renewals are bounded so a client cannot hold a
     /// reservation indefinitely by polling.
-    pub fn renew(&mut self, application: &str, id: &str, now: u64) -> Option<(u32, u64)> {
-        self.prune(now);
-        let entry = self.entries.get_mut(id)?;
-        if entry.application != application || entry.state != LeaseState::Admitted {
-            return None;
+    pub fn renew(
+        &mut self,
+        application: &str,
+        id: &str,
+        now: u64,
+    ) -> (Option<(u32, u64)>, Vec<ExpiredReservation>) {
+        let mut released = self.prune(now);
+        let outcome = match self.entries.get_mut(id) {
+            Some(entry)
+                if entry.application == application && entry.state == LeaseState::Admitted =>
+            {
+                if entry.renewals >= admission::LEASE_MAX_RENEWALS {
+                    // Exhausting the budget ends the lease; its reservation must
+                    // be returned in the same breath or the slot leaks.
+                    entry.state = LeaseState::Expired;
+                    released.push(ExpiredReservation {
+                        account_id: entry.account_id.clone(),
+                        application: entry.application.clone(),
+                    });
+                    None
+                } else {
+                    entry.renewals = entry.renewals.saturating_add(1);
+                    entry.expires_at = now + admission::LEASE_TTL_MS;
+                    Some((entry.renewals, entry.expires_at))
+                }
+            }
+            _ => None,
+        };
+        // The expired entry is removed on the next prune; drop it now so a
+        // subsequent grant cannot count it as live.
+        if outcome.is_none()
+            && self
+                .entries
+                .get(id)
+                .is_some_and(|entry| {
+                    entry.state == LeaseState::Expired && entry.application == application
+                })
+        {
+            self.entries.remove(id);
         }
-        if entry.renewals >= admission::LEASE_MAX_RENEWALS {
-            entry.state = LeaseState::Expired;
-            return None;
-        }
-        entry.renewals = entry.renewals.saturating_add(1);
-        entry.expires_at = now + admission::LEASE_TTL_MS;
-        Some((entry.renewals, entry.expires_at))
+        (outcome, released)
     }
 
     /// Consume a lease. Succeeds at most once per lease id.
@@ -257,7 +289,7 @@ mod tests {
     fn leases_are_scoped_to_their_application() {
         let mut leases = registry();
         leases.grant("l1".into(), "app-a", "acct", 1_000).unwrap();
-        assert!(leases.peek("app-b", "l1", 1_000).is_none());
+        assert!(leases.peek("app-b", "l1", 1_000).0.is_none());
         assert!(leases.redeem("app-b", "l1", 1_000).is_none());
         assert!(leases.redeem("app-a", "l1", 1_000).is_some());
     }
@@ -278,12 +310,12 @@ mod tests {
         let mut now = 1_000;
         for expected in 1..=admission::LEASE_MAX_RENEWALS {
             now += 1_000;
-            let (renewals, _) = leases.renew("app", "l1", now).expect("renewal allowed");
+            let (renewals, _) = leases.renew("app", "l1", now).0.expect("renewal allowed");
             assert_eq!(renewals, expected);
         }
         now += 1_000;
         assert!(
-            leases.renew("app", "l1", now).is_none(),
+            leases.renew("app", "l1", now).0.is_none(),
             "renewal budget is exhausted"
         );
     }
@@ -312,6 +344,42 @@ mod tests {
             leases.grant("l2".into(), "app", "acct", 1_000),
             Err(LeaseError::RegistryFull)
         );
+    }
+
+    #[test]
+    fn an_abandoned_lease_returns_its_slot_on_the_next_sweep() {
+        // A client that takes a lease and dies must not hold capacity forever:
+        // the reservation is released when any later call sweeps the registry.
+        let mut leases = registry();
+        leases.grant("l1".into(), "app", "acct", 1_000).unwrap();
+        assert_eq!(leases.len(), 1);
+
+        let after_ttl = 1_000 + admission::LEASE_TTL_MS + 1;
+        let (found, released) = leases.peek("app", "l1", after_ttl);
+        assert!(found.is_none(), "the lease itself is gone");
+        assert_eq!(released.len(), 1, "and its reservation is reported");
+        assert_eq!(released[0].account_id, "acct");
+        assert_eq!(released[0].application, "app");
+        assert_eq!(leases.len(), 0);
+    }
+
+    #[test]
+    fn exhausting_the_renewal_budget_also_returns_the_slot() {
+        // Ending a lease by policy is the same accounting event as expiring it.
+        let mut leases = registry();
+        leases.grant("l1".into(), "app", "acct", 1_000).unwrap();
+        let mut now = 1_000;
+        for _ in 0..admission::LEASE_MAX_RENEWALS {
+            now += 1_000;
+            let (outcome, released) = leases.renew("app", "l1", now);
+            assert!(outcome.is_some());
+            assert!(released.is_empty(), "a live renewal frees nothing");
+        }
+        now += 1_000;
+        let (outcome, released) = leases.renew("app", "l1", now);
+        assert!(outcome.is_none(), "the budget is spent");
+        assert_eq!(released.len(), 1, "the slot comes back exactly once");
+        assert_eq!(leases.len(), 0);
     }
 
     #[test]
