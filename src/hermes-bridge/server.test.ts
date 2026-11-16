@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { exchangeEnrollment, isEnrollmentCode, parseEnrollmentCode } from "./enroll.js";
 import { runDoctor } from "./doctor.js";
-import { createBridge, conversationKey, edgeHeaders, nousHeaders } from "./server.js";
+import { createBridge, conversationKey, edgeHeaders, isSaturationStatus, nousHeaders } from "./server.js";
 import { DEFAULT_BRIDGE_CONFIG, type BridgeConfig, type BridgeSecrets, type ModelMapping } from "./config.js";
 
 const MAPPINGS: ModelMapping[] = [
@@ -256,6 +256,79 @@ test("health never exposes a secret value", async () => {
     }
     assert.match(text, /chars/);
   });
+});
+
+// --- saturation fallback ----------------------------------------------------
+
+test("an edge 429 falls back to Nous instead of surfacing to the harness", async () => {
+  // 429 is what the edge answers when the edge pool are saturated: precisely the
+  // case the fallback exists for.
+  const { fetchImpl, calls } = scriptedFetch([
+    jsonResponse({ decision: "admit", lease: "adml_x" }),
+    jsonResponse({ error: { code: "capacity_unavailable" } }, 429),
+    jsonResponse({ choices: [{ message: { content: "from nous" } }] }),
+  ]);
+  const bridge = createBridge({ config: config(), secrets: SECRETS, mappings: MAPPINGS, fetchImpl });
+  await withBridge(bridge, async (baseUrl) => {
+    const response = await post(
+      baseUrl,
+      "/v1/chat/completions",
+      { model: "hermes-4-405b", messages: [] },
+      bridge.localKey,
+    );
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { choices: Array<{ message: { content: string } }> };
+    assert.equal(body.choices[0]?.message.content, "from nous");
+  });
+  assert.match(calls[2]!.url, /nousresearch/);
+  assert.equal(JSON.parse(String(calls[2]!.init!.body)).model, "hermes-4-405b");
+});
+
+test("an edge 503 for missing capacity also falls back", async () => {
+  // `admit` here is deliberate: it exercises the *response* status path rather
+  // than the admission decision, which is the case a real edge can still hit
+  // when capacity disappears between the probe and the forward.
+  const { fetchImpl, calls } = scriptedFetch([
+    jsonResponse({ decision: "admit", lease: "adml_y" }),
+    jsonResponse({ error: { code: "no_accounts" } }, 503),
+    jsonResponse({ choices: [] }),
+  ]);
+  const bridge = createBridge({ config: config(), secrets: SECRETS, mappings: MAPPINGS, fetchImpl });
+  await withBridge(bridge, async (baseUrl) => {
+    const response = await post(
+      baseUrl,
+      "/v1/chat/completions",
+      { model: "hermes-4-405b", messages: [] },
+      bridge.localKey,
+    );
+    assert.equal(response.status, 200);
+  });
+  assert.match(calls[2]!.url, /nousresearch/);
+});
+
+test("a 400 from the edge is a client error and must not be retried", async () => {
+  // Retrying a malformed request to a second provider would double the failure
+  // and hide the real cause from the caller.
+  const { fetchImpl, calls } = scriptedFetch([
+    jsonResponse({ decision: "admit" }),
+    jsonResponse({ error: { message: "bad input" } }, 400),
+  ]);
+  const bridge = createBridge({ config: config(), secrets: SECRETS, mappings: MAPPINGS, fetchImpl });
+  await withBridge(bridge, async (baseUrl) => {
+    const response = await post(
+      baseUrl,
+      "/v1/chat/completions",
+      { model: "hermes-4-405b", messages: [] },
+      bridge.localKey,
+    );
+    assert.equal(response.status, 400);
+  });
+  assert.equal(calls.length, 2, "no third attempt");
+});
+
+test("saturation statuses are recognised, ordinary ones are not", () => {
+  for (const status of [429, 503, 529]) assert.ok(isSaturationStatus(status), String(status));
+  for (const status of [400, 401, 404, 500]) assert.equal(isSaturationStatus(status), false, String(status));
 });
 
 // --- doctor -----------------------------------------------------------------

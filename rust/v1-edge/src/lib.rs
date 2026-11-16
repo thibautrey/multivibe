@@ -14038,8 +14038,13 @@ async fn capacity_events_handler(
         let current = state.capacity_version.load(AtomicOrdering::Relaxed);
         if current != last_version {
             last_version = current;
+            // One version, two names: an admission decision *is* a capacity
+            // change, and a client that only cares about its own share should
+            // not have to parse capacity events. The id stays shared so a
+            // `Last-Event-ID` resume covers both.
             yield Ok::<Bytes, Infallible>(Bytes::from(format!(
-                "id: {current}\nevent: capacity.changed\ndata: {}\n\n",
+                "id: {current}\nevent: capacity.changed\ndata: {}\n\n\nid: {current}\nevent: admission.changed\ndata: {}\n\n",
+                json!({"version": current}),
                 json!({"version": current}),
             )));
         }
@@ -14054,7 +14059,8 @@ async fn capacity_events_handler(
                     if current == last_version { continue; }
                     last_version = current;
                     yield Ok::<Bytes, Infallible>(Bytes::from(format!(
-                        "id: {current}\nevent: capacity.changed\ndata: {}\n\n",
+                        "id: {current}\nevent: capacity.changed\ndata: {}\n\n\nid: {current}\nevent: admission.changed\ndata: {}\n\n",
+                        json!({"version": current}),
                         json!({"version": current}),
                     )));
                 }
