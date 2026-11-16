@@ -18,7 +18,7 @@
 //! farms session identifiers could defeat the share entirely.
 
 use std::collections::HashMap;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 /// Cloudflare closes a proxied response that yields no byte for 100s. Any
 /// inline wait must finish well inside that budget, so the inline path is
@@ -51,13 +51,6 @@ pub const DEFAULT_GRACE_DROP_PRIORITY_ABOVE: f64 = 0.85;
 pub const DEFAULT_GRACE_TTL_MS: u64 = 20 * 60 * 1_000;
 pub const DEFAULT_GRACE_MAX_AGE_MS: u64 = 2 * 60 * 60 * 1_000;
 pub const DEFAULT_GRACE_MAX_ENTRIES: usize = 10_000;
-
-pub fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
 
 /// A recurring period that scales an application's fair share.
 #[derive(Debug, Clone, PartialEq)]
@@ -376,14 +369,6 @@ impl GraceRegistry {
         self.entries.len()
     }
 
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
-    pub fn clear(&mut self) {
-        self.entries.clear();
-    }
 }
 
 /// One application's view of one account at admission time.
@@ -393,16 +378,6 @@ pub struct AccountPressure {
     pub account_active: u32,
     pub application_active: u32,
     pub grace_active: u32,
-}
-
-impl AccountPressure {
-    #[must_use]
-    pub fn utilisation(&self) -> f64 {
-        if self.capacity == 0 {
-            return 1.0;
-        }
-        (self.account_active as f64 / self.capacity as f64).clamp(0.0, 1.0)
-    }
 }
 
 /// The pure decision function. Kept free of locks and I/O so it can be tested
@@ -688,7 +663,7 @@ mod tests {
     fn empty_session_identity_never_earns_grace() {
         let mut registry = GraceRegistry::new(GracePolicy::default());
         registry.observe("app", "", "acct", 9_999, 1_000);
-        assert!(registry.is_empty());
+        assert_eq!(registry.len(), 0);
         assert!(!registry.qualifies("app", "", 1_000));
     }
 }

@@ -80,10 +80,13 @@ test("an Access login redirect is not accepted as a credential response", async 
 // --- request shape ----------------------------------------------------------
 
 test("conversation identity comes from headers before the body", () => {
+  // `session_id` wins because it is the one header every OpenAI-compatible
+  // harness sends; `thread-id` is the Codex-specific fallback.
   assert.equal(
     conversationKey({ "thread-id": "thread-1", session_id: "s-header" }, { prompt_cache_key: "s-body" }),
-    "thread-1",
+    "s-header",
   );
+  assert.equal(conversationKey({ "thread-id": "thread-1" }, {}), "thread-1");
   assert.equal(conversationKey({}, { prompt_cache_key: "s-body" }), "s-body");
   assert.equal(conversationKey({}, {}), undefined);
 });
@@ -119,18 +122,19 @@ test("an edge admission is consumed and forwarded as a lease", async () => {
     jsonResponse({ choices: [{ message: { content: "hi" } }] }),
   ]);
   const bridge = createBridge({ config: config(), secrets: SECRETS, mappings: MAPPINGS, fetchImpl });
-  const response = await dispatch(bridge, "/v1/chat/completions", {
-    model: "hermes-4-405b",
-    messages: [{ role: "user", content: "hello" }],
+  await withBridge(bridge, async (baseUrl) => {
+    const response = await post(baseUrl, "/v1/chat/completions", {
+      model: "hermes-4-405b",
+      messages: [{ role: "user", content: "hello" }],
+    }, bridge.localKey);
+    assert.equal(response.status, 200);
   });
-  assert.equal(response.status, 200);
   assert.match(calls[0]!.url, /\/admission$/);
   assert.match(calls[1]!.url, /^https:\/\/multivibe\.pleiades\.solutions\/v1\/chat\/completions$/);
   const headers = calls[1]!.init!.headers as Record<string, string>;
   assert.equal(headers["x-multivibe-lease"], "adml_abc");
   // The model is rewritten to the edge's identifier, not the harness's.
-  const body = JSON.parse(String(calls[1]!.init!.body));
-  assert.equal(body.model, "nousresearch/hermes-4-405b");
+  assert.equal(JSON.parse(String(calls[1]!.init!.body)).model, "nousresearch/hermes-4-405b");
 });
 
 test("an unreachable edge is transparently served by Nous", async () => {
@@ -139,14 +143,15 @@ test("an unreachable edge is transparently served by Nous", async () => {
     jsonResponse({ choices: [{ message: { content: "hi" } }] }),
   ]);
   const bridge = createBridge({ config: config(), secrets: SECRETS, mappings: MAPPINGS, fetchImpl });
-  const response = await dispatch(bridge, "/v1/chat/completions", {
-    model: "hermes-4-405b",
-    messages: [{ role: "user", content: "hello" }],
+  await withBridge(bridge, async (baseUrl) => {
+    const response = await post(baseUrl, "/v1/chat/completions", {
+      model: "hermes-4-405b",
+      messages: [{ role: "user", content: "hello" }],
+    }, bridge.localKey);
+    assert.equal(response.status, 200);
   });
-  assert.equal(response.status, 200);
   assert.match(calls[1]!.url, /^https:\/\/inference-api\.nousresearch\.com\/v1\/chat\/completions$/);
-  const body = JSON.parse(String(calls[1]!.init!.body));
-  assert.equal(body.model, "hermes-4-405b");
+  assert.equal(JSON.parse(String(calls[1]!.init!.body)).model, "hermes-4-405b");
 });
 
 test("a switched conversation stays on Nous for its next turn", async () => {
@@ -165,21 +170,19 @@ test("a switched conversation stays on Nous for its next turn", async () => {
     fetchImpl,
     now: () => clock,
   });
-  await dispatch(bridge, "/v1/chat/completions", {
-    model: "hermes-4-405b",
-    messages: [{ role: "user", content: "one" }],
-    prompt_cache_key: "conv-1",
+  await withBridge(bridge, async (baseUrl) => {
+    const key = bridge.localKey;
+    await post(baseUrl, "/v1/chat/completions", { model: "hermes-4-405b", messages: [] }, key, {
+      "thread-id": "conv-1",
+    });
+    clock += 30_000;
+    await post(baseUrl, "/v1/chat/completions", { model: "hermes-4-405b", messages: [] }, key, {
+      "thread-id": "conv-1",
+    });
   });
-  clock += 30_000;
-  await dispatch(bridge, "/v1/chat/completions", {
-    model: "hermes-4-405b",
-    messages: [{ role: "user", content: "two" }],
-    prompt_cache_key: "conv-1",
-  });
-  // Only the first turn probed and hit Nous; the second went straight to Nous
-  // without asking the edge at all.
-  assert.equal(calls.length, 4, "two turns, two requests each at most");
-  assert.match(calls[3]!.url, /nousresearch/);
+  // Only the first turn probed the edge; the second went straight to Nous.
+  assert.equal(calls.length, 3, "probe + edge-fail fallback + sticky Nous");
+  assert.match(calls[2]!.url, /nousresearch/);
 });
 
 test("stickiness expires so the conversation returns to the edge", async () => {
@@ -197,58 +200,62 @@ test("stickiness expires so the conversation returns to the edge", async () => {
     fetchImpl,
     now: () => clock,
   });
-  await dispatch(bridge, "/v1/chat/completions", {
-    model: "hermes-4-405b",
-    messages: [],
-    prompt_cache_key: "conv-2",
-  });
-  clock += DEFAULT_BRIDGE_CONFIG.nousStickinessMs + 1;
-  await dispatch(bridge, "/v1/chat/completions", {
-    model: "hermes-4-405b",
-    messages: [],
-    prompt_cache_key: "conv-2",
+  await withBridge(bridge, async (baseUrl) => {
+    const key = bridge.localKey;
+    await post(baseUrl, "/v1/chat/completions", { model: "hermes-4-405b", messages: [] }, key, {
+      "thread-id": "conv-2",
+    });
+    clock += DEFAULT_BRIDGE_CONFIG.nousStickinessMs + 1;
+    await post(baseUrl, "/v1/chat/completions", { model: "hermes-4-405b", messages: [] }, key, {
+      "thread-id": "conv-2",
+    });
   });
   assert.match(calls[2]!.url, /\/admission$/);
+  assert.match(calls[3]!.url, /^https:\/\/multivibe\.pleiades\.solutions/);
 });
 
 test("an unmapped model fails explicitly instead of being downgraded", async () => {
   const { fetchImpl, calls } = scriptedFetch([jsonResponse({})]);
   const bridge = createBridge({ config: config(), secrets: SECRETS, mappings: MAPPINGS, fetchImpl });
-  const response = await dispatch(bridge, "/v1/chat/completions", {
-    model: "unmapped-model",
-    messages: [],
+  await withBridge(bridge, async (baseUrl) => {
+    const response = await post(baseUrl, "/v1/chat/completions", {
+      model: "unmapped-model",
+      messages: [],
+    }, bridge.localKey);
+    assert.equal(response.status, 503);
+    const body = (await response.json()) as { error: { code: string } };
+    assert.equal(body.error.code, "no_equivalent_model");
   });
-  assert.equal(response.status, 503);
   assert.equal(calls.length, 0, "no upstream was contacted");
-  const body = (await response.json()) as { error: { code: string } };
-  assert.equal(body.error.code, "no_equivalent_model");
 });
 
 test("a local key is required, so another process cannot spend the credentials", async () => {
   const bridge = createBridge({ config: config(), secrets: SECRETS, mappings: MAPPINGS });
-  const response = await dispatch(bridge, "/v1/chat/completions", { model: "hermes-4-405b" }, {
-    key: "wrong-key",
+  await withBridge(bridge, async (baseUrl) => {
+    const response = await post(baseUrl, "/v1/chat/completions", { model: "hermes-4-405b" }, "wrong-key");
+    assert.equal(response.status, 401);
   });
-  assert.equal(response.status, 401);
 });
 
 test("models are listed from the mapping table, not invented", async () => {
   const bridge = createBridge({ config: config(), secrets: SECRETS, mappings: MAPPINGS });
-  const response = await dispatch(bridge, "/v1/models", undefined, { method: "GET", body: "" });
-  assert.equal(response.status, 200);
-  const body = (await response.json()) as { data: Array<{ id: string }> };
-  assert.deepEqual(body.data.map((entry) => entry.id), ["hermes-4-405b"]);
+  await withBridge(bridge, async (baseUrl) => {
+    const response = await get(baseUrl, "/v1/models", bridge.localKey);
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { data: Array<{ id: string }> };
+    assert.deepEqual(body.data.map((entry) => entry.id), ["hermes-4-405b"]);
+  });
 });
 
 test("health never exposes a secret value", async () => {
   const bridge = createBridge({ config: config(), secrets: SECRETS, mappings: MAPPINGS });
-  const response = await dispatch(bridge, "/health", undefined, { method: "GET", body: "" });
-  const text = await response.text();
-  assert.equal(response.status, 200);
-  for (const secret of Object.values(SECRETS)) {
-    assert.ok(!text.includes(secret), `leaked ${secret.slice(0, 4)}...`);
-  }
-  assert.match(text, /chars/);
+  await withBridge(bridge, async (baseUrl) => {
+    const text = await (await get(baseUrl, "/health")).text();
+    for (const secret of Object.values(SECRETS)) {
+      assert.ok(!text.includes(secret), `leaked ${secret.slice(0, 4)}...`);
+    }
+    assert.match(text, /chars/);
+  });
 });
 
 // --- doctor -----------------------------------------------------------------
@@ -266,63 +273,50 @@ test("doctor reports a missing Nous key as a warning, not a failure", async () =
   assert.ok(!JSON.stringify(report).includes('"k"'));
 });
 
+
 // --- harness ----------------------------------------------------------------
 
 type Bridge = ReturnType<typeof createBridge>;
 
-/** Drive the bridge's handler without opening a socket. */
-async function dispatch(
+/**
+ * Drive the bridge over a real loopback socket.
+ *
+ * A fake request object cannot reproduce header handling, streaming or the
+ * status contract, and those are exactly what these tests exist to prove.
+ */
+async function withBridge(
   bridge: Bridge,
+  run: (baseUrl: string) => Promise<void>,
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    bridge.server.once("error", reject);
+    bridge.server.listen(0, "127.0.0.1", () => resolve());
+  });
+  const address = bridge.server.address();
+  if (typeof address !== "object" || address === null) throw new Error("no address");
+  try {
+    await run(`http://127.0.0.1:${address.port}`);
+  } finally {
+    await new Promise<void>((resolve) => bridge.server.close(() => resolve()));
+  }
+}
+
+function post(
+  baseUrl: string,
   pathname: string,
-  body?: unknown,
-  options: { method?: string; body?: string; key?: string } = {},
+  body: unknown,
+  key: string,
+  headers: Record<string, string> = {},
 ): Promise<Response> {
-  const payload =
-    options.body !== undefined
-      ? options.body
-      : body === undefined
-        ? ""
-        : JSON.stringify(body);
-  const requestHeaders = new Headers({
-    authorization: `Bearer ${options.key ?? bridge.localKey}`,
-    "content-type": "application/json",
+  return fetch(`${baseUrl}${pathname}`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${key}`, "content-type": "application/json", ...headers },
+    body: JSON.stringify(body),
   });
-  const request = new Request(`http://127.0.0.1:8787${pathname}`, {
-    method: options.method ?? (payload ? "POST" : "GET"),
-    headers: requestHeaders,
-    ...(payload ? { body: payload } : {}),
+}
+
+function get(baseUrl: string, pathname: string, key?: string): Promise<Response> {
+  return fetch(`${baseUrl}${pathname}`, {
+    headers: key ? { authorization: `Bearer ${key}` } : {},
   });
-  // The handler is Node-level; adapt the web Request into the minimal shape it
-  // reads so the test does not need a listening socket.
-  const nodeRequest = Object.assign(request, {
-    url: pathname,
-    method: request.method,
-    headers: Object.fromEntries(requestHeaders.entries()),
-    async *[Symbol.asyncIterator]() {
-      if (payload) yield Buffer.from(payload);
-    },
-  }) as unknown as Parameters<Bridge["handler"]>[0];
-  let status = 0;
-  let headers: Record<string, string> = {};
-  const chunks: Buffer[] = [];
-  const response = {
-    headersSent: false,
-    writeHead(next: number, nextHeaders: Record<string, string>) {
-      status = next;
-      headers = nextHeaders;
-      this.headersSent = true;
-      return this;
-    },
-    write(chunk: Buffer) {
-      chunks.push(Buffer.from(chunk));
-      return true;
-    },
-    end(chunk?: Buffer) {
-      if (chunk) chunks.push(Buffer.from(chunk));
-      return this;
-    },
-    destroy() {},
-  } as unknown as Parameters<Bridge["handler"]>[1];
-  await bridge.handler(nodeRequest, response);
-  return new Response(Buffer.concat(chunks), { status, headers });
 }

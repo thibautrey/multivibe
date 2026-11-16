@@ -11,6 +11,7 @@ mod chat_tools;
 mod codex_prefix;
 mod confidential;
 mod dashboard;
+mod enrollment;
 mod idempotency;
 mod lease;
 mod images;
@@ -788,6 +789,70 @@ impl AccountStore {
             data: data.clone(),
         });
         Ok(data)
+    }
+
+    /// Atomically add a proxy API key and its application policy.
+    ///
+    /// Enrollment must be exactly-once: the code is consumed and the credential
+    /// created in one write, so a retried exchange cannot mint a second key.
+    pub async fn add_enrolled_application(
+        &self,
+        application: &str,
+        key: &str,
+        share: admission::ApplicationShare,
+        windows: Option<Vec<StoredShareWindow>>,
+    ) -> Result<(), String> {
+        let _guard = self.write_lock.lock().await;
+        let mut data = self.snapshot().await?;
+        if data
+            .proxy_api_keys
+            .iter()
+            .any(|entry| entry.application == application)
+        {
+            return Err(format!("application {application} already exists"));
+        }
+        data.proxy_api_keys.push(StoredProxyApiKey {
+            id: Uuid::new_v4().to_string(),
+            application: application.to_owned(),
+            key: key.to_owned(),
+            created_at: Some(now_ms()),
+        });
+        if !data
+            .application_policies
+            .iter()
+            .any(|policy| policy.application == application)
+        {
+            data.application_policies.push(ApplicationPolicy {
+                application: application.to_owned(),
+                fairness_weight: Some(1.0),
+                max_concurrent_share: Some(share.max_concurrent_share),
+                burst: Some(share.burst),
+                share_windows: windows,
+                webhooks: Vec::new(),
+            });
+        }
+        let serialized = serde_json::to_vec_pretty(&data)
+            .map_err(|error| format!("failed to serialize account store: {error}"))?;
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent)
+                .await
+                .map_err(|error| format!("failed to create account store directory: {error}"))?;
+        }
+        let temporary = self
+            .path
+            .with_extension(format!("tmp-{}", Uuid::new_v4().simple()));
+        fs::write(&temporary, serialized)
+            .await
+            .map_err(|error| format!("failed to write account store: {error}"))?;
+        fs::rename(&temporary, self.path.as_ref())
+            .await
+            .map_err(|error| format!("failed to replace account store: {error}"))?;
+        let modified = fs::metadata(self.path.as_ref())
+            .await
+            .ok()
+            .and_then(|meta| meta.modified().ok());
+        *self.cache.write().await = Some(CachedStore { modified, data });
+        Ok(())
     }
 
     pub async fn update_account<F>(&self, account_id: &str, update: F) -> Result<(), String>
@@ -6078,6 +6143,7 @@ pub struct EdgeState {
     admission: Arc<AdmissionController>,
     admission_metrics: Arc<AdmissionMetrics>,
     admission_leases: Arc<Mutex<lease::LeaseRegistry>>,
+    enrollment: Arc<Mutex<enrollment::EnrollmentCodes>>,
     drain: DrainController,
     shutdown: broadcast::Sender<()>,
     realtime_secrets: realtime_voice::SecretStore,
@@ -6177,6 +6243,7 @@ impl EdgeState {
             admission_leases: Arc::new(Mutex::new(lease::LeaseRegistry::new(
                 lease::LeaseLimits::default(),
             ))),
+            enrollment: Arc::new(Mutex::new(enrollment::EnrollmentCodes::new())),
             drain: DrainController::default(),
             shutdown,
             realtime_secrets: realtime_voice::SecretStore::default(),
@@ -11822,7 +11889,6 @@ async fn inference_handler(State(state): State<EdgeState>, req: Request<Body>) -
         );
         return response;
     }
-    let lease_id = header_value(&headers, "x-multivibe-lease");
     let mut response = match proxy_inference(
         &state,
         &path,
@@ -13368,7 +13434,7 @@ async fn admission_decision_for(
     let application_key = share.is_some().then_some(application);
     let granted = {
         let mut leases = state.admission_leases.lock().await;
-        leases.grant(lease_id.clone(), application, model, &account.id, now)
+        leases.grant(lease_id.clone(), application, &account.id, now)
     };
     match granted {
         Ok(released) => {
@@ -13426,6 +13492,214 @@ async fn admission_decision_for(
 }
 
 /// `GET /v1/admission/{lease}` — read or renew a lease.
+#[derive(Debug, Deserialize)]
+struct EnrollmentIssueRequest {
+    /// The application name the issued key will authenticate as.
+    application: String,
+    /// Model substitutions the client's bridge will use.
+    #[serde(default)]
+    mappings: Vec<EnrollmentMapping>,
+    #[serde(default)]
+    max_concurrent_share: Option<f64>,
+    #[serde(default)]
+    burst: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct EnrollmentMapping {
+    from: String,
+    edge: String,
+    nous: String,
+}
+
+/// `POST /admin/hermes-bridge/enrollment` — issue a one-time code.
+///
+/// Operator-only: this mints a credential, so it requires the admin token. The
+/// code is returned once and never stored in plaintext elsewhere.
+async fn enrollment_issue_handler(State(state): State<EdgeState>, req: Request<Body>) -> Response {
+    let (parts, body) = req.into_parts();
+    if !dashboard::request_authorized(&parts.headers, &state.config) {
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "admin authentication is required",
+            "unauthorized",
+        );
+    }
+    let bytes = match axum::body::to_bytes(body, 64 * 1024).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "enrollment request body is invalid",
+                "invalid_request_error",
+            );
+        }
+    };
+    let request: EnrollmentIssueRequest = match serde_json::from_slice(&bytes) {
+        Ok(request) => request,
+        Err(_) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "enrollment request must be a JSON object",
+                "invalid_request_error",
+            );
+        }
+    };
+    let application = request.application.trim().to_owned();
+    // Reuse the same grammar the proxy key store enforces, so an issued key can
+    // always authenticate.
+    if application.is_empty()
+        || application.len() > 80
+        || !application
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric())
+        || !application
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "application must match [A-Za-z0-9][A-Za-z0-9._-]{0,79}",
+            "invalid_application",
+        );
+    }
+    if request.mappings.iter().any(|mapping| {
+        mapping.from.trim().is_empty() || mapping.edge.trim().is_empty() || mapping.nous.trim().is_empty()
+    }) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "each mapping needs from, edge and nous",
+            "invalid_mapping",
+        );
+    }
+    let share = admission::ApplicationShare {
+        max_concurrent_share: request
+            .max_concurrent_share
+            .filter(|value| value.is_finite())
+            .map(|value| value.clamp(0.0, 1.0))
+            .unwrap_or(admission::DEFAULT_MAX_CONCURRENT_SHARE),
+        burst: request.burst.unwrap_or(admission::DEFAULT_BURST).min(8),
+        share_windows: admission::ShareWindow::default_windows(),
+    };
+    let now = now_ms();
+    let code = format!("mvenr_{}", Uuid::new_v4().simple().to_string() + &Uuid::new_v4().simple().to_string());
+    let grant = enrollment::EnrollmentGrant {
+        application: application.clone(),
+        max_concurrent_share: share.max_concurrent_share,
+        burst: share.burst,
+        mappings: request
+            .mappings
+            .iter()
+            .map(|mapping| enrollment::ModelMapping {
+                from: mapping.from.trim().to_owned(),
+                edge: mapping.edge.trim().to_owned(),
+                nous: mapping.nous.trim().to_owned(),
+            })
+            .collect(),
+        expires_at: now + enrollment::CODE_TTL_MS,
+    };
+    if let Err(error) = state.enrollment.lock().await.issue(&code, grant, now) {
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, error, error);
+    }
+    json_response(
+        StatusCode::OK,
+        json!({
+            "object": "multivibe.hermes-bridge.enrollment",
+            "application": application,
+            "code": code,
+            "expiresAt": now + enrollment::CODE_TTL_MS,
+            "maxConcurrentShare": share.max_concurrent_share,
+            "burst": share.burst,
+            "mappings": request.mappings,
+            "note": "This code is shown once and works once. Send it in the enrollment prompt; it cannot be retrieved again.",
+        }),
+    )
+}
+
+#[derive(Debug, Deserialize)]
+struct EnrollmentExchangeRequest {
+    code: String,
+}
+
+/// `POST /hermes-bridge/enrollment/exchange` — redeem a code for a key.
+///
+/// Unauthenticated by design: the code itself is the credential, which is why
+/// it is single-use, short-lived, and issued only by an authenticated operator.
+async fn enrollment_exchange_handler(
+    State(state): State<EdgeState>,
+    req: Request<Body>,
+) -> Response {
+    let body = match axum::body::to_bytes(req.into_body(), 16 * 1024).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "enrollment request body is invalid",
+                "invalid_request_error",
+            );
+        }
+    };
+    let request: EnrollmentExchangeRequest = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(_) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "enrollment request must be a JSON object",
+                "invalid_request_error",
+            );
+        }
+    };
+    let now = now_ms();
+    let grant = match state
+        .enrollment
+        .lock()
+        .await
+        .exchange(request.code.trim(), now)
+    {
+        Ok(grant) => grant,
+        Err(error) => {
+            // 410 tells the bridge the code is spent; 401 that it is wrong.
+            let status = match error {
+                enrollment::ExchangeError::Used => StatusCode::GONE,
+                enrollment::ExchangeError::Expired => StatusCode::GONE,
+                enrollment::ExchangeError::Unknown => StatusCode::UNAUTHORIZED,
+            };
+            return error_response(status, "enrollment code refused", error.as_str());
+        }
+    };
+    // Mint the per-machine key now. It is returned exactly once.
+    let key = format!("mvhb_{}", Uuid::new_v4().simple().to_string() + &Uuid::new_v4().simple().to_string());
+    let share = admission::ApplicationShare {
+        max_concurrent_share: grant.max_concurrent_share,
+        burst: grant.burst,
+        share_windows: admission::ShareWindow::default_windows(),
+    };
+    if let Err(error) = state
+        .store
+        .add_enrolled_application(&grant.application, &key, share, None)
+        .await
+    {
+        return error_response(
+            StatusCode::CONFLICT,
+            format!("enrollment could not issue a credential: {error}"),
+            "enrollment_conflict",
+        );
+    }
+    json_response(
+        StatusCode::OK,
+        json!({
+            "object": "multivibe.hermes-bridge.enrollment",
+            "application": grant.application,
+            "edgeApiKey": key,
+            "mappings": grant.mappings,
+            "expiresAt": now + enrollment::CODE_TTL_MS,
+            // No Cloudflare Access values are minted here: those are provisioned
+            // out of band, one service token per client, and never in a prompt.
+        }),
+    )
+}
+
 /// `GET /admin/admission/state` — read-only operator view.
 ///
 /// Reports the effective policy and content-free counters. It never returns a
@@ -16177,6 +16451,14 @@ fn build_base_router(state: &EdgeState) -> Router<EdgeState> {
         .route("/desktop/session", get(dashboard::desktop_session_consume))
         .route("/admin/dashboard/models", get(list_models_handler).post(method_not_allowed))
         .route("/admin/admission/state", get(admission_state_handler))
+        .route(
+            "/admin/hermes-bridge/enrollment",
+            post(enrollment_issue_handler),
+        )
+        .route(
+            "/hermes-bridge/enrollment/exchange",
+            post(enrollment_exchange_handler),
+        )
         // Every inference route, both the canonical `/v1` surface and its
         // historical root aliases, terminates in this native edge. Node
         // remains a control-plane peer and hosts the internal adapter for SDK

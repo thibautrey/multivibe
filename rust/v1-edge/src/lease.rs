@@ -39,9 +39,7 @@ impl LeaseState {
 #[derive(Debug, Clone)]
 struct LeaseEntry {
     application: String,
-    model: String,
     account_id: String,
-    created_at: u64,
     expires_at: u64,
     renewals: u32,
     state: LeaseState,
@@ -99,7 +97,6 @@ impl LeaseError {
 /// What one lease reservation hands back when it is redeemed.
 #[derive(Debug)]
 pub struct LeaseRedemption {
-    pub model: String,
     pub account_id: String,
 }
 
@@ -140,7 +137,6 @@ impl LeaseRegistry {
         &mut self,
         id: String,
         application: &str,
-        model: &str,
         account_id: &str,
         now: u64,
     ) -> Result<Vec<ExpiredReservation>, LeaseError> {
@@ -160,9 +156,7 @@ impl LeaseRegistry {
             id,
             LeaseEntry {
                 application: application.to_owned(),
-                model: model.to_owned(),
                 account_id: account_id.to_owned(),
-                created_at: now,
                 expires_at: now + admission::LEASE_TTL_MS,
                 renewals: 0,
                 state: LeaseState::Admitted,
@@ -213,7 +207,6 @@ impl LeaseRegistry {
         }
         entry.state = LeaseState::Consumed;
         Some(LeaseRedemption {
-            model: entry.model.clone(),
             account_id: entry.account_id.clone(),
         })
     }
@@ -233,28 +226,11 @@ impl LeaseRegistry {
         held
     }
 
-    /// Take the reservation out of a consumed lease without releasing the slot:
-    /// the redeeming request now owns the capacity in its own right.
-    pub fn take_reservation(&mut self, application: &str, id: &str) -> Option<ExpiredReservation> {
-        let entry = self.entries.get(id)?;
-        if entry.application != application || entry.state != LeaseState::Consumed {
-            return None;
-        }
-        Some(ExpiredReservation {
-            account_id: entry.account_id.clone(),
-            application: entry.application.clone(),
-        })
-    }
-
     #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
 }
 
 #[cfg(test)]
@@ -271,7 +247,7 @@ mod tests {
     #[test]
     fn a_lease_is_redeemable_exactly_once() {
         let mut leases = registry();
-        leases.grant("l1".into(), "app", "m", "acct", 1_000).unwrap();
+        leases.grant("l1".into(), "app", "acct", 1_000).unwrap();
         let first = leases.redeem("app", "l1", 1_100).expect("first redemption");
         assert_eq!(first.account_id, "acct");
         assert!(leases.redeem("app", "l1", 1_200).is_none(), "second use fails");
@@ -280,7 +256,7 @@ mod tests {
     #[test]
     fn leases_are_scoped_to_their_application() {
         let mut leases = registry();
-        leases.grant("l1".into(), "app-a", "m", "acct", 1_000).unwrap();
+        leases.grant("l1".into(), "app-a", "acct", 1_000).unwrap();
         assert!(leases.peek("app-b", "l1", 1_000).is_none());
         assert!(leases.redeem("app-b", "l1", 1_000).is_none());
         assert!(leases.redeem("app-a", "l1", 1_000).is_some());
@@ -289,7 +265,7 @@ mod tests {
     #[test]
     fn a_lease_expires_after_its_ttl() {
         let mut leases = registry();
-        leases.grant("l1".into(), "app", "m", "acct", 1_000).unwrap();
+        leases.grant("l1".into(), "app", "acct", 1_000).unwrap();
         let after_ttl = 1_000 + admission::LEASE_TTL_MS + 1;
         assert!(leases.redeem("app", "l1", after_ttl).is_none());
         assert_eq!(leases.len(), 0, "expired lease is pruned");
@@ -298,7 +274,7 @@ mod tests {
     #[test]
     fn renewals_are_bounded_then_expire() {
         let mut leases = registry();
-        leases.grant("l1".into(), "app", "m", "acct", 1_000).unwrap();
+        leases.grant("l1".into(), "app", "acct", 1_000).unwrap();
         let mut now = 1_000;
         for expected in 1..=admission::LEASE_MAX_RENEWALS {
             now += 1_000;
@@ -315,14 +291,14 @@ mod tests {
     #[test]
     fn one_application_cannot_hoard_leases() {
         let mut leases = registry();
-        leases.grant("l1".into(), "app", "m", "acct", 1_000).unwrap();
-        leases.grant("l2".into(), "app", "m", "acct", 1_000).unwrap();
+        leases.grant("l1".into(), "app", "acct", 1_000).unwrap();
+        leases.grant("l2".into(), "app", "acct", 1_000).unwrap();
         assert_eq!(
-            leases.grant("l3".into(), "app", "m", "acct", 1_000),
+            leases.grant("l3".into(), "app", "acct", 1_000),
             Err(LeaseError::TooManyLeases)
         );
         // Another application is unaffected.
-        assert!(leases.grant("l3".into(), "other", "m", "acct", 1_000).is_ok());
+        assert!(leases.grant("l3".into(), "other", "acct", 1_000).is_ok());
     }
 
     #[test]
@@ -331,9 +307,9 @@ mod tests {
             max_entries: 1,
             max_per_application: 10,
         });
-        leases.grant("l1".into(), "app", "m", "acct", 1_000).unwrap();
+        leases.grant("l1".into(), "app", "acct", 1_000).unwrap();
         assert_eq!(
-            leases.grant("l2".into(), "app", "m", "acct", 1_000),
+            leases.grant("l2".into(), "app", "acct", 1_000),
             Err(LeaseError::RegistryFull)
         );
     }
@@ -341,10 +317,10 @@ mod tests {
     #[test]
     fn revoking_frees_the_reservation() {
         let mut leases = registry();
-        leases.grant("l1".into(), "app", "m", "acct", 1_000).unwrap();
+        leases.grant("l1".into(), "app", "acct", 1_000).unwrap();
         let released = leases.revoke("app", "l1").expect("reservation released");
         assert_eq!(released.account_id, "acct");
-        assert!(leases.is_empty());
+        assert_eq!(leases.len(), 0);
         assert!(leases.redeem("app", "l1", 1_000).is_none());
     }
 }
