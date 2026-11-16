@@ -68,20 +68,31 @@ used only for direct requests to `inference-api.nousresearch.com`.
 
 ## 3. Install and start the bridge
 
-For a service that starts at login and restarts on failure:
+For a service that starts at login and restarts on failure, run the installer
+**as yourself — never with `sudo`**:
 
 ```
-sudo ./install-hermes-bridge.sh --binary /absolute/path/to/multivibe-hermes-bridge
+./install-hermes-bridge.sh --binary /absolute/path/to/multivibe-hermes-bridge
 ```
 
-macOS installs a per-user LaunchAgent; Linux installs a systemd user unit. To run
-it in the foreground instead:
+macOS installs a per-user LaunchAgent; Linux installs a systemd user unit. Both
+belong to *your* login session, so root's home is the one place they would never
+run; the installer refuses to run as root for that reason. To run it in the
+foreground instead:
 
 ```
 multivibe-hermes-bridge run
 ```
 
-It listens on `127.0.0.1:8787` only. Then read the key the harness must present:
+It listens on `127.0.0.1:8787` only.
+
+The binary lives inside the installed MultiVibe Host app, at a path that survives
+Host updates, so the service keeps working after one. It does **not** survive
+deleting that app: if you remove the Host, run
+`./install-hermes-bridge.sh --uninstall` first, or the service will restart into a
+missing file.
+
+Then read the key the harness must present:
 
 ```
 multivibe-hermes-bridge print-key
