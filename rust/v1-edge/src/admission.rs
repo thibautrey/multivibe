@@ -13,9 +13,20 @@
 //! 4. **priority and calendar** — `shareWindows` scale the fair share so the
 //!    weekend and the night are roomier than a weekday afternoon.
 //!
-//! Invariant: grace never grants capacity beyond the application's fair share.
-//! It only decides *who* waits inside that share. Without this, a client that
-//! farms session identifiers could defeat the share entirely.
+//! Invariants: grace lends capacity, but only from a pool it cannot exceed.
+//!
+//! 1. Grace is **bounded by its own pool** (`grace.slots(capacity)`, 25 % of an
+//!    account by default), counted in *slots* — not in sessions. A session that
+//!    holds three turns has borrowed three slots. Counting sessions is what lets
+//!    one conversation take the whole account, because its count never grows.
+//! 2. Grace never exceeds **physical capacity**: it changes ordering and lends
+//!    from a small pool, it does not invent a slot.
+//! 3. Grace never lets one application take slots another application was
+//!    promised: the pool is deducted from the account, so the other tenant's
+//!    share is still there when it asks.
+//!
+//! Together these mean a client that farms session identifiers gains at most the
+//! grace pool, whatever it does with `session_id`.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -351,9 +362,15 @@ impl GraceRegistry {
         entry.decoded_tokens >= self.policy.min_decoded_tokens
     }
 
-    /// Number of distinct graced sessions currently bound to `account_id`.
+    /// How many distinct *sessions* on this account currently qualify.
+    ///
+    /// Deliberately not a capacity quantity. Sessions and slots are different
+    /// units, and deriving the grace pool from this count is exactly what let
+    /// one conversation take every slot on an account: one session never becomes
+    /// two, so the cap never bound. Admission uses the slot counter instead.
+    #[cfg(test)]
     #[must_use]
-    pub fn active_on_account(&mut self, account_id: &str, now: u64) -> u32 {
+    pub fn sessions_qualifying_on_account(&mut self, account_id: &str, now: u64) -> u32 {
         self.prune(now);
         self.entries
             .values()
@@ -562,16 +579,28 @@ mod tests {
     }
 
     #[test]
-    fn grace_never_exceeds_the_fair_share() {
+    fn grace_lends_from_its_pool_and_never_past_it() {
         let policy = share(0.25, 0);
         let grace = GracePolicy::default();
         // Capacity 8 -> fair share 2, grace pool 2.
         assert_eq!(policy.slots(8, 8, 0), 2);
         assert_eq!(grace.slots(8), 2);
-        // Application already at its share with the grace pool full: queue.
+        // At its share with the pool empty: one borrowed slot is allowed.
+        assert_eq!(
+            decide(&policy, &grace, pressure(8, 4, 2, 0), true, true, 0),
+            AdmissionDecision::Admit
+        );
+        // Application at its share with the grace pool full: queue. The pool,
+        // not the share, is what stops it.
         assert_eq!(
             decide(&policy, &grace, pressure(8, 8, 2, 2), true, true, 0),
             AdmissionDecision::Queue
+        );
+        // A qualifying session that is still inside its own share never touches
+        // the pool, so a busy pool does not punish an ordinary turn.
+        assert_eq!(
+            decide(&policy, &grace, pressure(8, 4, 1, 2), true, true, 0),
+            AdmissionDecision::Admit
         );
     }
 
@@ -727,6 +756,27 @@ mod tests {
         registry.observe("app", "", "acct", 9_999, 1_000);
         assert_eq!(registry.len(), 0);
         assert!(!registry.qualifies("app", "", 1_000));
+    }
+
+    #[test]
+    fn a_session_tally_is_not_a_slot_tally() {
+        // The unit confusion that caused the starvation bug, pinned directly:
+        // one conversation that ran three turns is one session and three slots.
+        // Any pool derived from the first number can never bind.
+        let mut registry = GraceRegistry::new(GracePolicy::default());
+        for turn in 0..3 {
+            registry.observe("app", "one-conversation", "acct", 512, 1_000 + turn);
+        }
+        assert_eq!(
+            registry.sessions_qualifying_on_account("acct", 1_002),
+            1,
+            "one session, however many turns it has taken"
+        );
+        assert_eq!(
+            GracePolicy::default().slots(8),
+            2,
+            "the pool it must be compared against is expressed in slots"
+        );
     }
 
     #[test]
