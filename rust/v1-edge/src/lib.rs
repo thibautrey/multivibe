@@ -13773,6 +13773,11 @@ fn admission_body(
         "grace": report.session_grace.as_str(),
         "graceActive": report.grace_active,
         "graceSlots": report.grace_slots,
+        // True while a qualifying session still gets slot priority. Once the
+        // account passes the degradation threshold this turns false even though
+        // `grace` stays `granted`: the conversation keeps its place in the queue
+        // but stops taking the last free slots.
+        "graceKeepsPriority": report.grace_keeps_priority,
         "switch": {
             "allowed": switch_ok,
             "reason": if switch_ok { "configured_by_caller" } else { "fallback_disabled" },
@@ -19624,6 +19629,59 @@ mod tests {
         metrics_task.abort();
         let _ = fs::remove_file(store_path).await;
         let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
+    async fn the_report_says_whether_grace_is_still_worth_anything() {
+        // `grace: granted` next to a full account was ambiguous: is the
+        // conversation still getting priority, or is it queued like everyone
+        // else? The threshold decides, so the report states it.
+        let controller = Arc::new(AdmissionController::new(Arc::new(AtomicU64::new(1))));
+        let accounts = [share_account("acct", 10)];
+        let share = hermes_share(0.5, 0);
+        let now = 1_000;
+        controller.observe_session("hermes", "conv", "acct", 512, now);
+
+        // Fill the share and take the whole account below the threshold: the
+        // session keeps priority while it borrows.
+        let mut held = Vec::new();
+        for _ in 0..5 {
+            let (lease, _) =
+                controller.acquire_for(&accounts, Some("hermes"), Some(&share), Some("conv"), now);
+            held.push(lease.expect("five of ten").1);
+        }
+        let report = controller
+            .acquire_for(&accounts, Some("hermes"), Some(&share), Some("conv"), now)
+            .1;
+        assert_eq!(report.session_grace, admission::GraceState::Granted);
+        assert!(report.grace_keeps_priority, "still below the threshold");
+
+        // Push the account past 85 %: 9 of 10 slots. Four more, not three,
+        // because 8/10 is 80 % and the threshold is inclusive at 85 %.
+        for _ in 0..4 {
+            let (lease, _) =
+                controller.acquire_for(&accounts, Some("other"), Some(&share), None, now);
+            if let Some((_, lease)) = lease {
+                held.push(lease);
+            }
+        }
+        let report = controller
+            .acquire_for(&accounts, Some("hermes"), Some(&share), Some("conv"), now)
+            .1;
+        assert_eq!(
+            report.session_grace,
+            admission::GraceState::Granted,
+            "grace is still granted: the conversation is not dropped"
+        );
+        assert!(
+            !report.grace_keeps_priority,
+            "but it no longer takes the last free slots (util={}, active={}, capacity={}, decision={:?})",
+            report.utilisation(),
+            report.account_active,
+            report.capacity,
+            report.decision
+        );
+        drop(held);
     }
 
     #[tokio::test]

@@ -430,9 +430,21 @@ pub fn decide(
     // Gate 3: the grace pool. A qualifying session may borrow a slot that is
     // physically free, on top of its share, but the pool is capped so grace
     // can never consume the whole account.
+    //
+    // Above the degradation threshold the borrowing stops even though the pool
+    // has room: at that point the account is nearly full, new conversations
+    // have nowhere to start, and an old one that keeps jumping the line is the
+    // reason. It keeps its place in the queue — it is not dropped — it simply
+    // stops being allowed to take the last free slots.
     let grace_slots = grace.slots(pressure.capacity);
     let grace_room = pressure.grace_active < grace_slots;
-    if grace_qualifies && graced_elsewhere && grace_room {
+    let utilisation = if pressure.capacity == 0 {
+        1.0
+    } else {
+        (pressure.account_active as f64 / pressure.capacity as f64).clamp(0.0, 1.0)
+    };
+    if grace_qualifies && graced_elsewhere && grace_room && grace_keeps_priority(utilisation, grace)
+    {
         return AdmissionDecision::Admit;
     }
     AdmissionDecision::Queue
@@ -681,11 +693,39 @@ mod tests {
         assert!(grace_keeps_priority(0.5, &grace));
         assert!(grace_keeps_priority(0.85, &grace));
         assert!(!grace_keeps_priority(0.86, &grace));
-        // And the conversation itself still survives at a physically free slot.
+        // Below the threshold a borrowed slot is still available.
         let policy = share(0.5, 0);
         assert_eq!(
             decide(&policy, &grace, pressure(10, 6, 5, 1), true, true, 0),
             AdmissionDecision::Admit
+        );
+    }
+
+    #[test]
+    fn an_almost_full_account_stops_lending_grace_slots() {
+        // The threshold has to change a decision, or it is decoration. Above
+        // 85 % the pool still has room, but new conversations have nowhere to
+        // start and the old one is why — so the borrowing stops. The session is
+        // not dropped: it queues like anyone else.
+        let grace = GracePolicy::default();
+        let policy = share(0.5, 0);
+        // 9 of 10 slots busy = 90 %: past the threshold, pool still has room.
+        assert_eq!(
+            decide(&policy, &grace, pressure(10, 9, 5, 0), true, true, 0),
+            AdmissionDecision::Queue,
+            "no borrowing above the degradation threshold"
+        );
+        // At exactly 85 % the session still borrows: the threshold is inclusive.
+        assert_eq!(
+            decide(&policy, &grace, pressure(20, 17, 10, 0), true, true, 0),
+            AdmissionDecision::Admit
+        );
+        // A session inside its own share is untouched by the threshold: grace
+        // is only about what happens *after* the share is spent.
+        assert_eq!(
+            decide(&policy, &grace, pressure(10, 9, 1, 0), true, true, 0),
+            AdmissionDecision::Admit,
+            "ordinary admission still works on a busy account"
         );
     }
 
