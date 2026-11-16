@@ -504,6 +504,119 @@ test("the probe asks without reserving a slot", async () => {
   assert.equal(body.reserve, false);
 });
 
+// --- streaming --------------------------------------------------------------
+
+test("an SSE stream reaches the harness incrementally, not buffered", async () => {
+  // Streaming is an agent's default. A relay that buffered the body would still
+  // produce the right final text and destroy the experience: no token appears
+  // until the whole answer is done.
+  const chunks = [
+    'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"Hel"}\n\n',
+    'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"lo"}\n\n',
+  ];
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(new TextEncoder().encode(chunk));
+      controller.close();
+    },
+  });
+  const { fetchImpl } = scriptedFetch([
+    jsonResponse({ decision: "admit" }),
+    new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } }),
+  ]);
+  const bridge = createBridge({ config: config(), secrets: SECRETS, mappings: MAPPINGS, fetchImpl });
+  await withBridge(bridge, async (baseUrl) => {
+    const response = await post(
+      baseUrl,
+      "/v1/responses",
+      { model: "hermes-4-405b", input: "hi", stream: true },
+      bridge.localKey,
+    );
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-type"), "text/event-stream");
+    const text = await response.text();
+    assert.equal(text, chunks.join(""), "every byte arrives, in order");
+  });
+});
+
+test("a mid-stream upstream failure ends the response without inventing content", async () => {
+  // There is nothing to recover: the turn already started, so replaying it to a
+  // second provider would duplicate output. The bridge must simply stop.
+  let sent = false;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (!sent) {
+        sent = true;
+        controller.enqueue(new TextEncoder().encode("data: one\n\n"));
+        return;
+      }
+      controller.error(new Error("upstream reset"));
+    },
+  });
+  const { fetchImpl } = scriptedFetch([
+    jsonResponse({ decision: "admit" }),
+    new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } }),
+  ]);
+  const bridge = createBridge({ config: config(), secrets: SECRETS, mappings: MAPPINGS, fetchImpl });
+  await withBridge(bridge, async (baseUrl) => {
+    const response = await post(
+      baseUrl,
+      "/v1/responses",
+      { model: "hermes-4-405b", input: "hi", stream: true },
+      bridge.localKey,
+    );
+    assert.equal(response.status, 200);
+    // Whatever arrives is only what the upstream sent: no fabricated frames.
+    const text = await response.text().catch(() => "");
+    assert.ok(!text.includes("event: error"), "no invented error frame");
+  });
+});
+
+// --- responses dialect ------------------------------------------------------
+
+test("/v1/responses reaches the edge and is passed through unchanged", async () => {
+  // The Responses dialect is what a current Hermes is most likely to speak, and
+  // nothing exercised it: a typo in the path mapping would have shipped.
+  const { fetchImpl, calls } = scriptedFetch([
+    jsonResponse({ decision: "admit" }),
+    jsonResponse({ id: "resp_1", object: "response", status: "completed", output: [] }),
+  ]);
+  const bridge = createBridge({ config: config(), secrets: SECRETS, mappings: MAPPINGS, fetchImpl });
+  await withBridge(bridge, async (baseUrl) => {
+    const response = await post(
+      baseUrl,
+      "/v1/responses",
+      { model: "hermes-4-405b", input: "hello" },
+      bridge.localKey,
+    );
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { object?: string };
+    assert.equal(body.object, "response");
+  });
+  assert.match(calls[1]!.url, /^https:\/\/multivibe\.pleiades\.solutions\/v1\/responses$/);
+  assert.equal(JSON.parse(String(calls[1]!.init!.body)).model, "nousresearch/hermes-4-405b");
+});
+
+test("the responses dialect is preserved when falling back to Nous", async () => {
+  // A fallback that silently rewrote the dialect would break the harness's parser.
+  const { fetchImpl, calls } = scriptedFetch([
+    jsonResponse({ decision: "admit" }),
+    jsonResponse({ error: {} }, 429),
+    jsonResponse({ id: "resp_n", object: "response", output: [] }),
+  ]);
+  const bridge = createBridge({ config: config(), secrets: SECRETS, mappings: MAPPINGS, fetchImpl });
+  await withBridge(bridge, async (baseUrl) => {
+    const response = await post(
+      baseUrl,
+      "/v1/responses",
+      { model: "hermes-4-405b", input: "hello" },
+      bridge.localKey,
+    );
+    assert.equal(response.status, 200);
+  });
+  assert.match(calls[2]!.url, /^https:\/\/inference-api\.nousresearch\.com\/v1\/responses$/);
+});
+
 // --- capacity cache ---------------------------------------------------------
 
 test("a fresh capacity reading is reused instead of probed per turn", async () => {
