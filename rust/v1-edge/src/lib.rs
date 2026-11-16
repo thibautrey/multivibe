@@ -6,11 +6,13 @@
 //! means request bytes, upstream bytes and SSE frames do not cross a JS/native
 //! boundary on the hot path.
 
+mod admission;
 mod chat_tools;
 mod codex_prefix;
 mod confidential;
 mod dashboard;
 mod idempotency;
+mod lease;
 mod images;
 mod model_pricing;
 mod model_metadata;
@@ -172,6 +174,11 @@ pub struct EdgeConfig {
     pub realtime_webrtc_call_url: Option<String>,
     pub realtime_voice: realtime_voice::Config,
     pub proxy_models: Vec<String>,
+    /// Master switch for the layered admission policy (fair share, grace,
+    /// share windows). Disabled by default: the phase-0 shadow rollout and the
+    /// phase-1 canary both require an explicit enable.
+    pub admission_policy_enabled: bool,
+    pub admission_grace: admission::GracePolicy,
     pub admin_token: String,
     pub configured_api_keys: Vec<(String, String)>,
     pub internal_job_token: Option<String>,
@@ -255,6 +262,8 @@ impl Default for EdgeConfig {
                 "gpt-5.2-codex".to_owned(),
                 "gpt-5-codex".to_owned(),
             ],
+            admission_policy_enabled: false,
+            admission_grace: admission::GracePolicy::default(),
             admin_token: String::new(),
             configured_api_keys: Vec::new(),
             internal_job_token: None,
@@ -468,6 +477,27 @@ impl EdgeConfig {
             realtime_webrtc_call_url: realtime_url,
             realtime_voice: realtime_voice::Config::from_env(),
             proxy_models,
+            admission_policy_enabled: env("ADMISSION_POLICY_ENABLED")
+                .is_some_and(|value| value.eq_ignore_ascii_case("true")),
+            admission_grace: admission::GracePolicy {
+                ttl: std::time::Duration::from_millis(
+                    env("ADMISSION_GRACE_TTL_MS")
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .unwrap_or(admission::DEFAULT_GRACE_TTL_MS)
+                        .max(1_000),
+                ),
+                max_age: std::time::Duration::from_millis(
+                    env("ADMISSION_GRACE_MAX_AGE_MS")
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .unwrap_or(admission::DEFAULT_GRACE_MAX_AGE_MS)
+                        .max(1_000),
+                ),
+                max_entries: env("ADMISSION_GRACE_MAX_ENTRIES")
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(admission::DEFAULT_GRACE_MAX_ENTRIES)
+                    .max(1),
+                ..admission::GracePolicy::default()
+            },
             admin_token: env("ADMIN_TOKEN").unwrap_or_default(),
             configured_api_keys,
             internal_job_token: env("V1_EDGE_INTERNAL_JOB_TOKEN"),
@@ -660,8 +690,30 @@ pub struct ApplicationWebhook {
 pub struct ApplicationPolicy {
     pub application: String,
     pub fairness_weight: Option<f64>,
+    /// Fraction of an account's slots this application may hold at admission.
+    /// Absent keeps `admission::DEFAULT_MAX_CONCURRENT_SHARE`.
+    pub max_concurrent_share: Option<f64>,
+    /// Extra slots available only while no other application uses the account.
+    pub burst: Option<u32>,
+    /// Recurring periods that widen the share. Absent keeps the weekday-night
+    /// and weekend default; an empty array disables the calendar entirely.
+    pub share_windows: Option<Vec<StoredShareWindow>>,
     #[serde(default)]
     pub webhooks: Vec<ApplicationWebhook>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredShareWindow {
+    pub start_hour: u8,
+    pub end_hour: u8,
+    pub days: Option<Vec<u8>>,
+    #[serde(default = "default_share_multiplier")]
+    pub multiplier: f64,
+}
+
+fn default_share_multiplier() -> f64 {
+    2.0
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -3881,6 +3933,17 @@ struct StreamingReply {
     capacity_lease: AdmissionLease,
     activity_lease: Option<ActivityLease>,
     stream_heartbeat: Duration,
+    /// Session credit inputs. The stream is the only place a completed turn's
+    /// output is known, so it must carry what crediting needs.
+    admission: Option<StreamAdmission>,
+}
+
+/// What a streaming turn needs to credit its session when it finishes.
+struct StreamAdmission {
+    state: EdgeState,
+    application: String,
+    session: String,
+    account_id: String,
 }
 
 enum ProxyResult {
@@ -4009,11 +4072,21 @@ fn draining_response() -> Response {
     response
 }
 
-const MAX_ADMISSION_WAIT_MS: u64 = 24 * 60 * 60 * 1_000;
+/// The longest a client may hold *one* HTTP request open waiting for a slot.
+///
+/// This used to be 24 hours. That is unreachable through Cloudflare: a proxied
+/// response that yields no byte for 100 seconds is closed with a 524, so a
+/// long inline wait did not queue, it failed. Waiting beyond this budget is the
+/// caller's job, using `POST /v1/admission` leases; the value is therefore
+/// clamped rather than rejected, so a client that asks for more still works.
+const MAX_ADMISSION_WAIT_MS: u64 = admission::INLINE_MAX_WAIT_MS;
 
 #[derive(Default)]
 struct AdmissionCounters {
     active_by_account: HashMap<String, u32>,
+    /// Slots held per `(application, account)`. Bounded by the same lifecycle
+    /// as `active_by_account`, since every increment comes with a lease.
+    active_by_application: HashMap<(String, String), u32>,
     waiters: HashMap<u64, HashSet<String>>,
     next_waiter_id: u64,
 }
@@ -4022,15 +4095,31 @@ struct AdmissionController {
     counters: StdMutex<AdmissionCounters>,
     changed: Notify,
     version: Arc<AtomicU64>,
+    grace: StdMutex<admission::GraceRegistry>,
 }
 
 impl AdmissionController {
     fn new(version: Arc<AtomicU64>) -> Self {
+        Self::with_grace(version, admission::GracePolicy::default())
+    }
+
+    fn with_grace(version: Arc<AtomicU64>, grace_policy: admission::GracePolicy) -> Self {
         Self {
             counters: StdMutex::new(AdmissionCounters::default()),
             changed: Notify::new(),
             version,
+            grace: StdMutex::new(admission::GraceRegistry::new(grace_policy)),
         }
+    }
+
+    fn grace_policy(&self) -> admission::GracePolicy {
+        self.grace().policy().clone()
+    }
+
+    fn grace(&self) -> std::sync::MutexGuard<'_, admission::GraceRegistry> {
+        self.grace
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn counters(&self) -> std::sync::MutexGuard<'_, AdmissionCounters> {
@@ -4044,29 +4133,194 @@ impl AdmissionController {
     }
 
     fn try_acquire(self: &Arc<Self>, accounts: &[Account]) -> Option<(usize, AdmissionLease)> {
+        self.acquire_for(accounts, None, None, None, now_ms()).0
+    }
+
+    /// Layered admission for one application.
+    ///
+    /// `share` resolves that application's policy; when none exists the caller
+    /// passes `None` and admission falls back to pure physical capacity, so an
+    /// unrelated deployment is unaffected by this feature.
+    ///
+    /// `session` is the conversation identity, if the client supplied one.
+    /// Grace only ever applies to a session that already earned it by producing
+    /// output on an earlier turn — never on the first turn of a conversation.
+    fn acquire_for(
+        self: &Arc<Self>,
+        accounts: &[Account],
+        application: Option<&str>,
+        share: Option<&admission::ApplicationShare>,
+        session: Option<&str>,
+        now: u64,
+    ) -> (Option<(usize, AdmissionLease)>, AdmissionReport) {
+        let grace_policy = self.grace().policy().clone();
+        let grace_qualifies = match (application, session) {
+            (Some(application), Some(session)) => {
+                self.grace().qualifies(application, session, now)
+            }
+            _ => false,
+        };
         let mut counters = self.counters();
-        let index = accounts.iter().position(|account| {
+        let mut report = AdmissionReport {
+            session_grace: if session.is_none() {
+                admission::GraceState::None
+            } else if grace_qualifies {
+                admission::GraceState::Granted
+            } else {
+                admission::GraceState::Ineligible
+            },
+            ..AdmissionReport::default()
+        };
+        for (index, account) in accounts.iter().enumerate() {
+            let capacity = account_max_concurrent(account);
             let active = counters
                 .active_by_account
                 .get(&account.id)
                 .copied()
                 .unwrap_or_default();
-            active < account_max_concurrent(account)
-        })?;
-        let account_id = accounts[index].id.clone();
+            let effective_share = share.cloned().unwrap_or_else(|| admission::ApplicationShare {
+                // No policy: physical capacity is the only limit.
+                max_concurrent_share: 1.0,
+                burst: 0,
+                share_windows: Vec::new(),
+            });
+            let application_active = application
+                .and_then(|name| {
+                    counters
+                        .active_by_application
+                        .get(&(name.to_owned(), account.id.clone()))
+                        .copied()
+                })
+                .unwrap_or_default();
+            let grace_active = if application.is_some() {
+                self.grace().active_on_account(&account.id, now)
+            } else {
+                0
+            };
+            let pressure = admission::AccountPressure {
+                capacity,
+                account_active: active,
+                application_active,
+                grace_active,
+            };
+            let limit = effective_share.slots(capacity, active, now);
+            let decision = admission::decide(
+                &effective_share,
+                &grace_policy,
+                pressure,
+                grace_qualifies,
+                grace_qualifies,
+                now,
+            );
+            let account_wait =
+                admission::estimated_wait_ms(pressure, limit, DEFAULT_TURN_ESTIMATE_MS);
+            if report.account.is_none() {
+                report.capacity = capacity;
+                report.share_limit = limit;
+                report.account_active = active;
+                report.application_active = application_active;
+                report.grace_slots = grace_policy.slots(capacity);
+                report.grace_active = grace_active;
+                report.wait_ms = account_wait;
+                report.account = Some(account.id.clone());
+            } else {
+                report.wait_ms = report.wait_ms.min(account_wait);
+            }
+            if decision != admission::AdmissionDecision::Admit {
+                continue;
+            }
+            let account_id = account.id.clone();
+            *counters
+                .active_by_account
+                .entry(account_id.clone())
+                .or_default() += 1;
+            if let Some(name) = application {
+                *counters
+                    .active_by_application
+                    .entry((name.to_owned(), account_id.clone()))
+                    .or_default() += 1;
+            }
+            drop(counters);
+            self.bump();
+            report.decision = admission::AdmissionDecision::Admit;
+            return (
+                Some((
+                    index,
+                    AdmissionLease {
+                        controller: self.clone(),
+                        account_id: Some(account_id),
+                        application: application.map(str::to_owned),
+                    },
+                )),
+                report,
+            );
+        }
+        report.decision = admission::AdmissionDecision::Queue;
+        report.grace_keeps_priority = admission::grace_keeps_priority(
+            report.utilisation(),
+            &grace_policy,
+        );
+        (None, report)
+    }
+
+    fn active_on_account(&self, account_id: &str) -> Option<u32> {
+        self.counters().active_by_account.get(account_id).copied()
+    }
+
+    fn application_active_on(&self, account_id: &str, application: &str) -> Option<u32> {
+        self.counters()
+            .active_by_application
+            .get(&(application.to_owned(), account_id.to_owned()))
+            .copied()
+    }
+
+    fn grace_active_total(&self, accounts: &[Account], now: u64) -> u32 {
+        let mut grace = self.grace();
+        accounts
+            .iter()
+            .map(|account| grace.active_on_account(&account.id, now))
+            .fold(0_u32, u32::saturating_add)
+    }
+
+    /// Reserve a slot for a lease.
+    ///
+    /// The reservation is counted in the same table as an in-flight request, so
+    /// a promise the server has already made is never invisible to the next
+    /// admission decision. Redemption releases the reservation and the caller's
+    /// own request then acquires the slot normally.
+    fn reserve(&self, account: &Account, application: Option<&str>) -> bool {
+        let mut counters = self.counters();
+        let active = counters
+            .active_by_account
+            .get(&account.id)
+            .copied()
+            .unwrap_or_default();
+        if active >= account_max_concurrent(account) {
+            return false;
+        }
         *counters
             .active_by_account
-            .entry(account_id.clone())
+            .entry(account.id.clone())
             .or_default() += 1;
+        if let Some(name) = application {
+            *counters
+                .active_by_application
+                .entry((name.to_owned(), account.id.clone()))
+                .or_default() += 1;
+        }
         drop(counters);
         self.bump();
-        Some((
-            index,
-            AdmissionLease {
-                controller: self.clone(),
-                account_id: Some(account_id),
-            },
-        ))
+        true
+    }
+
+    /// Credit a session with observed output. This is the only call that lets a
+    /// conversation earn grace, and it happens after the turn really ran.
+    fn observe_session(&self, application: &str, session: &str, account_id: &str, decoded_tokens: u32, now: u64) {
+        if session.trim().is_empty() {
+            return;
+        }
+        self.grace()
+            .observe(application, session, account_id, decoded_tokens, now);
     }
 
     fn register_waiter(self: &Arc<Self>, accounts: &[Account]) -> AdmissionWaiter {
@@ -4160,7 +4414,20 @@ impl AdmissionController {
     }
 
     fn release(&self, account_id: &str) {
+        self.release_for(account_id, None);
+    }
+
+    fn release_for(&self, account_id: &str, application: Option<&str>) {
         let mut counters = self.counters();
+        if let Some(application) = application {
+            let key = (application.to_owned(), account_id.to_owned());
+            if let Some(active) = counters.active_by_application.get_mut(&key) {
+                *active = active.saturating_sub(1);
+                if *active == 0 {
+                    counters.active_by_application.remove(&key);
+                }
+            }
+        }
         let removed = if let Some(active) = counters.active_by_account.get_mut(account_id) {
             *active = active.saturating_sub(1);
             let remove = *active == 0;
@@ -4195,13 +4462,65 @@ impl Drop for AdmissionWaiter {
 struct AdmissionLease {
     controller: Arc<AdmissionController>,
     account_id: Option<String>,
+    /// Present when the request was admitted under an application policy; the
+    /// per-application counter must be released alongside the account slot.
+    application: Option<String>,
 }
 
 impl Drop for AdmissionLease {
     fn drop(&mut self) {
         if let Some(account_id) = self.account_id.take() {
-            self.controller.release(&account_id);
+            self.controller
+                .release_for(&account_id, self.application.take().as_deref());
         }
+    }
+}
+
+/// A conservative stand-in for one turn's duration when no measurement exists.
+/// The wait estimate only needs to be the right order of magnitude; reporting a
+/// shorter wait than reality is what we must avoid.
+const DEFAULT_TURN_ESTIMATE_MS: u64 = 20_000;
+
+/// Why a request was admitted or queued, and against which limits.
+#[derive(Debug, Clone)]
+struct AdmissionReport {
+    decision: admission::AdmissionDecision,
+    account: Option<String>,
+    capacity: u32,
+    share_limit: u32,
+    account_active: u32,
+    application_active: u32,
+    grace_slots: u32,
+    grace_active: u32,
+    session_grace: admission::GraceState,
+    grace_keeps_priority: bool,
+    wait_ms: u64,
+}
+
+impl Default for AdmissionReport {
+    fn default() -> Self {
+        Self {
+            decision: admission::AdmissionDecision::Queue,
+            account: None,
+            capacity: 0,
+            share_limit: 0,
+            account_active: 0,
+            application_active: 0,
+            grace_slots: 0,
+            grace_active: 0,
+            session_grace: admission::GraceState::None,
+            grace_keeps_priority: true,
+            wait_ms: 0,
+        }
+    }
+}
+
+impl AdmissionReport {
+    fn utilisation(&self) -> f64 {
+        if self.capacity == 0 {
+            return 1.0;
+        }
+        (self.account_active as f64 / self.capacity as f64).clamp(0.0, 1.0)
     }
 }
 
@@ -5757,6 +6076,8 @@ pub struct EdgeState {
     trace: Arc<TraceSink>,
     capacity_version: Arc<AtomicU64>,
     admission: Arc<AdmissionController>,
+    admission_metrics: Arc<AdmissionMetrics>,
+    admission_leases: Arc<Mutex<lease::LeaseRegistry>>,
     drain: DrainController,
     shutdown: broadcast::Sender<()>,
     realtime_secrets: realtime_voice::SecretStore,
@@ -5819,6 +6140,7 @@ impl EdgeState {
             max_response_bytes: config.idempotency_max_response_bytes,
         });
         let capacity_version = Arc::new(AtomicU64::new(1));
+        let admission_grace = config.admission_grace.clone();
         let (shutdown, _) = broadcast::channel(16);
         let state = Self {
             store: AccountStore::new(config.store_path.clone()),
@@ -5847,7 +6169,14 @@ impl EdgeState {
             model_catalog_refresh: Arc::new(Mutex::new(())),
             session_affinity: Arc::new(Mutex::new(session_affinity)),
             token_refresh: token_refresh::TokenRefreshManager::default(),
-            admission: Arc::new(AdmissionController::new(capacity_version.clone())),
+            admission: Arc::new(AdmissionController::with_grace(
+                capacity_version.clone(),
+                admission_grace.clone(),
+            )),
+            admission_metrics: Arc::new(AdmissionMetrics::default()),
+            admission_leases: Arc::new(Mutex::new(lease::LeaseRegistry::new(
+                lease::LeaseLimits::default(),
+            ))),
             drain: DrainController::default(),
             shutdown,
             realtime_secrets: realtime_voice::SecretStore::default(),
@@ -6917,6 +7246,28 @@ async fn proxy_inference(
     let mut attempted = 0_usize;
     let mut had_account = false;
     let mut capacity_exhausted: bool;
+    // Carried out of the admission loop so a 429 can report a real estimate.
+    let mut last_admission_wait_ms: u64 = 0;
+
+    // A lease from `POST /v1/admission` reserves a slot. Redeeming it here
+    // releases that reservation (single use) so this request's own admission
+    // acquires the slot it was promised. An unknown or spent lease is not an
+    // error: the request simply competes normally, which is the safe direction.
+    let redeemed_lease = match header_value(headers, "x-multivibe-lease") {
+        Some(lease_id) if !lease_id.trim().is_empty() => {
+            state
+                .admission_leases
+                .lock()
+                .await
+                .redeem(application, lease_id.trim(), now_ms())
+        }
+        _ => None,
+    };
+    if let Some(redeemed) = redeemed_lease.as_ref() {
+        state
+            .admission
+            .release_for(&redeemed.account_id, Some(application));
+    }
 
     'admission: loop {
         capacity_exhausted = false;
@@ -7001,14 +7352,42 @@ async fn proxy_inference(
                 if attempted >= state.config.max_account_retry_attempts {
                     break;
                 }
-                let Some((account_index, capacity_lease)) = state.admission.acquire_any(&accounts)
-                else {
+                // Layered admission applies only when the operator enabled the
+                // policy and this application has an explicit policy. Otherwise
+                // the request keeps the original physical-capacity behaviour.
+                let admission_share = state
+                    .config
+                    .admission_policy_enabled
+                    .then(|| application_share(&store, application))
+                    .flatten();
+                let (admission, admission_report) = if admission_share.is_some() {
+                    state.admission.acquire_for(
+                        &accounts,
+                        Some(application),
+                        admission_share.as_ref(),
+                        prompt_cache_session_id.as_deref(),
+                        now_ms(),
+                    )
+                } else {
+                    let (lease, report) = state.admission.acquire_for(
+                        &accounts,
+                        None,
+                        None,
+                        None,
+                        now_ms(),
+                    );
+                    (lease, report)
+                };
+                record_admission_decision(&state, application, &admission_report).await;
+                last_admission_wait_ms = admission_report.wait_ms;
+                let Some((account_index, capacity_lease)) = admission else {
                     capacity_exhausted = true;
                     saturated_accounts.extend(accounts);
                     break;
                 };
                 let mut account = accounts.remove(account_index);
                 attempted += 1;
+                let account_id_for_credit = account.id.clone();
                 let provider = normalize_provider(&account);
                 let mut trace_context = build_trace_context(
                     state,
@@ -7579,6 +7958,14 @@ async fn proxy_inference(
                         dialect: client_dialect(path),
                         requested_model: requested_model.clone().if_empty_then(default_model),
                         provider: provider.clone(),
+                        admission: state.config.admission_policy_enabled.then(|| {
+                            StreamAdmission {
+                                state: state.clone(),
+                                application: application.to_owned(),
+                                session: prompt_cache_session_id.clone().unwrap_or_default(),
+                                account_id: account_id_for_credit.clone(),
+                            }
+                        }),
                         trace: Some(streaming_trace),
                         capacity_lease,
                         activity_lease,
@@ -7605,6 +7992,16 @@ async fn proxy_inference(
                 let completed_at = outcome.completed_at;
                 let client_status = outcome.status;
                 let client_error = outcome.error.clone();
+                // A turn that produced real output is what earns a session its
+                // grace on later turns; a failed attempt earns nothing.
+                credit_session_after_turn(
+                    state,
+                    application,
+                    prompt_cache_session_id.as_deref(),
+                    &account_id_for_credit,
+                    outcome.usage.as_ref(),
+                    client_status,
+                );
                 state.trace.record(&trace_context, outcome).await;
                 state
                     .trace
@@ -7691,9 +8088,14 @@ async fn proxy_inference(
         error_response(status, final_error, error_code)
     };
     if status == StatusCode::TOO_MANY_REQUESTS {
-        response
-            .headers_mut()
-            .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+        // A constant `1` made every client retry into the same wall. Report the
+        // wait implied by the slots that must drain, capped at the longest
+        // inline wait a proxied client can even hold open.
+        let retry_seconds = (last_admission_wait_ms.max(1_000) as f64 / 1_000.0).ceil() as u64;
+        let retry_seconds = retry_seconds.min(admission::INLINE_MAX_WAIT_MS / 1_000);
+        if let Ok(value) = HeaderValue::from_str(&retry_seconds.max(1).to_string()) {
+            response.headers_mut().insert(header::RETRY_AFTER, value);
+        }
     }
     Err(response)
 }
@@ -8875,6 +9277,7 @@ fn streaming_response(reply: StreamingReply) -> Response {
     let transform = reply.transform;
     let dialect = reply.dialect;
     let model = reply.requested_model;
+    let admission = reply.admission;
     let chat_tools = reply.chat_tools;
     let status = reply.status.as_u16();
     let mut trace = reply.trace;
@@ -8972,7 +9375,31 @@ fn streaming_response(reply: StreamingReply) -> Response {
             }
         }
         if let Some(trace) = trace.as_mut() {
+            let completed_cleanly = stream_error.is_none();
             trace.finish(status, stream_error, Some(false)).await;
+            // Credit the session only after a stream that actually completed,
+            // using the output the upstream reported for this turn.
+            if completed_cleanly
+                && let Some(admission) = admission.as_ref()
+                && !admission.session.trim().is_empty()
+            {
+                let decoded = trace
+                    .observer
+                    .diagnostics
+                    .usage
+                    .as_ref()
+                    .map(|usage| trace_output_tokens(Some(usage)))
+                    .unwrap_or(0);
+                if decoded > 0 {
+                    admission.state.admission.observe_session(
+                        &admission.application,
+                        &admission.session,
+                        &admission.account_id,
+                        decoded,
+                        now_ms(),
+                    );
+                }
+            }
         }
     };
     builder
@@ -10504,6 +10931,119 @@ fn public_job(job: &Job) -> Value {
     value
 }
 
+/// Content-free admission counters, exposed at `GET /v1/capacity` and read by
+/// the operator dashboard. Never carries a prompt, a token or a session id.
+#[derive(Default)]
+struct AdmissionMetrics {
+    admit: AtomicU64,
+    queue: AtomicU64,
+    switch: AtomicU64,
+    grace_granted: AtomicU64,
+    grace_denied_by_cap: AtomicU64,
+    grace_ineligible: AtomicU64,
+    inline_wait_ms_total: AtomicU64,
+    inline_wait_samples: AtomicU64,
+}
+
+impl AdmissionMetrics {
+    fn record(&self, report: &AdmissionReport) {
+        match report.decision {
+            admission::AdmissionDecision::Admit => {
+                self.admit.fetch_add(1, AtomicOrdering::Relaxed);
+            }
+            admission::AdmissionDecision::Queue => {
+                self.queue.fetch_add(1, AtomicOrdering::Relaxed);
+            }
+            admission::AdmissionDecision::Switch => {
+                self.switch.fetch_add(1, AtomicOrdering::Relaxed);
+            }
+        }
+        match report.session_grace {
+            admission::GraceState::Granted if report.grace_active >= report.grace_slots => {
+                // The session qualifies but the account's grace pool is full:
+                // this is the signal that the pool, not the TTL, is binding.
+                self.grace_denied_by_cap.fetch_add(1, AtomicOrdering::Relaxed);
+            }
+            admission::GraceState::Granted => {
+                self.grace_granted.fetch_add(1, AtomicOrdering::Relaxed);
+            }
+            admission::GraceState::Ineligible => {
+                self.grace_ineligible.fetch_add(1, AtomicOrdering::Relaxed);
+            }
+            admission::GraceState::None => {}
+        }
+        self.inline_wait_ms_total
+            .fetch_add(report.wait_ms, AtomicOrdering::Relaxed);
+        self.inline_wait_samples.fetch_add(1, AtomicOrdering::Relaxed);
+    }
+
+    fn snapshot(&self, grace_active: u64) -> Value {
+        let samples = self.inline_wait_samples.load(AtomicOrdering::Relaxed);
+        let total = self.inline_wait_ms_total.load(AtomicOrdering::Relaxed);
+        json!({
+            "decision": {
+                "admit": self.admit.load(AtomicOrdering::Relaxed),
+                "queue": self.queue.load(AtomicOrdering::Relaxed),
+                "switch": self.switch.load(AtomicOrdering::Relaxed),
+            },
+            "grace": {
+                "active": grace_active,
+                "granted": self.grace_granted.load(AtomicOrdering::Relaxed),
+                "deniedByCap": self.grace_denied_by_cap.load(AtomicOrdering::Relaxed),
+                "ineligible": self.grace_ineligible.load(AtomicOrdering::Relaxed),
+            },
+            "inlineWaitMsMean": if samples == 0 { 0 } else { total / samples },
+        })
+    }
+}
+
+async fn record_admission_decision(
+    state: &EdgeState,
+    _application: &str,
+    report: &AdmissionReport,
+) {
+    state.admission_metrics.record(report);
+}
+
+/// Resolve an application's admitted fair share.
+///
+/// `None` means "this application has no policy": admission then falls back to
+/// physical capacity alone, so enabling the feature never silently throttles an
+/// application nobody configured.
+fn application_share(store: &StoreFile, application: &str) -> Option<admission::ApplicationShare> {
+    let policy = store
+        .application_policies
+        .iter()
+        .find(|policy| policy.application == application)?;
+    let windows = match policy.share_windows.as_deref() {
+        // Absent keeps the operator's default calendar.
+        None => admission::ShareWindow::default_windows(),
+        Some(stored) => stored
+            .iter()
+            .filter(|window| window.start_hour < 24 && window.end_hour <= 24 && window.start_hour != window.end_hour)
+            .filter(|window| window.multiplier.is_finite())
+            .map(|window| admission::ShareWindow {
+                start_hour: window.start_hour,
+                end_hour: window.end_hour,
+                days: window.days.clone(),
+                multiplier: window.multiplier.clamp(1.0, 8.0),
+            })
+            .collect(),
+    };
+    Some(admission::ApplicationShare {
+        max_concurrent_share: policy
+            .max_concurrent_share
+            .filter(|value| value.is_finite())
+            .map(|value| value.clamp(0.0, 1.0))
+            .unwrap_or(admission::DEFAULT_MAX_CONCURRENT_SHARE),
+        burst: policy
+            .burst
+            .unwrap_or(admission::DEFAULT_BURST)
+            .min(8),
+        share_windows: windows,
+    })
+}
+
 fn application_fairness_weights(store: &StoreFile) -> HashMap<String, f64> {
     store
         .application_policies
@@ -10947,6 +11487,73 @@ fn safe_job_headers(headers: &HeaderMap) -> HeaderMap {
     result
 }
 
+/// Output tokens reported by either wire dialect. Absent usage stays absent:
+/// an unknown count must never be mistaken for zero and quietly disqualify a
+/// session that really ran.
+fn trace_output_tokens(usage: Option<&Value>) -> u32 {
+    let Some(usage) = usage else {
+        return 0;
+    };
+    usage
+        .get("output_tokens")
+        .or_else(|| usage.get("completion_tokens"))
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(0)
+}
+
+/// Credit a finished turn to its session.
+///
+/// Only successful turns with real output count: grace means "this
+/// conversation was already running here", which is exactly what a completed
+/// turn with decoded tokens proves.
+fn credit_session_after_turn(
+    state: &EdgeState,
+    application: &str,
+    session: Option<&str>,
+    account_id: &str,
+    usage: Option<&Value>,
+    status: u16,
+) {
+    if !state.config.admission_policy_enabled || !(200..300).contains(&status) {
+        return;
+    }
+    let Some(session) = session.filter(|value| !value.trim().is_empty()) else {
+        return;
+    };
+    let decoded_tokens = trace_output_tokens(usage);
+    if decoded_tokens == 0 {
+        return;
+    }
+    state
+        .admission
+        .observe_session(application, session, account_id, decoded_tokens, now_ms());
+}
+
+/// Admission headers on a response, so a client learns why it was served
+/// without asking a second question.
+fn push_admission_headers(
+    headers: &mut Vec<(String, String)>,
+    grace: admission::GraceState,
+    decision: admission::AdmissionDecision,
+    queue_position: Option<u32>,
+) {
+    headers.retain(|(name, _)| {
+        !matches!(
+            name.as_str(),
+            "x-multivibe-grace" | "x-multivibe-queue-position" | "x-multivibe-admission"
+        )
+    });
+    headers.push(("x-multivibe-grace".to_owned(), grace.as_str().to_owned()));
+    headers.push((
+        "x-multivibe-admission".to_owned(),
+        decision.as_str().to_owned(),
+    ));
+    if let Some(position) = queue_position {
+        headers.push(("x-multivibe-queue-position".to_owned(), position.to_string()));
+    }
+}
+
 fn add_decision_headers(reply: &mut BufferedReply, priority: Option<&str>, model: &str) {
     reply.headers.retain(|(name, _)| {
         !matches!(
@@ -11215,6 +11822,7 @@ async fn inference_handler(State(state): State<EdgeState>, req: Request<Body>) -
         );
         return response;
     }
+    let lease_id = header_value(&headers, "x-multivibe-lease");
     let mut response = match proxy_inference(
         &state,
         &path,
@@ -12533,6 +13141,437 @@ struct CapacityQuery {
     priority: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct AdmissionRequest {
+    model: Option<String>,
+    #[serde(default)]
+    priority: Option<String>,
+    #[serde(default)]
+    session: Option<String>,
+    /// Whether the caller has a fallback configured and would rather use it
+    /// than wait. The server never invents a switch the caller cannot adopt.
+    #[serde(default)]
+    switch_ok: Option<bool>,
+}
+
+/// A short, content-free explanation of an admission decision.
+fn admission_reason(report: &AdmissionReport) -> &'static str {
+    match report.decision {
+        admission::AdmissionDecision::Admit => {
+            if report.application_active >= report.share_limit {
+                "grace"
+            } else {
+                "share_available"
+            }
+        }
+        admission::AdmissionDecision::Queue => {
+            if report.grace_slots > 0 && report.grace_active >= report.grace_slots {
+                "grace_pool_full"
+            } else if report.account_active >= report.capacity {
+                "account_saturated"
+            } else {
+                "share_exhausted"
+            }
+        }
+        admission::AdmissionDecision::Switch => "switch_requested",
+    }
+}
+
+fn admission_body(
+    report: &AdmissionReport,
+    decision: admission::AdmissionDecision,
+    model: &str,
+    lease: Option<&str>,
+    expires_at: Option<u64>,
+    renewals: u32,
+    switch_ok: bool,
+) -> Value {
+    json!({
+        "object": "multivibe.admission",
+        "model": model,
+        "decision": decision.as_str(),
+        "lease": lease,
+        "expiresAt": expires_at,
+        "renewals": renewals,
+        "maxRenewals": admission::LEASE_MAX_RENEWALS,
+        "waitMs": report.wait_ms,
+        "grace": report.session_grace.as_str(),
+        "graceActive": report.grace_active,
+        "graceSlots": report.grace_slots,
+        "switch": {
+            "allowed": switch_ok,
+            "reason": if switch_ok { "configured_by_caller" } else { "fallback_disabled" },
+        },
+        "share": {
+            "limit": report.share_limit,
+            "used": report.application_active,
+            "capacity": report.capacity,
+            "accountActive": report.account_active,
+        },
+        "reason": admission_reason(report),
+        "generatedAt": now_ms(),
+    })
+}
+
+/// `POST /v1/admission`
+///
+/// Never blocks longer than the inline budget: either a slot is free now and a
+/// lease is issued, or the caller is told to wait and how long. Waiting is the
+/// caller's job because Cloudflare does not allow holding the request open.
+async fn admission_handler(State(state): State<EdgeState>, req: Request<Body>) -> Response {
+    let (parts, body) = req.into_parts();
+    let headers = parts.headers.clone();
+    let store = match state.store.snapshot().await {
+        Ok(store) => store,
+        Err(error) => {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, error, "store_unavailable");
+        }
+    };
+    let auth = match authorize(&headers, parts.uri.path(), &store, &state.config) {
+        Ok(auth) => auth,
+        Err(response) => return response,
+    };
+    let bytes = match axum::body::to_bytes(body, 64 * 1024).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "admission request body is invalid",
+                "invalid_request_error",
+            );
+        }
+    };
+    let request: AdmissionRequest = if bytes.is_empty() {
+        AdmissionRequest {
+            model: None,
+            priority: None,
+            session: None,
+            switch_ok: None,
+        }
+    } else {
+        match serde_json::from_slice(&bytes) {
+            Ok(request) => request,
+            Err(_) => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "admission request must be a JSON object",
+                    "invalid_request_error",
+                );
+            }
+        }
+    };
+    let Some(model) = request.model.filter(|value| !value.trim().is_empty()) else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "model is required",
+            "invalid_request_error",
+        );
+    };
+    let priority = request.priority.unwrap_or_else(|| "standard".to_owned());
+    if !matches!(
+        priority.as_str(),
+        "critical" | "interactive" | "standard" | "batch"
+    ) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "priority must be critical, interactive, standard, or batch",
+            "invalid_priority",
+        );
+    }
+    admission_decision_for(
+        &state,
+        &store,
+        &auth.application,
+        &model,
+        request.session.as_deref(),
+        request.switch_ok.unwrap_or(false),
+    )
+    .await
+}
+
+async fn admission_decision_for(
+    state: &EdgeState,
+    store: &StoreFile,
+    application: &str,
+    model: &str,
+    session: Option<&str>,
+    switch_ok: bool,
+) -> Response {
+    let catalog = exposed_models(state, store, false).await;
+    let route = routes_for_model(store, model, model, &catalog)
+        .into_iter()
+        .next()
+        .unwrap_or(RouteCandidate {
+            requested_model: model.to_owned(),
+            model: model.to_owned(),
+            provider: None,
+            account_ids: Vec::new(),
+        });
+    let blocked = state.blocked.lock().await.clone();
+    let selected = state.selected.lock().await.clone();
+    let accounts = select_accounts(&store.accounts, &route, &blocked, &selected);
+    if accounts.is_empty() {
+        return json_response(
+            StatusCode::OK,
+            json!({
+                "object": "multivibe.admission",
+                "model": model,
+                "decision": if switch_ok { "switch" } else { "queue" },
+                "lease": Value::Null,
+                "reason": "model_unavailable",
+                "switch": {"allowed": switch_ok, "reason": "model_unavailable"},
+                "generatedAt": now_ms(),
+            }),
+        );
+    }
+    let share = state
+        .config
+        .admission_policy_enabled
+        .then(|| application_share(store, application))
+        .flatten();
+    let (acquired, report) = state.admission.acquire_for(
+        &accounts,
+        share.is_some().then_some(application),
+        share.as_ref(),
+        session,
+        now_ms(),
+    );
+    state.admission_metrics.record(&report);
+
+    let Some((index, capacity_lease)) = acquired else {
+        // No slot. Report the estimate and let the caller decide. A switch is
+        // only ever suggested when the caller declared a fallback.
+        let switch_recommended = switch_ok && report.wait_ms >= admission::INLINE_MAX_WAIT_MS;
+        let decision = if switch_recommended {
+            admission::AdmissionDecision::Switch
+        } else {
+            admission::AdmissionDecision::Queue
+        };
+        let mut response = json_response(
+            StatusCode::OK,
+            admission_body(&report, decision, model, None, None, 0, switch_ok),
+        );
+        if let Ok(value) =
+            HeaderValue::from_str(&report.wait_ms.max(1_000).div_ceil(1_000).to_string())
+        {
+            response.headers_mut().insert(header::RETRY_AFTER, value);
+        }
+        return response;
+    };
+
+    // A slot is free. Convert it into a lease so the promise survives the
+    // caller's next, separate HTTP request; the granted capacity lease is
+    // dropped here because the reservation table now owns the slot.
+    let account = accounts[index].clone();
+    let lease_id = format!("adml_{}", Uuid::new_v4().simple());
+    let now = now_ms();
+    let application_key = share.is_some().then_some(application);
+    let granted = {
+        let mut leases = state.admission_leases.lock().await;
+        leases.grant(lease_id.clone(), application, model, &account.id, now)
+    };
+    match granted {
+        Ok(released) => {
+            drop(capacity_lease);
+            for expired in released {
+                state
+                    .admission
+                    .release_for(&expired.account_id, Some(&expired.application));
+            }
+            if !state.admission.reserve(&account, application_key) {
+                // The slot disappeared between the decision and the reservation
+                // (another request won it). Drop the promise rather than lie.
+                state.admission_leases.lock().await.revoke(application, &lease_id);
+                let mut response = json_response(
+                    StatusCode::OK,
+                    admission_body(
+                        &report,
+                        admission::AdmissionDecision::Queue,
+                        model,
+                        None,
+                        None,
+                        0,
+                        switch_ok,
+                    ),
+                );
+                if let Ok(value) = HeaderValue::from_str(
+                    &report.wait_ms.max(1_000).div_ceil(1_000).to_string(),
+                ) {
+                    response.headers_mut().insert(header::RETRY_AFTER, value);
+                }
+                return response;
+            }
+            json_response(
+                StatusCode::OK,
+                admission_body(
+                    &report,
+                    admission::AdmissionDecision::Admit,
+                    model,
+                    Some(&lease_id),
+                    Some(now + admission::LEASE_TTL_MS),
+                    0,
+                    switch_ok,
+                ),
+            )
+        }
+        Err(error) => {
+            drop(capacity_lease);
+            error_response(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many outstanding admission leases",
+                error.as_str(),
+            )
+        }
+    }
+}
+
+/// `GET /v1/admission/{lease}` — read or renew a lease.
+/// `GET /admin/admission/state` — read-only operator view.
+///
+/// Reports the effective policy and content-free counters. It never returns a
+/// session identifier, a prompt, or which tenant holds which lease beyond the
+/// aggregate counts an operator needs to size the share.
+async fn admission_state_handler(State(state): State<EdgeState>, req: Request<Body>) -> Response {
+    let headers = req.headers().clone();
+    if !dashboard::request_authorized(&headers, &state.config) {
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "admin authentication is required",
+            "unauthorized",
+        );
+    }
+    let store = match state.store.snapshot().await {
+        Ok(store) => store,
+        Err(error) => {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, error, "store_unavailable");
+        }
+    };
+    let now = now_ms();
+    let grace_policy = state.admission.grace_policy();
+    let accounts = store.accounts.clone();
+    let live_leases = state.admission_leases.lock().await.len();
+    let policies = store
+        .application_policies
+        .iter()
+        .map(|policy| {
+            let share = application_share(&store, &policy.application)
+                .unwrap_or_else(admission::ApplicationShare::default);
+            json!({
+                "application": policy.application,
+                "maxConcurrentShare": share.max_concurrent_share,
+                "burst": share.burst,
+                "multiplierNow": share.multiplier_at(now),
+                "windows": policy.share_windows.as_ref().map(|windows| windows.len()),
+            })
+        })
+        .collect::<Vec<_>>();
+    json_response(
+        StatusCode::OK,
+        json!({
+            "object": "multivibe.admission.state",
+            "enabled": state.config.admission_policy_enabled,
+            "grace": {
+                "ttlMs": grace_policy.ttl.as_millis() as u64,
+                "maxAgeMs": grace_policy.max_age.as_millis() as u64,
+                "slotShare": grace_policy.slot_share,
+                "missedGraceBelow": grace_policy.eligible_below,
+                "minDecodedTokens": grace_policy.min_decoded_tokens,
+                "dropPriorityAbove": grace_policy.drop_priority_above,
+                "entries": state.admission.grace().len(),
+                "active": state.admission.grace_active_total(&accounts, now),
+            },
+            "leases": {
+                "live": live_leases,
+                "ttlMs": admission::LEASE_TTL_MS,
+                "maxRenewals": admission::LEASE_MAX_RENEWALS,
+            },
+            "inlineMaxWaitMs": admission::INLINE_MAX_WAIT_MS,
+            "applications": policies,
+            "metrics": state.admission_metrics.snapshot(
+                u64::from(state.admission.grace_active_total(&accounts, now))
+            ),
+            "generatedAt": now,
+        }),
+    )
+}
+
+async fn admission_lease_handler(
+    State(state): State<EdgeState>,
+    Path(lease_id): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+    req: Request<Body>,
+) -> Response {
+    let headers = req.headers().clone();
+    let store = match state.store.snapshot().await {
+        Ok(store) => store,
+        Err(error) => {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, error, "store_unavailable");
+        }
+    };
+    let auth = match authorize(&headers, req.uri().path(), &store, &state.config) {
+        Ok(auth) => auth,
+        Err(response) => return response,
+    };
+    let now = now_ms();
+    let renew = query
+        .get("renew")
+        .is_some_and(|value| matches!(value.as_str(), "1" | "true"));
+    let mut leases = state.admission_leases.lock().await;
+    let Some((lease_state, expires_at, renewals)) = leases.peek(&auth.application, &lease_id, now)
+    else {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            "unknown admission lease",
+            "lease_not_found",
+        );
+    };
+    if lease_state != lease::LeaseState::Admitted {
+        return json_response(
+            StatusCode::OK,
+            json!({
+                "object": "multivibe.admission.lease",
+                "lease": lease_id,
+                "state": lease_state.as_str(),
+                "decision": "queue",
+                "generatedAt": now,
+            }),
+        );
+    }
+    let (renewals, expires_at) = if renew {
+        match leases.renew(&auth.application, &lease_id, now) {
+            Some(values) => values,
+            None => {
+                return json_response(
+                    StatusCode::OK,
+                    json!({
+                        "object": "multivibe.admission.lease",
+                        "lease": lease_id,
+                        "state": "expired",
+                        "decision": "queue",
+                        "reason": "renewal_budget_exhausted",
+                        "generatedAt": now,
+                    }),
+                );
+            }
+        }
+    } else {
+        (renewals, expires_at)
+    };
+    json_response(
+        StatusCode::OK,
+        json!({
+            "object": "multivibe.admission.lease",
+            "lease": lease_id,
+            "state": "admitted",
+            "decision": "admit",
+            "expiresAt": expires_at,
+            "renewals": renewals,
+            "maxRenewals": admission::LEASE_MAX_RENEWALS,
+            "generatedAt": now,
+        }),
+    )
+}
+
 async fn capacity_handler(
     State(state): State<EdgeState>,
     Query(query): Query<CapacityQuery>,
@@ -12579,6 +13618,65 @@ async fn capacity_handler(
     let selected = state.selected.lock().await.clone();
     let accounts = select_accounts(&store.accounts, &route, &blocked, &selected);
     let (free_slots, queue_depth) = state.admission.snapshot(&accounts);
+    // The application's own headroom is what this caller can actually use; the
+    // account-wide figure is reported alongside it so the difference is visible
+    // rather than surprising.
+    let share = state
+        .config
+        .admission_policy_enabled
+        .then(|| application_share(&store, &auth.application))
+        .flatten();
+    let now = now_ms();
+    let share_view = share.as_ref().map(|share| {
+        let capacity: u32 = accounts
+            .iter()
+            .map(account_max_concurrent)
+            .sum();
+        let account_active: u32 = accounts
+            .iter()
+            .map(|account| {
+                state
+                    .admission
+                    .active_on_account(&account.id)
+                    .unwrap_or_default()
+            })
+            .sum();
+        let application_active: u32 = accounts
+            .iter()
+            .map(|account| {
+                state
+                    .admission
+                    .application_active_on(&account.id, &auth.application)
+                    .unwrap_or_default()
+            })
+            .sum();
+        let limit = share.slots(capacity, account_active, now);
+        (capacity, account_active, application_active, limit)
+    });
+    let grace_view = {
+        let grace_policy = state.admission.grace_policy();
+        let grace_total: u32 = accounts
+            .iter()
+            .map(|account| grace_policy.slots(account_max_concurrent(account)))
+            .sum();
+        let grace_active = state.admission.grace_active_total(&accounts, now);
+        (grace_total, grace_active)
+    };
+    let estimated_wait_ms = share_view
+        .as_ref()
+        .map(|(_, _, application_active, limit)| {
+            admission::estimated_wait_ms(
+                admission::AccountPressure {
+                    capacity: free_slots.max(1) as u32,
+                    account_active: 0,
+                    application_active: *application_active,
+                    grace_active: 0,
+                },
+                *limit,
+                DEFAULT_TURN_ESTIMATE_MS,
+            )
+        })
+        .unwrap_or(0);
     let state_name = if accounts.is_empty() {
         "unavailable"
     } else if free_slots > 0 {
@@ -12599,8 +13697,16 @@ async fn capacity_handler(
             "freeSlots": free_slots,
             "queueDepth": queue_depth,
             "recommendation": if free_slots > 0 { "sync" } else { "defer" },
+            "estimatedWaitMs": estimated_wait_ms,
+            "policyEnabled": state.config.admission_policy_enabled,
+            "shareLimit": share_view.map(|(_, _, _, limit)| limit),
+            "shareUsed": share_view.map(|(_, _, application_active, _)| application_active),
+            "accountActive": share_view.map(|(_, account_active, _, _)| account_active),
+            "accountCapacity": share_view.map(|(capacity, _, _, _)| capacity),
+            "graceSlots": grace_view.0,
+            "graceActive": grace_view.1,
             "version": state.capacity_version.load(AtomicOrdering::Relaxed),
-            "generatedAt": now_ms(),
+            "generatedAt": now,
             "confidence": "declared"
         }),
     )
@@ -15070,6 +16176,7 @@ fn build_base_router(state: &EdgeState) -> Router<EdgeState> {
         )
         .route("/desktop/session", get(dashboard::desktop_session_consume))
         .route("/admin/dashboard/models", get(list_models_handler).post(method_not_allowed))
+        .route("/admin/admission/state", get(admission_state_handler))
         // Every inference route, both the canonical `/v1` surface and its
         // historical root aliases, terminates in this native edge. Node
         // remains a control-plane peer and hosts the internal adapter for SDK
@@ -15135,6 +16242,8 @@ fn build_base_router(state: &EdgeState) -> Router<EdgeState> {
         .route("/v1/realtime/voices", get(realtime_voices_handler))
         .route("/v1/settings/voices", get(realtime_voices_handler))
         .route("/v1/capacity", get(capacity_handler))
+        .route("/v1/admission", post(admission_handler))
+        .route("/v1/admission/{lease}", get(admission_lease_handler))
         .route("/v1/capacity/events", get(capacity_events_handler))
         .route("/v1/jobs", get(list_jobs_handler))
         .route(
@@ -16805,6 +17914,184 @@ mod tests {
         assert!(!timed_out);
         assert_eq!(admission.snapshot(&[target.clone()]), (0, 0));
         drop(held_lease);
+    }
+
+    /// A synthetic account with an explicit capacity profile.
+    fn share_account(id: &str, capacity: u32) -> Account {
+        let mut account = account(id);
+        account.location = Some("cloud".to_owned());
+        account.capacity_profile = Some(CapacityProfile {
+            max_concurrent: Some(capacity),
+            ..Default::default()
+        });
+        account
+    }
+
+    fn hermes_share(share: f64, burst: u32) -> admission::ApplicationShare {
+        admission::ApplicationShare {
+            max_concurrent_share: share,
+            burst,
+            share_windows: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn fair_share_keeps_a_second_application_served() {
+        // Eight physical slots; each application may hold two.
+        let controller = Arc::new(AdmissionController::new(Arc::new(AtomicU64::new(1))));
+        let accounts = [share_account("acct", 8)];
+        let share = hermes_share(0.25, 0);
+        let now = 1_000;
+
+        let mut held = Vec::new();
+        for _ in 0..2 {
+            let (lease, report) =
+                controller.acquire_for(&accounts, Some("hermes-a"), Some(&share), None, now);
+            assert_eq!(report.share_limit, 2, "one quarter of eight slots");
+            held.push(lease.expect("within its share").1);
+        }
+        // The first application is at its share...
+        let (none, report) =
+            controller.acquire_for(&accounts, Some("hermes-a"), Some(&share), None, now);
+        assert!(none.is_none(), "share is exhausted");
+        assert_eq!(report.application_active, 2);
+
+        // ...but another application still gets its own two slots.
+        for _ in 0..2 {
+            let (lease, _) =
+                controller.acquire_for(&accounts, Some("hermes-b"), Some(&share), None, now);
+            assert!(lease.is_some(), "a second application is never starved");
+            held.push(lease.unwrap().1);
+        }
+        // Four of eight slots are used; the rest stay free for other work.
+        assert_eq!(controller.snapshot(&accounts).0, 4);
+        drop(held);
+        assert_eq!(controller.snapshot(&accounts).0, 8);
+    }
+
+    #[test]
+    fn releases_return_both_the_account_and_the_application_slot() {
+        let controller = Arc::new(AdmissionController::new(Arc::new(AtomicU64::new(1))));
+        let accounts = [share_account("acct", 4)];
+        let share = hermes_share(0.5, 0);
+        let (lease, _) =
+            controller.acquire_for(&accounts, Some("app"), Some(&share), None, 1_000);
+        assert_eq!(
+            controller.application_active_on("acct", "app"),
+            Some(1),
+            "the application counter moves with the lease"
+        );
+        drop(lease);
+        assert_eq!(controller.application_active_on("acct", "app"), None);
+        assert_eq!(controller.active_on_account("acct"), None);
+    }
+
+    #[test]
+    fn a_graced_conversation_survives_a_load_spike() {
+        let controller = Arc::new(AdmissionController::new(Arc::new(AtomicU64::new(1))));
+        let accounts = [share_account("acct", 8)];
+        let share = hermes_share(0.5, 0);
+        let now = 1_000;
+        let session = Some("session-1");
+
+        // The conversation starts while the account is quiet and earns grace.
+        let (first, _) =
+            controller.acquire_for(&accounts, Some("hermes"), Some(&share), session, now);
+        drop(first.expect("first turn is admitted").1);
+        controller.observe_session("hermes", "session-1", "acct", 512, now);
+        assert!(controller.grace().qualifies("hermes", "session-1", now));
+
+        // A spike fills the fair share with other turns.
+        let mut spike = Vec::new();
+        for _ in 0..4 {
+            let (lease, _) =
+                controller.acquire_for(&accounts, Some("hermes"), Some(&share), None, now);
+            if let Some((_, lease)) = lease {
+                spike.push(lease);
+            }
+        }
+        assert_eq!(spike.len(), 4, "the share is fully used");
+
+        // The already-running conversation still gets a physically free slot...
+        let (continued, report) =
+            controller.acquire_for(&accounts, Some("hermes"), Some(&share), session, now);
+        assert!(continued.is_some(), "grace continues the conversation");
+        assert_eq!(report.session_grace, admission::GraceState::Granted);
+
+        // ...while a brand-new conversation with no history queues.
+        let (fresh, report) =
+            controller.acquire_for(&accounts, Some("hermes"), Some(&share), Some("new"), now);
+        assert!(fresh.is_none(), "a new conversation waits");
+        assert_eq!(report.session_grace, admission::GraceState::Ineligible);
+    }
+
+    #[test]
+    fn grace_never_exceeds_physical_capacity() {
+        let controller = Arc::new(AdmissionController::new(Arc::new(AtomicU64::new(1))));
+        // A single-slot account: a graced session must still queue behind it.
+        let accounts = [share_account("acct", 1)];
+        let share = hermes_share(1.0, 0);
+        controller.observe_session("hermes", "s", "acct", 512, 1_000);
+        let (held, _) = controller.acquire_for(&accounts, Some("hermes"), Some(&share), None, 1_000);
+        let held = held.expect("the only slot").1;
+        let (second, _) =
+            controller.acquire_for(&accounts, Some("hermes"), Some(&share), Some("s"), 1_000);
+        assert!(second.is_none(), "grace cannot invent a slot");
+        drop(held);
+    }
+
+    #[test]
+    fn control_plane_stores_keep_the_admission_policy_round_trip() {
+        // The edge must read the policy the Node admin API writes, including
+        // the camelCase field names and an explicit empty window list.
+        let raw = json!({
+            "applicationPolicies": [{
+                "application": "hermes-client",
+                "fairnessWeight": 1.0,
+                "maxConcurrentShare": 0.1,
+                "burst": 0,
+                "shareWindows": [{"startHour": 22, "endHour": 6, "multiplier": 3.0}],
+                "webhooks": []
+            }]
+        });
+        let store: StoreFile = serde_json::from_value(raw).expect("valid store");
+        let share = application_share(&store, "hermes-client").expect("policy present");
+        assert_eq!(share.max_concurrent_share, 0.1);
+        assert_eq!(share.burst, 0);
+        assert_eq!(share.share_windows.len(), 1);
+        assert_eq!(share.share_windows[0].multiplier, 3.0);
+
+        // No policy means no fair-share limit at all.
+        assert!(application_share(&store, "unconfigured").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_lease_reserves_capacity_until_it_is_redeemed() {
+        let store_path = temporary_path("admission-lease-accounts");
+        let jobs_path = temporary_path("admission-lease-jobs");
+        fs::write(&store_path, b"{}").await.unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.legacy_jobs_db_path = None;
+        config.admission_policy_enabled = true;
+        let state = EdgeState::new(config).await.unwrap();
+        let accounts = [share_account("acct", 4)];
+
+        // A granted lease holds a real reservation.
+        assert!(state.admission.reserve(&accounts[0], Some("app")));
+        assert_eq!(state.admission.active_on_account("acct"), Some(1));
+        let released = state
+            .admission_leases
+            .lock()
+            .await
+            .revoke("app", "unknown")
+            .is_none();
+        assert!(released, "an unknown lease releases nothing");
+        state.admission.release_for("acct", Some("app"));
+
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
     }
 
     #[test]
@@ -18982,7 +20269,8 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 enabled: true,
                 created_at: None,
             }],
-        });
+
+            ..Default::default()});
         fs::write(&store_path, serde_json::to_vec(&store).unwrap())
             .await
             .unwrap();
@@ -19087,7 +20375,8 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 enabled: true,
                 created_at: None,
             }],
-        });
+
+            ..Default::default()});
         fs::write(&store_path, serde_json::to_vec(&store).unwrap())
             .await
             .unwrap();
@@ -21787,7 +23076,8 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                     enabled: true,
                     created_at: Some(1_788_803_485_000),
                 }],
-            }],
+
+            ..Default::default()}],
             ..Default::default()
         };
         fs::write(&store_path, serde_json::to_vec(&store).unwrap())
