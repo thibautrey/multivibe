@@ -122,7 +122,21 @@ a service token must never reach them.
 
 ## Current verified state (2026-11-16)
 
-Every path on the hostname answers `302` to the Access login, including
-`/hermes-bridge/enrollment/exchange`. The code is complete; the Access
-configuration described above has **not** been applied. That is the remaining
-operator step, and it is the reason a client cannot enroll today.
+Every path on the hostname answers `302` to the Access login **when no token is
+presented**, including `/hermes-bridge/enrollment/exchange`. That is expected
+behaviour for a protected host and is not by itself evidence that `/v1/*` is
+misconfigured.
+
+Two facts to establish in the dashboard, neither of which can be read from here:
+
+1. **Does a `/v1/*` Service Auth application already exist?** A sibling service's
+   notes record that one was created to grant a `translation` token access to
+   `host.example.invalid/v1/*`. If it does, inference is already reachable
+   with a service token and only the enrollment surface is missing.
+2. **Is the enrollment path covered by any Bypass policy?** The `302` on
+   `/hermes-bridge/enrollment/exchange` says no.
+
+The enrollment gap is the real blocker: a machine must exchange its code *before*
+it holds any token, so that one path cannot be gated by the same policy. The code
+is complete; the Access configuration described above has not been verified as
+applied.
