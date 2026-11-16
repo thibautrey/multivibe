@@ -240,3 +240,46 @@ test("API key attribution: byApiKey, filters and legacy schema upgrade", async t
   assert.equal((f.store.usage({}).byApiKey as any[]).length, 3);
   assert.equal(f.store.usage({ apiKeyId: "configured:codex" }).totals.requests, 2);
 });
+
+test("key-filtered trace stats stay bounded to the key and exclude other keys", async t => {
+  const f = await fixture(t);
+  f.config.retentionMax = 20;
+  // Complete hours (not edge hours): these only resolve through hourly rollups.
+  const hour = Math.floor(BASE / 3_600_000) * 3_600_000 + 3_600_000;
+  const keyed = { ...trace("hour-a", hour + 1_000), apiKeyId: "configured:codex", apiKeyPreview: "mv_a••••1111" };
+  const other = { ...trace("hour-b", hour + 2_000), apiKeyId: "configured:other", apiKeyPreview: "mv_b••••2222" };
+  const keyless = { ...trace("hour-c", hour + 3_000), apiKeyId: undefined };
+  f.store.append([keyed, other, keyless], undefined, true);
+
+  const narrow = { sinceMs: hour, untilMs: hour + 3_600_000 - 1 };
+  assert.equal(f.store.stats({ ...narrow, apiKeyId: "configured:codex" }).stats.totals.requests, 1);
+  assert.equal(f.store.stats(narrow).stats.totals.requests, 3);
+  assert.equal(f.store.stats({ ...narrow, apiKeyId: "configured:other" }).stats.totals.requests, 1);
+  // The key filter must not leak another key's cost or tokens.
+  const filtered = f.store.usage({ ...narrow, apiKeyId: "configured:codex" });
+  assert.equal(filtered.totals.requests, 1);
+  assert.equal((filtered as any).byApiKey.length, 1);
+});
+
+test("legacy history without per-key buckets is rebuilt once by the backfill", async t => {
+  const f = await fixture(t);
+  f.config.retentionMax = 20;
+  const hour = Math.floor(BASE / 3_600_000) * 3_600_000 + 7_200_000;
+  f.store.append([
+    { ...trace("bf-a", hour + 1_000), apiKeyId: "configured:legacy", apiKeyPreview: "mv_l••••9999" },
+    { ...trace("bf-b", hour + 2_000), apiKeyId: "configured:legacy", apiKeyPreview: "mv_l••••9999" },
+  ], undefined, true);
+  // Simulate a database produced before the per-key buckets existed.
+  (f.store as any).db.prepare("DELETE FROM buckets_by_key").run();
+  (f.store as any).db.prepare("DELETE FROM metadata WHERE key=?").run("api-key-buckets-2026-11-16-v1");
+  await f.reopen();
+  assert.equal(f.store.status.keyBucketBackfill?.state, "running");
+  await f.store.sync();
+  assert.equal(f.store.status.keyBucketBackfill?.state, "complete");
+  const narrow = { sinceMs: hour, untilMs: hour + 3_600_000 - 1, apiKeyId: "configured:legacy" };
+  assert.equal(f.store.stats(narrow).stats.totals.requests, 2);
+  // A second sync is a no-op, not a re-scan.
+  const scanned = f.store.status.keyBucketBackfill?.scanned;
+  await f.store.sync();
+  assert.equal(f.store.status.keyBucketBackfill?.scanned, scanned);
+});
