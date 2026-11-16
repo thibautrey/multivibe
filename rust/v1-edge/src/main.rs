@@ -12,6 +12,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = EdgeState::new(config.clone()).await?;
     let model_catalog_monitor = state.start_model_catalog_monitor();
     let job_runner = state.start_job_runner();
+    // Measured capacity: the declared `maxConcurrent` is verified against each
+    // runtime's metrics endpoint rather than trusted forever.
+    let capacity_probe = state.start_capacity_probe()?;
     let shutdown_state = state.clone();
     let router: Router = build_router(state.clone());
     let listener = TcpListener::bind(&bind_address).await?;
