@@ -13754,6 +13754,10 @@ async fn admission_state_handler(State(state): State<EdgeState>, req: Request<Bo
                 "entries": state.admission.grace().len(),
                 "active": state.admission.grace_active_total(&accounts, now),
             },
+            "enrollment": {
+                "retainedCodes": state.enrollment.lock().await.len(),
+                "codeTtlMs": enrollment::CODE_TTL_MS,
+            },
             "leases": {
                 "live": live_leases,
                 "ttlMs": admission::LEASE_TTL_MS,
