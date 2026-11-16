@@ -175,7 +175,17 @@ export async function resolveBackend(platform: NodeJS.Platform, directory: strin
   return fileBackend(directory);
 }
 
-/** Load every stored value. Absent stays absent rather than becoming empty. */
+/**
+ * Load every stored value.
+ *
+ * `edgeApiKey` becomes `""` when nothing is stored, because the field is
+ * non-optional: `Boolean("")` is false, so `doctor` still reports "no edge API
+ * key stored" and no caller mistakes it for a credential. The optional names
+ * (`accessClientId`, `accessClientSecret`, `nousApiKey`, `localKey`) stay
+ * genuinely absent instead, so "supplied but blank" and "not supplied" remain
+ * distinguishable — which matters, because `edgeHeaders` sends the Access pair
+ * only when both are present.
+ */
 export async function loadSecrets(backend: SecretBackend): Promise<{
   secrets: Partial<BridgeSecrets>;
   localKey?: string;
