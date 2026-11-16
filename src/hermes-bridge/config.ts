@@ -55,6 +55,14 @@ export type BridgeConfig = {
    * make the bridge wrong -- only occasionally one request slower.
    */
   capacityTtlMs: number;
+  /**
+   * Whether to subscribe to the edge's `capacity.changed` stream.
+   *
+   * On by default for `run`: without it a turn can spend up to `capacityTtlMs`
+   * believing the edge is full after it drained. Off in tests and in `doctor`,
+   * which must not hold an open connection.
+   */
+  capacityStream: boolean;
 };
 
 export const DEFAULT_BRIDGE_CONFIG: Omit<BridgeConfig, "mappings"> = {
@@ -68,6 +76,7 @@ export const DEFAULT_BRIDGE_CONFIG: Omit<BridgeConfig, "mappings"> = {
   edgeAttemptTimeoutMs: 45_000,
   maxQueueWaitMs: 120_000,
   capacityTtlMs: 15_000,
+  capacityStream: true,
 };
 
 /**

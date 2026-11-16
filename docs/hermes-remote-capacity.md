@@ -175,12 +175,20 @@ Routing rules, in priority order:
    the prompt cache on both sides and avoiding flapping.
 5. **The Nous key never leaves the machine.** All fallback traffic goes directly
    from the customer's host; nothing is proxied through us or billed by us.
-6. **A capacity reading is reused for 15 s.** Probing on every turn costs a round
+6. **A capacity reading is reused for 15 s, and invalidated by the edge's
+   event stream.** Probing on every turn costs a round
    trip on the path the customer is waiting on. The reading is only a hint for
    whether probing is worth it: a stale "plenty free" still meets a real `429`,
    which falls back, so caching can make a turn one request slower but not wrong.
    A failed probe is **not** cached — a credential refusal or a timeout is a fault
    to notice promptly, not a state to bake in.
+   The bridge also subscribes to `/v1/capacity/events` and drops the cached
+   reading on `capacity.changed` / `admission.changed`, so it does not act on a
+   reading the edge has already declared obsolete. The subscription is best
+   effort: a stream that never connects, or dies and retries, changes nothing
+   about correctness because the TTL still governs. It retries with backoff on
+   an unref'd timer and is closed with the server, so it can never hold shutdown
+   open.
 7. **A saturated edge is a reason to fall back, not to fail.** `429` and `503`
    from the edge — the edge pool busy, or no slot at all — are retried on Nous
    before any byte reaches the harness. A `400` is not: retrying a malformed
