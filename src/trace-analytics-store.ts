@@ -656,9 +656,12 @@ export class TraceAnalyticsStore {
     const [since,until]=bounds(args);
     const limit=Math.max(1,Math.min(500,Math.floor(args.limit??200)));
     const offset=Math.max(0,Math.floor(args.offset??0));
-    const clause="session_key=? AND at>=? AND at<=? AND (kind IS NULL OR kind='upstream-attempt')";
-    const total=(this.db.prepare(`SELECT count(DISTINCT turn_id) AS n FROM entries WHERE ${clause}`).get(args.sessionKey,since,until) as any).n;
-    const keys=this.db.prepare(`SELECT turn_id FROM entries WHERE ${clause} GROUP BY turn_id ORDER BY min(at),turn_id LIMIT ? OFFSET ?`).all(args.sessionKey,since,until,limit,offset) as {turn_id:string}[];
+    // A key filter must constrain the turn count and the page, not only each turn body.
+    const keyClause = args.apiKeyId ? " AND api_key=?" : "";
+    const keyParams = args.apiKeyId ? [args.apiKeyId] : [];
+    const clause=`session_key=? AND at>=? AND at<=? AND (kind IS NULL OR kind='upstream-attempt')${keyClause}`;
+    const total=(this.db.prepare(`SELECT count(DISTINCT turn_id) AS n FROM entries WHERE ${clause}`).get(args.sessionKey,since,until,...keyParams) as any).n;
+    const keys=this.db.prepare(`SELECT turn_id FROM entries WHERE ${clause} GROUP BY turn_id ORDER BY min(at),turn_id LIMIT ? OFFSET ?`).all(args.sessionKey,since,until,...keyParams,limit,offset) as {turn_id:string}[];
     const turns=[];
     for(const {turn_id} of keys) turns.push(...sessionTurnsFor(this.range(args,"AND session_key=? AND turn_id=? ORDER BY at,id",[args.sessionKey,turn_id]),args.sessionKey));
     return {turns,total,limit,offset};

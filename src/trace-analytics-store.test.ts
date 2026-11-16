@@ -6,6 +6,7 @@ import path from "node:path";
 import { TraceAnalyticsStore } from "./trace-analytics-store.js";
 import { createTraceManager, normalizeTrace, toStatsHistoryEntry, buildTraceStats, createUsageAggregate, addTraceToAggregate, finalizeAggregate, type TraceEntry } from "./traces.js";
 import { aggregateSessionUsage, sessionTurnsFor } from "./session-usage.js";
+import { sessionKeyOf } from "./session-identity.js";
 import { aggregateProjectUsage } from "./project-usage.js";
 import { installModelsDevPricing } from "./model-pricing.js";
 
@@ -259,6 +260,20 @@ test("key-filtered trace stats stay bounded to the key and exclude other keys", 
   const filtered = f.store.usage({ ...narrow, apiKeyId: "configured:codex" });
   assert.equal(filtered.totals.requests, 1);
   assert.equal((filtered as any).byApiKey.length, 1);
+
+  // Session turns must honour the same narrowing, including their total count.
+  const sessionKey = sessionKeyOf(keyed)!;
+  const allTurns = f.store.query("turns", { ...narrow, sessionKey, limit: 50 }) as { total: number; turns: any[] };
+  const ownTurns = f.store.query("turns", { ...narrow, sessionKey, apiKeyId: "configured:codex", limit: 50 }) as { total: number; turns: any[] };
+  const otherTurns = f.store.query("turns", { ...narrow, sessionKey, apiKeyId: "configured:ghost", limit: 50 }) as { total: number; turns: any[] };
+  // The fixture shares one Codex session across keys, so the unfiltered session
+  // has one turn per key while each key sees only its own.
+  assert.equal(allTurns.total, 3);
+  assert.equal(ownTurns.total, 1);
+  assert.equal(ownTurns.turns.length, 1);
+  assert.equal(ownTurns.turns[0].clientRequestId, "hour-a", "only the selected key's turn is returned");
+  assert.equal(otherTurns.total, 0, "a foreign key reports no turns");
+  assert.equal(otherTurns.turns.length, 0);
 });
 
 test("legacy history without per-key buckets is rebuilt once by the backfill", async t => {
