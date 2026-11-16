@@ -13742,14 +13742,39 @@ async fn admission_decision_for(
         .flatten();
     let measured = state.measured_capacity_snapshot(&accounts).await;
     let capacity_of = |account_id: &str| measured.get(account_id).copied();
-    let (acquired, report) = state.admission.acquire_for_with_capacity(
-        &accounts,
-        share.is_some().then_some(application),
-        share.as_ref(),
-        session,
-        now_ms(),
-        &capacity_of,
-    );
+    // In shadow the endpoint must not reserve anything either: a lease *is* an
+    // enforced promise, and a client that receives `queue` would switch upstream
+    // -- a behavioural effect the measurement must not cause. Report what the
+    // policy would have said, and admit as before.
+    let shadowed = state.config.admission_shadow;
+    let (acquired, report) = if shadowed {
+        let (_, evaluated) = state.admission.evaluate_with_capacity(
+            &accounts,
+            share.is_some().then_some(application),
+            share.as_ref(),
+            session,
+            now_ms(),
+            &capacity_of,
+        );
+        let (lease, _) = state.admission.acquire_for_with_capacity(
+            &accounts,
+            None,
+            None,
+            None,
+            now_ms(),
+            &capacity_of,
+        );
+        (lease, evaluated)
+    } else {
+        state.admission.acquire_for_with_capacity(
+            &accounts,
+            share.is_some().then_some(application),
+            share.as_ref(),
+            session,
+            now_ms(),
+            &capacity_of,
+        )
+    };
     state.admission_metrics.record(&report);
 
     let Some((index, capacity_lease)) = acquired else {
@@ -13761,10 +13786,15 @@ async fn admission_decision_for(
         } else {
             admission::AdmissionDecision::Queue
         };
-        let mut response = json_response(
-            StatusCode::OK,
-            admission_body(&report, decision, model, None, None, 0, switch_ok),
-        );
+        let mut body = admission_body(&report, decision, model, None, None, 0, switch_ok);
+        if shadowed {
+            body["shadow"] = json!({
+                "wouldDecide": report.decision.as_str(),
+                "reason": admission_reason(&report),
+                "waitMs": report.wait_ms,
+            });
+        }
+        let mut response = json_response(StatusCode::OK, body);
         if let Ok(value) =
             HeaderValue::from_str(&report.wait_ms.max(1_000).div_ceil(1_000).to_string())
         {
@@ -13815,18 +13845,26 @@ async fn admission_decision_for(
                 }
                 return response;
             }
-            json_response(
-                StatusCode::OK,
-                admission_body(
-                    &report,
-                    admission::AdmissionDecision::Admit,
-                    model,
-                    Some(&lease_id),
-                    Some(now + admission::LEASE_TTL_MS),
-                    0,
-                    switch_ok,
-                ),
-            )
+            let mut body = admission_body(
+                &report,
+                admission::AdmissionDecision::Admit,
+                model,
+                Some(&lease_id),
+                Some(now + admission::LEASE_TTL_MS),
+                0,
+                switch_ok,
+            );
+            if shadowed {
+                // The decision stays `admit` because that is what actually
+                // happens. The counterfactual sits beside it so an operator can
+                // see what the policy would have done without being steered by it.
+                body["shadow"] = json!({
+                    "wouldDecide": report.decision.as_str(),
+                    "reason": admission_reason(&report),
+                    "waitMs": report.wait_ms,
+                });
+            }
+            json_response(StatusCode::OK, body)
         }
         Err(error) => {
             drop(capacity_lease);
