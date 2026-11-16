@@ -4478,6 +4478,7 @@ impl AdmissionController {
             drop(counters);
             self.bump();
             report.decision = admission::AdmissionDecision::Admit;
+            report.borrowed_from_grace = borrowed;
             return (
                 Some((
                     index,
@@ -4778,6 +4779,10 @@ struct AdmissionReport {
     session_grace: admission::GraceState,
     grace_keeps_priority: bool,
     wait_ms: u64,
+    /// The slot granted was borrowed from the grace pool rather than taken from
+    /// the application's own share. Carried so a lease can record it: the pool
+    /// cannot be credited later without knowing this.
+    borrowed_from_grace: bool,
 }
 
 impl Default for AdmissionReport {
@@ -4794,6 +4799,7 @@ impl Default for AdmissionReport {
             session_grace: admission::GraceState::None,
             grace_keeps_priority: true,
             wait_ms: 0,
+            borrowed_from_grace: false,
         }
     }
 }
@@ -7592,9 +7598,11 @@ async fn proxy_inference(
         _ => None,
     };
     if let Some(redeemed) = redeemed_lease.as_ref() {
-        state
-            .admission
-            .release_for(&redeemed.account_id, Some(application));
+        state.admission.release_for_with_grace(
+            &redeemed.account_id,
+            Some(application),
+            redeemed.borrowed_from_grace,
+        );
     }
 
     'admission: loop {
@@ -13954,15 +13962,23 @@ async fn admission_decision_for(
     let application_key = share.is_some().then_some(application);
     let granted = {
         let mut leases = state.admission_leases.lock().await;
-        leases.grant(lease_id.clone(), application, &account.id, now)
+        leases.grant(
+            lease_id.clone(),
+            application,
+            &account.id,
+            report.borrowed_from_grace,
+            now,
+        )
     };
     match granted {
         Ok(released) => {
             drop(capacity_lease);
             for expired in released {
-                state
-                    .admission
-                    .release_for(&expired.account_id, Some(&expired.application));
+                state.admission.release_for_with_grace(
+                    &expired.account_id,
+                    Some(&expired.application),
+                    expired.borrowed_from_grace,
+                );
             }
             if !state.admission.reserve(&account, application_key) {
                 // The slot disappeared between the decision and the reservation
@@ -14453,7 +14469,11 @@ async fn admission_lease_handler(
     for expired in released {
         state
             .admission
-            .release_for(&expired.account_id, Some(&expired.application));
+            .release_for_with_grace(
+                &expired.account_id,
+                Some(&expired.application),
+                expired.borrowed_from_grace,
+            );
     }
     let Some((lease_state, expires_at, renewals)) = found else {
         return error_response(
@@ -14481,7 +14501,11 @@ async fn admission_lease_handler(
         for expired in renewed_released {
             state
                 .admission
-                .release_for(&expired.account_id, Some(&expired.application));
+                .release_for_with_grace(
+                &expired.account_id,
+                Some(&expired.application),
+                expired.borrowed_from_grace,
+            );
         }
         match outcome {
             Some(values) => values,
