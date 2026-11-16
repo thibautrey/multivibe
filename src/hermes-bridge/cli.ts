@@ -34,7 +34,14 @@ Options:
   --enroll <url>              Override the enrollment base URL (no /v1)
   --nous <url>                Override the Nous Research base URL
   --nous-key <path|->         Read the Nous API key from a file, or stdin
+  --access-id <client id>     Cloudflare Access service token id, if enrollment is gated
+  --access-secret <path|->    Read the Access service token secret from a file, or stdin
   --json                      Machine-readable output
+
+If your deployment gates the enrollment hostname behind Cloudflare Access, pass
+both --access-id and --access-secret. Without them the exchange is anonymous and
+a gated hostname answers 302 to the Access login page, which the bridge cannot
+recover from: it has no credential yet and the code is single-use.
 `;
 
 export type ParsedArgs = {
@@ -140,7 +147,37 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       process.stderr.write("A valid --code mvenr_... value is required.\n");
       return 2;
     }
-    const result = await exchangeEnrollment({ endpoint: config.enrollBaseUrl, code });
+    const accessId = args.values.get("access-id");
+    const accessSecretSource = args.values.get("access-secret");
+    // Both or neither. A half-supplied pair would send a request that looks
+    // authenticated to the operator and is anonymous to Cloudflare.
+    if (Boolean(accessId) !== Boolean(accessSecretSource)) {
+      process.stderr.write(
+        "--access-id and --access-secret must be given together, or neither.\n",
+      );
+      return 2;
+    }
+    let accessClientId: string | undefined;
+    let accessClientSecret: string | undefined;
+    if (accessId && accessSecretSource) {
+      const trimmed = accessId.trim();
+      if (!trimmed) {
+        process.stderr.write("--access-id must not be empty.\n");
+        return 2;
+      }
+      accessClientId = trimmed.endsWith(".access") ? trimmed : `${trimmed}.access`;
+      accessClientSecret = await readSecretInput(accessSecretSource);
+      if (!accessClientSecret) {
+        process.stderr.write("the Access service token secret is empty.\n");
+        return 2;
+      }
+    }
+    const result = await exchangeEnrollment({
+      endpoint: config.enrollBaseUrl,
+      code,
+      ...(accessClientId ? { accessClientId } : {}),
+      ...(accessClientSecret ? { accessClientSecret } : {}),
+    });
     if (!result.ok) {
       process.stderr.write(`Enrollment failed: ${result.reason}.\n`);
       return 1;
