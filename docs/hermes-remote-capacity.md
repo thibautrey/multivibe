@@ -129,6 +129,10 @@ Routing rules, in priority order:
    the prompt cache on both sides and avoiding flapping.
 5. **The Nous key never leaves the machine.** All fallback traffic goes directly
    from the customer's host; nothing is proxied through us or billed by us.
+6. **A saturated edge is a reason to fall back, not to fail.** `429` and `503`
+   from the edge — our machines busy, or no slot at all — are retried on Nous
+   before any byte reaches the harness. A `400` is not: retrying a malformed
+   request against a second provider would double the failure and hide its cause.
 
 ## Rollout
 
