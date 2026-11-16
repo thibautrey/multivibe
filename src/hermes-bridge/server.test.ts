@@ -260,6 +260,40 @@ test("health never exposes a secret value", async () => {
 
 // --- doctor -----------------------------------------------------------------
 
+test("doctor catches a mapped model the fallback does not actually serve", async () => {
+  // Nous serves a large catalogue but no hermes-* model at the time of writing,
+  // so a plausible mapping is not evidence that the fallback can serve it.
+  const { fetchImpl } = scriptedFetch([
+    jsonResponse({ data: [{ id: "qwen/qwen4-max" }, { id: "meta/muse-ember" }] }),
+  ]);
+  const report = await runDoctor({
+    config: config(),
+    secrets: { edgeApiKey: "k", nousApiKey: "n" },
+    mappings: MAPPINGS,
+    fetchImpl,
+  });
+  const check = report.checks.find((entry) => entry.name === "nous serves hermes-4-405b");
+  assert.equal(check?.status, "fail");
+  assert.match(check?.detail ?? "", /missing from the live catalogue/);
+  assert.equal(report.ok, false);
+});
+
+test("doctor passes when the fallback really serves the mapped model", async () => {
+  const { fetchImpl } = scriptedFetch([
+    jsonResponse({ data: [] }), // edge /models
+    jsonResponse({ data: [{ id: "hermes-4-405b" }] }), // nous /models
+  ]);
+  const report = await runDoctor({
+    config: config(),
+    secrets: { edgeApiKey: "k", nousApiKey: "n" },
+    mappings: MAPPINGS,
+    fetchImpl,
+  });
+  const check = report.checks.find((entry) => entry.name === "nous serves hermes-4-405b");
+  assert.equal(check?.status, "ok");
+});
+
+
 test("doctor reports a missing Nous key as a warning, not a failure", async () => {
   const { fetchImpl } = scriptedFetch([jsonResponse({ data: [] })]);
   const report = await runDoctor({
