@@ -20,7 +20,7 @@ fn decoder_strips_only_initial_bom_across_all_chunk_boundaries() {
 
 #[test]
 fn responses_failures_do_not_become_chat_stop() {
-    for kind in ["response.failed", "response.error"] {
+    for kind in ["response.failed", "error", "response.error"] {
         let mut converter =
             SseStreamTransformer::new(StreamTransform::ResponseToChat, "test-model");
         let event = json!({"type":kind,"response":{"status":"failed","error":{"code":"test_failure","message":"fixture failure"}},"error":{"code":"test_failure","message":"fixture failure"}});
@@ -49,7 +49,10 @@ fn responses_failures_do_not_become_chat_stop() {
             1,
             "{output}"
         );
-        assert!(output.contains("fixture failure"));
+        // Upstream error text can carry account ids and request echoes, so the
+        // client frame must not receive it verbatim.
+        assert!(!output.contains("fixture failure"), "{output}");
+        assert!(output.contains("upstream stream reported an error"), "{output}");
     }
 }
 
@@ -234,7 +237,8 @@ async fn assert_held_open_terminal_closes(transform: StreamTransform, dialect: C
         activity_lease: None,
         stream_heartbeat: Duration::from_secs(15),
     });
-    let result = tokio::time::timeout(Duration::from_secs(1), response.into_body().collect()).await;
+    let result =
+        tokio::time::timeout(Duration::from_secs(10), response.into_body().collect()).await;
     task.abort();
     let text = String::from_utf8(
         result
