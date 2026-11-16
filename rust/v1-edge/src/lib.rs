@@ -180,6 +180,13 @@ pub struct EdgeConfig {
     /// share windows). Disabled by default: the phase-0 shadow rollout and the
     /// phase-1 canary both require an explicit enable.
     pub admission_policy_enabled: bool,
+    /// Phase 0 of the rollout: compute and record every decision, enforce none.
+    ///
+    /// This exists so an operator can watch the counters against real traffic and
+    /// confirm the numbers match expectations *before* the limits start refusing
+    /// work. A flag that merely turns the policy off cannot answer that question,
+    /// because with it off no decision is computed at all.
+    pub admission_shadow: bool,
     /// How many edge processes serve this deployment.
     ///
     /// Admission counts in memory, so every limit is per-process. Declaring the
@@ -271,6 +278,7 @@ impl Default for EdgeConfig {
                 "gpt-5-codex".to_owned(),
             ],
             admission_policy_enabled: false,
+            admission_shadow: false,
             edge_replicas: 1,
             admission_grace: admission::GracePolicy::default(),
             admin_token: String::new(),
@@ -487,6 +495,8 @@ impl EdgeConfig {
             realtime_voice: realtime_voice::Config::from_env(),
             proxy_models,
             admission_policy_enabled: env("ADMISSION_POLICY_ENABLED")
+                .is_some_and(|value| value.eq_ignore_ascii_case("true")),
+            admission_shadow: env("ADMISSION_SHADOW")
                 .is_some_and(|value| value.eq_ignore_ascii_case("true")),
             edge_replicas: env("EDGE_REPLICAS")
                 .and_then(|value| value.parse::<u32>().ok())
@@ -4245,6 +4255,102 @@ impl AdmissionController {
         self.acquire_for_with_capacity(accounts, application, share, session, now, &|_| None)
     }
 
+    /// Evaluate the policy without taking a slot or touching any counter.
+    ///
+    /// Phase 0 needs the decision that *would* have been made, on the same
+    /// traffic, with no effect. Doing it by "acquire then release" would perturb
+    /// the very counters the operator is reading.
+    fn evaluate_with_capacity(
+        self: &Arc<Self>,
+        accounts: &[Account],
+        application: Option<&str>,
+        share: Option<&admission::ApplicationShare>,
+        session: Option<&str>,
+        now: u64,
+        measured: &dyn Fn(&str) -> Option<u32>,
+    ) -> (Option<(usize, AdmissionLease)>, AdmissionReport) {
+        let grace_policy = self.grace().policy().clone();
+        let grace_qualifies = match (application, session) {
+            (Some(application), Some(session)) => self.grace().qualifies(application, session, now),
+            _ => false,
+        };
+        let counters = self.counters();
+        let mut report = AdmissionReport {
+            session_grace: if session.is_none() {
+                admission::GraceState::None
+            } else if grace_qualifies {
+                admission::GraceState::Granted
+            } else {
+                admission::GraceState::Ineligible
+            },
+            ..AdmissionReport::default()
+        };
+        for account in accounts.iter() {
+            let capacity = measured(&account.id)
+                .filter(|value| *value >= 1)
+                .unwrap_or_else(|| declared_max_concurrent(account));
+            let active = counters
+                .active_by_account
+                .get(&account.id)
+                .copied()
+                .unwrap_or_default();
+            let effective_share = share.cloned().unwrap_or_else(|| admission::ApplicationShare {
+                max_concurrent_share: 1.0,
+                burst: 0,
+                share_windows: Vec::new(),
+            });
+            let application_active = application
+                .and_then(|name| {
+                    counters
+                        .active_by_application
+                        .get(&(name.to_owned(), account.id.clone()))
+                        .copied()
+                })
+                .unwrap_or_default();
+            let grace_active = if application.is_some() {
+                self.grace().active_on_account(&account.id, now)
+            } else {
+                0
+            };
+            let pressure = admission::AccountPressure {
+                capacity,
+                account_active: active,
+                application_active,
+                grace_active,
+            };
+            let limit = effective_share.slots(capacity, active, now);
+            let decision = admission::decide(
+                &effective_share,
+                &grace_policy,
+                pressure,
+                grace_qualifies,
+                grace_qualifies,
+                now,
+            );
+            let wait = admission::estimated_wait_ms(pressure, limit, DEFAULT_TURN_ESTIMATE_MS);
+            if report.account.is_none() {
+                report.capacity = capacity;
+                report.share_limit = limit;
+                report.account_active = active;
+                report.application_active = application_active;
+                report.grace_slots = grace_policy.slots(capacity);
+                report.grace_active = grace_active;
+                report.wait_ms = wait;
+                report.account = Some(account.id.clone());
+            } else {
+                report.wait_ms = report.wait_ms.min(wait);
+            }
+            if decision == admission::AdmissionDecision::Admit {
+                report.decision = admission::AdmissionDecision::Admit;
+                return (None, report);
+            }
+        }
+        report.decision = admission::AdmissionDecision::Queue;
+        report.grace_keeps_priority =
+            admission::grace_keeps_priority(report.utilisation(), &grace_policy);
+        (None, report)
+    }
+
     /// As `acquire_for`, but consulting a measured ceiling when one exists.
     ///
     /// `measured` returns the observed ceiling for an account, or `None` when
@@ -6205,7 +6311,7 @@ pub struct EdgeState {
 
 impl EdgeState {
     pub async fn new(config: EdgeConfig) -> Result<Self, String> {
-        if config.admission_policy_enabled && config.edge_replicas > 1 {
+        if config.admission_policy_enabled && !config.admission_shadow && config.edge_replicas > 1 {
             return Err(format!(
                 "ADMISSION_POLICY_ENABLED requires EDGE_REPLICAS=1: admission counts in memory, so {} replicas would multiply every limit by the same factor and the fair share would be silently false. Use a shared admission store before scaling out.",
                 config.edge_replicas
@@ -7517,8 +7623,12 @@ async fn proxy_inference(
                 // no measurement keeps its declared value.
                 let measured = state.measured_capacity_snapshot(&accounts).await;
                 let capacity_of = |account_id: &str| measured.get(account_id).copied();
-                let (admission, admission_report) =
-                    state.admission.acquire_for_with_capacity(
+                // Phase 0: decide against the policy, record it, enforce nothing.
+                // The request then takes the original path, so a shadow run
+                // cannot refuse work it would previously have admitted.
+                let shadow = state.config.admission_shadow;
+                let (admission, admission_report) = if shadow {
+                    let (_, evaluated) = state.admission.evaluate_with_capacity(
                         &accounts,
                         admission_share.is_some().then_some(application),
                         admission_share.as_ref(),
@@ -7526,6 +7636,25 @@ async fn proxy_inference(
                         now_ms(),
                         &capacity_of,
                     );
+                    let (lease, _) = state.admission.acquire_for_with_capacity(
+                        &accounts,
+                        None,
+                        None,
+                        None,
+                        now_ms(),
+                        &capacity_of,
+                    );
+                    (lease, evaluated)
+                } else {
+                    state.admission.acquire_for_with_capacity(
+                        &accounts,
+                        admission_share.is_some().then_some(application),
+                        admission_share.as_ref(),
+                        prompt_cache_session_id.as_deref(),
+                        now_ms(),
+                        &capacity_of,
+                    )
+                };
                 record_admission_decision(&state, application, &admission_report).await;
                 last_admission_wait_ms = admission_report.wait_ms;
                 // Echoed on the response (`push_admission_headers`) so a client
@@ -14249,6 +14378,8 @@ async fn capacity_handler(
             "recommendation": if free_slots > 0 { "sync" } else { "defer" },
             "estimatedWaitMs": estimated_wait_ms,
             "policyEnabled": state.config.admission_policy_enabled,
+            // Phase 0: the counters are real, the enforcement is not.
+            "shadow": state.config.admission_shadow,
             // Every limit below is per-process; a reviewer must be able to see it.
             "replicas": state.config.edge_replicas,
             "shareLimit": share_view.map(|(_, _, _, limit)| limit),
@@ -18909,6 +19040,93 @@ mod tests {
         assert_eq!(registry.ceiling("dead-metrics"), Some(4));
         drop(registry);
 
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
+    async fn shadow_computes_a_decision_and_enforces_nothing() {
+        // Phase 0 must answer "what would the policy have said?" without refusing
+        // a single request, and without perturbing the counters it is meant to
+        // validate.
+        let store_path = temporary_path("shadow-accounts");
+        let jobs_path = temporary_path("shadow-jobs");
+        let mut target = account("shadow-acct");
+        target.capacity_profile = Some(CapacityProfile {
+            max_concurrent: Some(1),
+            ..Default::default()
+        });
+        let mut store = store_with_accounts(vec![target]);
+        store.application_policies.push(ApplicationPolicy {
+            application: "hermes-a".to_owned(),
+            fairness_weight: Some(1.0),
+            max_concurrent_share: Some(1.0),
+            burst: Some(0),
+            share_windows: None,
+            webhooks: Vec::new(),
+            ..Default::default()
+        });
+        fs::write(&store_path, serde_json::to_vec(&store).unwrap())
+            .await
+            .unwrap();
+
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.legacy_jobs_db_path = None;
+        config.admission_policy_enabled = true;
+        config.admission_shadow = true;
+        let state = EdgeState::new(config).await.unwrap();
+
+        let share = application_share(&store, "hermes-a").expect("policy");
+        // Hold the only physical slot.
+        let (held, _) = state.admission.acquire_for_with_capacity(
+            &store.accounts,
+            Some("hermes-a"),
+            Some(&share),
+            None,
+            now_ms(),
+            &|_| None,
+        );
+        assert!(held.is_some());
+        let held = held.unwrap().1;
+
+        // Evaluate: the policy would queue, and evaluating takes nothing.
+        let (lease, report) = state.admission.evaluate_with_capacity(
+            &store.accounts,
+            Some("hermes-a"),
+            Some(&share),
+            None,
+            now_ms(),
+            &|_| None,
+        );
+        assert!(lease.is_none(), "evaluation never hands out a lease");
+        assert_eq!(report.decision, admission::AdmissionDecision::Queue);
+
+        // The live counter is untouched by the evaluation.
+        assert_eq!(state.admission.active_on_account("shadow-acct"), Some(1));
+
+        drop(held);
+        assert_eq!(state.admission.active_on_account("shadow-acct"), None);
+
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
+    async fn shadow_does_not_trip_the_replica_guard() {
+        // It enforces nothing, so the N-times-capacity argument does not apply.
+        let store_path = temporary_path("shadow-replicas-accounts");
+        let jobs_path = temporary_path("shadow-replicas-jobs");
+        fs::write(&store_path, b"{}").await.unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.legacy_jobs_db_path = None;
+        config.admission_policy_enabled = true;
+        config.admission_shadow = true;
+        config.edge_replicas = 3;
+        assert!(EdgeState::new(config).await.is_ok());
         let _ = fs::remove_file(store_path).await;
         let _ = fs::remove_file(jobs_path).await;
     }
