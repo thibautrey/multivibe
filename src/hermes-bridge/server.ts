@@ -12,6 +12,7 @@ import type { BridgeConfig, BridgeSecrets, ModelMapping } from "./config.js";
 import { isLoopbackHost, mapModel, redactSecrets } from "./config.js";
 import type { EdgeAdmission, Upstream } from "./upstream.js";
 import { routeTurn, type SwitchReason } from "./upstream.js";
+import { subscribeCapacityStream, type CapacityStream } from "./capacity-stream.js";
 
 export type BridgeLogEvent = {
   kind: "turn" | "switch" | "error" | "health";
@@ -155,6 +156,12 @@ export function createBridge(deps: BridgeDeps) {
    * a fast path into a broken one.
    */
   const capacityCache = new Map<string, { at: number; value: EdgeAdmission | null; reachable: boolean }>();
+  /**
+   * The edge's event stream, used only to expire `capacityCache` sooner than the
+   * TTL would. Started lazily on the first turn so `doctor`, `enroll` and tests
+   * never hold a connection they did not ask for.
+   */
+  let capacityStream: CapacityStream | undefined;
   // Content-free counters. `blockedNoMapping` is the one that matters most: it
   // means a client asked for a model the fallback cannot serve, so the promise
   // "you will not notice the switch" is not being kept for that model.
@@ -301,6 +308,20 @@ export function createBridge(deps: BridgeDeps) {
     const at = now();
     pruneSticky(at);
     const stickyUntilMs = conversation ? sticky.get(conversation)?.until : undefined;
+
+    if (config.capacityStream && !capacityStream) {
+      // Best effort by construction: a stream that never connects, or dies and
+      // retries forever, changes nothing about correctness — the TTL still
+      // governs. It only stops a turn from acting on a reading the edge has
+      // already told us is obsolete.
+      capacityStream = subscribeCapacityStream({
+        url: `${base}/capacity/events`,
+        headers: edgeHeaders(secrets, request.headers),
+        onInvalidate: () => capacityCache.clear(),
+        fetchImpl,
+        onError: (message) => log({ kind: "error", reason: "edge_unavailable", message: `capacity stream: ${message}` }),
+      });
+    }
 
     // One bounded probe, then a single decision. Never a second decision after
     // bytes have reached the harness.
@@ -468,18 +489,29 @@ export function createBridge(deps: BridgeDeps) {
     /** The key the harness must present. Printed once by `init`. */
     localKey,
     handler: handle,
-    server: http.createServer((request, response) => {
-      handle(request, response).catch((error: unknown) => {
-        if (!response.headersSent) {
-          sendJson(response, 500, { error: { message: String((error as Error).message) } });
-        } else {
-          response.destroy();
-        }
-        log({ kind: "error", status: 500, message: String((error as Error).message) });
+    server: (() => {
+      const server = http.createServer((request, response) => {
+        handle(request, response).catch((error: unknown) => {
+          if (!response.headersSent) {
+            sendJson(response, 500, { error: { message: String((error as Error).message) } });
+          } else {
+            response.destroy();
+          }
+          log({ kind: "error", status: 500, message: String((error as Error).message) });
+        });
       });
-    }),
+      // Closing the server must also close the event stream. Without this the
+      // subscription outlives the listener it belongs to: the bridge exits but
+      // leaves a retry timer and an open request behind on the way out.
+      server.on("close", () => {
+        capacityStream?.stop();
+        capacityStream = undefined;
+      });
+      return server;
+    })(),
     listening: config,
     sticky,
+    capacityStream: () => capacityStream,
   };
 }
 

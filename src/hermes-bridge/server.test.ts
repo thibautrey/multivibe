@@ -18,7 +18,10 @@ const SECRETS: BridgeSecrets = {
 };
 
 function config(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
-  return { ...DEFAULT_BRIDGE_CONFIG, mappings: MAPPINGS, ...overrides };
+  // The capacity stream opens a long-lived connection; the routing tests drive
+  // `fetchImpl` with a scripted queue and must not have a subscription consume
+  // its entries or keep the process alive. Tests that exercise the stream opt in.
+  return { ...DEFAULT_BRIDGE_CONFIG, mappings: MAPPINGS, capacityStream: false, ...overrides };
 }
 
 function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
