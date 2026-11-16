@@ -101,7 +101,15 @@ consequences, both intentional:
   running" in the sense the promise means.
 
 Above 85 % utilisation grace degrades to an ordinary queue position: the
-conversation is never dropped, it simply stops outranking newcomers.
+conversation is never dropped, it simply stops borrowing the remaining slots.
+The report distinguishes the two states, because "granted" alone is ambiguous:
+
+- `grace: granted` — this conversation holds grace;
+- `graceKeepsPriority: true` — and it may still borrow past its share.
+
+Past the threshold the first stays `granted` while the second turns `false`: the
+conversation keeps its place in the queue and loses the ability to take the last
+free slot, which is what would keep a new conversation from starting at all.
 
 ## Interfaces
 
@@ -112,7 +120,9 @@ conversation is never dropped, it simply stops outranking newcomers.
 ```
 
 Returns `decision` ∈ `admit | queue | switch`, the lease when admitted, `waitMs`,
-`grace`, and the share arithmetic that produced the answer. The request never
+`position` (callers ahead on these accounts; 0 when admitted), `grace`,
+`graceActive` / `graceSlots` (borrowed slots against the pool), `graceKeepsPriority`,
+and the share arithmetic that produced the answer. The request never
 blocks for more than [`INLINE_MAX_WAIT_MS`] (55 s) because the wait is reported
 rather than held.
 
