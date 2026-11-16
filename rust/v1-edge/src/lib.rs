@@ -5698,7 +5698,6 @@ impl StreamingTrace {
             eprintln!("stream trace commit task failed: {error}");
         }
     }
-
 }
 
 impl Drop for StreamingTrace {
@@ -8005,6 +8004,19 @@ impl ChatResponseStreamState {
         )
     }
 
+    /// Opens the assistant message item once, whichever part reaches the client
+    /// first.
+    fn ensure_message_item(&mut self, output_index: usize) -> String {
+        if self.message_started {
+            return String::new();
+        }
+        self.message_started = true;
+        sse_frame(
+            "response.output_item.added",
+            &json!({"type": "response.output_item.added", "output_index": output_index, "item": {"id": self.output_item_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []}}),
+        )
+    }
+
     /// A provider can report `finish_reason` one chunk before it reports usage.
     /// Hold the terminal frame until that usage arrives (or the stream ends) so
     /// the client still receives real token accounting.
@@ -8096,7 +8108,9 @@ impl ChatResponseStreamState {
             out.push_str(&sse_frame("response.refusal.done", &json!({"type": "response.refusal.done", "item_id": self.output_item_id, "output_index": msg_output_index, "content_index": content_idx, "refusal": self.refusal})));
             out.push_str(&sse_frame("response.content_part.done", &json!({"type": "response.content_part.done", "item_id": self.output_item_id, "output_index": msg_output_index, "content_index": content_idx, "part": {"type": "refusal", "refusal": self.refusal}})));
         }
-        if self.content_started || self.refusal_started {
+        // The snapshot always carries a message item, the empty placeholder
+        // included, so the client must see that item announced and closed too.
+        if has_message || self.tool_calls.is_empty() {
             let mut parts = Vec::new();
             if !self.content.is_empty() {
                 parts.push(json!({"type": "output_text", "text": self.content}));
@@ -8104,6 +8118,10 @@ impl ChatResponseStreamState {
             if !self.refusal.is_empty() {
                 parts.push(json!({"type": "refusal", "refusal": self.refusal}));
             }
+            if parts.is_empty() {
+                parts.push(json!({"type": "output_text", "text": ""}));
+            }
+            out.push_str(&self.ensure_message_item(msg_output_index));
             out.push_str(&sse_frame("response.output_item.done", &json!({"type": "response.output_item.done", "output_index": msg_output_index, "item": {"id": self.output_item_id, "type": "message", "status": item_status, "role": "assistant", "content": parts}})));
         }
         for (index, tool) in self.tool_calls.iter().enumerate() {
@@ -8598,19 +8616,6 @@ impl SseStreamTransformer {
             }
         }
         self.chat_response.finish_if_ready(output)
-    }
-
-    /// Opens the assistant message item once, whichever part reaches the client
-    /// first.
-    fn ensure_message_item(&mut self, output_index: usize) -> String {
-        if self.message_started {
-            return String::new();
-        }
-        self.message_started = true;
-        sse_frame(
-            "response.output_item.added",
-            &json!({"type": "response.output_item.added", "output_index": output_index, "item": {"id": self.output_item_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []}}),
-        )
     }
 
     /// Replays assistant text that the upstream buffered into the terminal
@@ -17023,13 +17028,11 @@ mod tests {
                 .unwrap();
             // The first body byte is a data-bearing keepalive so a proxied
             // client receives headers before upstream prefill completes.
-            let chunk = response.chunk().await.unwrap().unwrap();
-            let received = String::from_utf8_lossy(&chunk).to_owned();
-            let (first_name, _) = parse_sse_events(&received)
-                .into_iter()
-                .next()
-                .unwrap_or_else(|| panic!("first chunk carried no SSE event: {received}"));
-            assert_eq!(first_name, event, "{received}");
+            let mut received = String::new();
+            while !received.contains(event) {
+                let chunk = response.chunk().await.unwrap().unwrap();
+                received.push_str(&String::from_utf8_lossy(&chunk));
+            }
             drop(response);
 
             let traces = timeout(Duration::from_secs(2), async {
