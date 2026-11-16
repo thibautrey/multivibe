@@ -1,0 +1,47 @@
+name: Rust workspace
+
+# The edge and proxy-core crates are built into the shipped images, but no
+# workflow compiled them. Four consecutive pushes to #44 went out without a
+# compiler seeing them; three of those heads did not build.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-workspace-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      # Same toolchain as the Dockerfile that ships the edge binary, so the
+      # gate validates what is actually released rather than a newer local rust.
+      - name: Install the shipping Rust toolchain
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --no-self-update
+          rustup default 1.88.0
+          rustc --version
+          cargo --version
+      - name: Build the workspace
+        run: cargo build --locked --workspace --all-targets
+      - name: Test the workspace
+        run: cargo test --locked --workspace
+      # Informational until the crate is formatted and lint-clean: main carries
+      # roughly 190 formatting hunks and 100 clippy warnings today, so a
+      # blocking gate here would be red on arrival and teach people to ignore it.
+      - name: Formatting
+        continue-on-error: true
+        run: cargo fmt --all --check
+      - name: Clippy
+        continue-on-error: true
+        run: cargo clippy --locked --workspace --all-targets
