@@ -736,10 +736,60 @@ test("counters expose the signals the plan watches, without content", async () =
     assert.deepEqual(Object.keys(health.counters).sort(), [
       "blockedNoMapping",
       "fallbackUnavailable",
+      "http524",
       "refusedCredential",
       "switched",
       "turns",
     ]);
+    // Nothing here was cut off by Cloudflare, and an invented non-zero would
+    // page an operator for an outage that did not happen.
+    assert.equal(health.counters.http524, 0);
+  });
+});
+
+test("an inline fallback counts as a switch, not as an ordinary turn", async () => {
+  // The edge is saturated: the turn reaches Nous without ever being served by
+  // the edge. `switch.count` exists to measure exactly this, and a counter that
+  // only fired on the non-fallback path would read zero during the outage it
+  // was built to report.
+  const { fetchImpl } = scriptedFetch([
+    jsonResponse({ decision: "admit" }),
+    jsonResponse({ error: { message: "busy" } }, 429),
+    jsonResponse({ choices: [] }),
+  ]);
+  const bridge = createBridge({ config: config(), secrets: SECRETS, mappings: MAPPINGS, fetchImpl });
+  await withBridge(bridge, async (baseUrl) => {
+    const response = await post(
+      baseUrl,
+      "/v1/chat/completions",
+      { model: "hermes-4-405b", messages: [] },
+      bridge.localKey,
+    );
+    assert.equal(response.status, 200);
+    const health = (await (await get(baseUrl, "/health")).json()) as {
+      counters: Record<string, number>;
+    };
+    assert.equal(health.counters.switched, 1, "the fallback was the switch");
+    assert.equal(health.counters.turns, 1, "and it was still one turn");
+  });
+});
+
+test("a Cloudflare 524 is counted, since only the bridge can see it", async () => {
+  // Cloudflare synthesises 524 itself; the edge never answers with it. If the
+  // bridge does not count it, the plan's "alert on any 524" can never fire.
+  const { fetchImpl } = scriptedFetch([
+    jsonResponse({ decision: "admit" }),
+    jsonResponse({ error: { message: "timeout" } }, 524),
+    jsonResponse({ choices: [] }),
+  ]);
+  const bridge = createBridge({ config: config(), secrets: SECRETS, mappings: MAPPINGS, fetchImpl });
+  await withBridge(bridge, async (baseUrl) => {
+    await post(baseUrl, "/v1/chat/completions", { model: "hermes-4-405b", messages: [] }, bridge.localKey);
+    const health = (await (await get(baseUrl, "/health")).json()) as {
+      counters: Record<string, number>;
+    };
+    assert.equal(health.counters.http524, 1);
+    assert.equal(health.counters.switched, 1, "a 524 is a pre-body failure, so it falls back");
   });
 });
 
