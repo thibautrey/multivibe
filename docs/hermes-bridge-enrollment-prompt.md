@@ -8,6 +8,11 @@ sending.
 > `{{ENROLLMENT_CODE}}` — a `mvenr_...` code, valid once and for at most 24 hours.
 > `{{MODEL}}` — the model name the Hermes already uses (see `LLM_MODEL` in
 > `~/.hermes/.env`).
+>
+> The enrollment code carries the mapping between `{{MODEL}}`, the equivalent
+> model on MultiVibe, and the equivalent model on Nous Research. If Nous does not
+> list that model, `doctor` fails and the bridge waits instead of substituting a
+> different model: a silent downgrade would be worse than a delay.
 
 ---
 
