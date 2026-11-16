@@ -18943,6 +18943,74 @@ mod tests {
     }
 
     #[test]
+    fn the_edge_reads_the_policy_shape_the_admin_api_writes() {
+        // The Node store clamps and writes these exact keys. If the edge parsed a
+        // different shape the fair share would stay at its default while the
+        // dashboard showed the configured value -- a silent, permanent mismatch.
+        let raw = json!({
+            "applicationPolicies": [{
+                "application": "hermes-client",
+                "fairnessWeight": 1.0,
+                "maxConcurrentShare": 0.1,
+                "burst": 0,
+                "shareWindows": [{"startHour": 22, "endHour": 6, "days": [5, 6], "multiplier": 3.0}],
+                "webhooks": []
+            }]
+        });
+        let store: StoreFile = serde_json::from_value(raw).expect("valid store");
+        let share = application_share(&store, "hermes-client").expect("policy present");
+        assert_eq!(share.max_concurrent_share, 0.1);
+        assert_eq!(share.burst, 0);
+        assert_eq!(share.share_windows.len(), 1);
+        assert_eq!(share.share_windows[0].start_hour, 22);
+        assert_eq!(share.share_windows[0].end_hour, 6);
+        assert_eq!(share.share_windows[0].days, Some(vec![5, 6]));
+        // 10 % of eight slots floors to one, not zero.
+        assert_eq!(share.slots(8, 8, 0), 1);
+    }
+
+    #[test]
+    fn a_policy_without_windows_keeps_the_operator_calendar() {
+        // An omitted field means "use the default", not "disable the calendar";
+        // an explicit empty array is how an operator disables it.
+        let omitted: StoreFile = serde_json::from_value(json!({
+            "applicationPolicies": [{"application": "a", "fairnessWeight": 1.0, "webhooks": []}]
+        }))
+        .expect("valid");
+        let share = application_share(&omitted, "a").expect("policy");
+        assert!(!share.share_windows.is_empty(), "default calendar applies");
+
+        let disabled: StoreFile = serde_json::from_value(json!({
+            "applicationPolicies": [{
+                "application": "a", "fairnessWeight": 1.0, "shareWindows": [], "webhooks": []
+            }]
+        }))
+        .expect("valid");
+        let share = application_share(&disabled, "a").expect("policy");
+        assert!(share.share_windows.is_empty(), "an explicit empty list disables it");
+    }
+
+    #[test]
+    fn a_malformed_window_is_dropped_rather_than_widening_the_share() {
+        let store: StoreFile = serde_json::from_value(json!({
+            "applicationPolicies": [{
+                "application": "a",
+                "fairnessWeight": 1.0,
+                "shareWindows": [
+                    {"startHour": 9, "endHour": 9, "multiplier": 2.0},
+                    {"startHour": 30, "endHour": 40, "multiplier": 2.0},
+                    {"startHour": 22, "endHour": 6, "multiplier": 40.0}
+                ],
+                "webhooks": []
+            }]
+        }))
+        .expect("valid");
+        let share = application_share(&store, "a").expect("policy");
+        assert_eq!(share.share_windows.len(), 1, "only the valid window survives");
+        assert_eq!(share.share_windows[0].multiplier, 8.0, "and its multiplier is bounded");
+    }
+
+    #[test]
     fn admission_headers_report_the_decision_and_never_leak_a_session() {
         let mut headers: Vec<(String, String)> = vec![
             ("content-type".to_owned(), "application/json".to_owned()),

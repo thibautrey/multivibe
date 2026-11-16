@@ -570,15 +570,20 @@ test("long-term stats keep a stable session fingerprint scoped by application", 
     stream: false,
     latencyMs: 10,
   };
-  manager.recordTrace({ ...base, application: "codex-a", codexSessionId: "session-one" });
-  manager.recordTrace({ ...base, at: base.at + 1, application: "codex-a", codexSessionId: "session-one" });
-  manager.recordTrace({ ...base, at: base.at + 2, application: "codex-b", codexSessionId: "session-one" });
-  manager.recordTrace({ ...base, at: base.at + 3, application: "codex-a", codexSessionId: "session-two" });
+  // Distinct client request ids: without them these four traces share a fallback
+  // id and collapse into one, which is what made this test intermittent.
+  manager.recordTrace({ ...base, clientRequestId: "r1", application: "codex-a", codexSessionId: "session-one" });
+  manager.recordTrace({ ...base, at: base.at + 1, clientRequestId: "r2", application: "codex-a", codexSessionId: "session-one" });
+  manager.recordTrace({ ...base, at: base.at + 2, clientRequestId: "r3", application: "codex-b", codexSessionId: "session-one" });
+  manager.recordTrace({ ...base, at: base.at + 3, clientRequestId: "r4", application: "codex-a", codexSessionId: "session-two" });
   await manager.flushPendingWrites();
 
   const history = await manager.readStatsHistory();
-  const byAt = new Map(history.map((trace) => [trace.at, trace]));
-  const keyFor = (offset: number) => byAt.get(base.at + offset)?.sessionKey;
+  // Index by the unique offset, not by `at`: two traces can land in the same
+  // millisecond, and a Map keyed by timestamp silently drops one of them. That
+  // made this test fail roughly one run in three.
+  const byOffset = new Map(history.map((trace) => [trace.at - base.at, trace]));
+  const keyFor = (offset: number) => byOffset.get(offset)?.sessionKey;
   assert.match(keyFor(0) ?? "", /^[0-9a-f]{24}$/);
   assert.equal(keyFor(0), keyFor(1));
   assert.notEqual(keyFor(0), keyFor(2));
