@@ -31,10 +31,11 @@ export type BridgeConfig = {
   nousStickinessMs: number;
   /** How long a single edge attempt may take before Nous is preferred. */
   edgeAttemptTimeoutMs: number;
-  /** Longest a single turn may wait for an edge slot before the switch. */
+  /**
+   * Longest a `edge-first` turn will accept a queued wait before switching.
+   * `nous-first` switches on any queue, because a queued turn is a slower turn.
+   */
   maxQueueWaitMs: number;
-  /** How often the capacity view is refreshed while queueing. */
-  capacityPollMs: number;
 };
 
 export const DEFAULT_BRIDGE_CONFIG: Omit<BridgeConfig, "mappings"> = {
@@ -46,7 +47,6 @@ export const DEFAULT_BRIDGE_CONFIG: Omit<BridgeConfig, "mappings"> = {
   nousStickinessMs: 10 * 60_000,
   edgeAttemptTimeoutMs: 45_000,
   maxQueueWaitMs: 120_000,
-  capacityPollMs: 5_000,
 };
 
 /**
