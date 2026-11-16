@@ -118,22 +118,22 @@ export function routeTurn(
       // model is edge-native only, so Nous cannot serve this turn.
       return noEquivalent;
     }
-    // The edge is full. Switch only when the caller's queue budget has already
-    // been exceeded, so a short wait stays on the edge.
+    // The edge is full. In `nous-first` the caller prefers the fallback over
+    // queueing at all: a queued turn is a slower turn, and the fallback is what
+    // makes "no slowdown on the weekend, only a slower weekday" true.
+    // `edge-first` waits instead, up to the caller's own budget, because that
+    // caller has told us the edge is worth waiting for.
+    if (!nousModel) return noEquivalent;
     const wait = admission.waitMs ?? 0;
-    if (config.mode === "nous-first" && nousModel) {
-      const overBudget =
-        wait > 0 && input.now + wait - input.now > config.maxQueueWaitMs;
-      if (overBudget || admission.decision === "switch") {
-        return { upstream: "nous", reason: "edge_queued", model: nousModel };
-      }
-      return nousModel
-        ? { upstream: "nous", reason: "edge_queued", model: nousModel }
-        : noEquivalent;
-    }
-    return nousModel
+    const shouldSwitch =
+      admission.decision === "switch" ||
+      config.mode === "nous-first" ||
+      wait > config.maxQueueWaitMs;
+    return shouldSwitch
       ? { upstream: "nous", reason: "edge_queued", model: nousModel }
-      : noEquivalent;
+      : // `edge-first` with a wait still inside its budget: the caller chose to
+        // wait, so report that rather than silently switching.
+        { upstream: null, reason: "edge_queued", model: null };
   }
 
   // Reachable, but nothing was decided: prefer the edge.

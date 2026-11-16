@@ -112,6 +112,35 @@ test("pinned modes ignore admission entirely", () => {
   assert.equal(edgeOnly.upstream, "edge");
 });
 
+test("edge-first waits out a queue inside its budget instead of switching", () => {
+  // The caller chose `edge-first`, so queueing is the answer they asked for.
+  const decision = routeTurn(config({ mode: "edge-first" }), MAPPINGS, {
+    requestedModel: "hermes-4-405b",
+    now: 1_000,
+    edge: { reachable: true, admission: { decision: "queue", waitMs: 10_000 } },
+  });
+  assert.equal(decision.upstream, null, "no upstream yet, but not a switch");
+  assert.equal(decision.reason, "edge_queued");
+});
+
+test("edge-first still switches once the wait exceeds its budget", () => {
+  const decision = routeTurn(config({ mode: "edge-first", maxQueueWaitMs: 5_000 }), MAPPINGS, {
+    requestedModel: "hermes-4-405b",
+    now: 1_000,
+    edge: { reachable: true, admission: { decision: "queue", waitMs: 60_000 } },
+  });
+  assert.equal(decision.upstream, "nous");
+});
+
+test("an explicit switch request is honoured in either mode", () => {
+  const decision = routeTurn(config({ mode: "edge-first" }), MAPPINGS, {
+    requestedModel: "hermes-4-405b",
+    now: 1_000,
+    edge: { reachable: true, admission: { decision: "switch", waitMs: 1_000 } },
+  });
+  assert.equal(decision.upstream, "nous");
+});
+
 test("a turn can never change upstream after its first byte", () => {
   assert.equal(canSwitchAfterFirstByte(), false);
 });
