@@ -45,14 +45,25 @@ fresh one.
 
 ## 2. Supply your Nous key locally
 
-Your Hermes already has a Nous Research account. Give the bridge the key from
-your existing configuration **without copying it anywhere else**:
+Your Hermes already has a Nous Research account. Give the bridge that key
+**without copying it anywhere else**. Find where this Hermes keeps it — it is the
+same credential it uses today; the usual places are an environment variable in
+`~/.hermes/.env`, or the credential store the Hermes was configured with. Then
+either:
 
 ```
-multivibe-hermes-bridge enroll --code {{ENROLLMENT_CODE}} --nous-key ~/.hermes/nous_key.txt
+multivibe-hermes-bridge enroll --code {{ENROLLMENT_CODE}} --nous-key <path-to-that-file>
 ```
 
-(or `--nous-key -` to paste it on stdin). The key stays on this machine and is
+or paste it on stdin, which avoids writing the key to any new file:
+
+```
+multivibe-hermes-bridge enroll --code {{ENROLLMENT_CODE}} --nous-key -
+```
+
+Do not invent a path: if you cannot locate the key, run the enrollment without
+`--nous-key` first — inference through MultiVibe still works, and `doctor` will
+say plainly that the fallback is unavailable. The key stays on this machine and is
 used only for direct requests to `inference-api.nousresearch.com`.
 
 ## 3. Install and start the bridge
