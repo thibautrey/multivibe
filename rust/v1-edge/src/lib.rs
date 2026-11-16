@@ -4001,6 +4001,8 @@ struct StreamingReply {
     /// Session credit inputs. The stream is the only place a completed turn's
     /// output is known, so it must carry what crediting needs.
     admission: Option<StreamAdmission>,
+    /// Admission outcome to echo on the response headers.
+    admission_note: Option<(admission::GraceState, admission::AdmissionDecision)>,
 }
 
 /// What a streaming turn needs to credit its session when it finishes.
@@ -4014,6 +4016,16 @@ struct StreamAdmission {
 enum ProxyResult {
     Buffered(BufferedReply),
     Streaming(StreamingReply),
+}
+
+/// Attach the admission outcome to whichever reply shape was produced.
+fn apply_admission_headers(
+    headers: &mut Vec<(String, String)>,
+    note: Option<(admission::GraceState, admission::AdmissionDecision)>,
+) {
+    if let Some((grace, decision)) = note {
+        push_admission_headers(headers, grace, decision, None);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -7315,6 +7327,8 @@ async fn proxy_inference(
     let mut capacity_exhausted: bool;
     // Carried out of the admission loop so a 429 can report a real estimate.
     let mut last_admission_wait_ms: u64 = 0;
+    // Carried to the response headers so the decision is observable.
+    let mut admission_note: Option<(admission::GraceState, admission::AdmissionDecision)> = None;
 
     // A lease from `POST /v1/admission` reserves a slot. Redeeming it here
     // releases that reservation (single use) so this request's own admission
@@ -7447,6 +7461,12 @@ async fn proxy_inference(
                 };
                 record_admission_decision(&state, application, &admission_report).await;
                 last_admission_wait_ms = admission_report.wait_ms;
+                // Echoed on the response (`push_admission_headers`) so a client
+                // learns why it was served without issuing a second request.
+                admission_note = Some((
+                    admission_report.session_grace,
+                    admission_report.decision,
+                ));
                 let Some((account_index, capacity_lease)) = admission else {
                     capacity_exhausted = true;
                     saturated_accounts.extend(accounts);
@@ -7769,6 +7789,8 @@ async fn proxy_inference(
                             ),
                         )
                         .await;
+                    let mut reply = reply;
+                    apply_admission_headers(&mut reply.headers, admission_note);
                     return Ok(ProxyResult::Buffered(reply));
                 }
                 let upstream_started_at = now_ms();
@@ -8025,6 +8047,7 @@ async fn proxy_inference(
                         dialect: client_dialect(path),
                         requested_model: requested_model.clone().if_empty_then(default_model),
                         provider: provider.clone(),
+                        admission_note,
                         admission: state.config.admission_policy_enabled.then(|| {
                             StreamAdmission {
                                 state: state.clone(),
@@ -9336,6 +9359,7 @@ fn keepalive_frame(transform: StreamTransform, dialect: ClientDialect, model: &s
 fn streaming_response(reply: StreamingReply) -> Response {
     let mut builder = Response::builder().status(reply.status);
     let mut headers = reply.headers;
+    apply_admission_headers(&mut headers, reply.admission_note);
     if reply.transform != StreamTransform::None {
         headers.retain(|(name, _)| name != "content-type");
         headers.push(("content-type".to_owned(), "text/event-stream".to_owned()));
@@ -18378,6 +18402,53 @@ mod tests {
 
         let _ = fs::remove_file(store_path).await;
         let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[test]
+    fn admission_headers_report_the_decision_and_never_leak_a_session() {
+        let mut headers: Vec<(String, String)> = vec![
+            ("content-type".to_owned(), "application/json".to_owned()),
+            // A previous hop's values must be replaced, not duplicated.
+            ("x-multivibe-grace".to_owned(), "stale".to_owned()),
+        ];
+        push_admission_headers(
+            &mut headers,
+            admission::GraceState::Granted,
+            admission::AdmissionDecision::Admit,
+            Some(3),
+        );
+        let get = |name: &str| {
+            headers
+                .iter()
+                .filter(|(key, _)| key == name)
+                .map(|(_, value)| value.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(get("x-multivibe-grace"), vec!["granted"]);
+        assert_eq!(get("x-multivibe-admission"), vec!["admit"]);
+        assert_eq!(get("x-multivibe-queue-position"), vec!["3"]);
+        // The unrelated header survives.
+        assert_eq!(get("content-type"), vec!["application/json"]);
+    }
+
+    #[test]
+    fn no_session_identity_means_no_grace_header_value() {
+        let mut headers: Vec<(String, String)> = Vec::new();
+        push_admission_headers(
+            &mut headers,
+            admission::GraceState::None,
+            admission::AdmissionDecision::Queue,
+            None,
+        );
+        let get = |name: &str| {
+            headers
+                .iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.as_str())
+        };
+        assert_eq!(get("x-multivibe-grace"), Some("none"));
+        assert_eq!(get("x-multivibe-admission"), Some("queue"));
+        assert_eq!(get("x-multivibe-queue-position"), None, "no invented position");
     }
 
     #[test]
