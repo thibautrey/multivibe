@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { exchangeEnrollment, isEnrollmentCode, parseEnrollmentCode } from "./enroll.js";
+import { enrollmentExchangeUrl, exchangeEnrollment, isEnrollmentCode, parseEnrollmentCode } from "./enroll.js";
 import { runDoctor } from "./doctor.js";
 import { createBridge, conversationKey, edgeHeaders, isSaturationStatus, nousHeaders, type BridgeLogEvent } from "./server.js";
 import { DEFAULT_BRIDGE_CONFIG, type BridgeConfig, type BridgeSecrets, type ModelMapping } from "./config.js";
@@ -52,6 +52,44 @@ test("enrollment codes are recognised and rejected", () => {
   assert.equal(parseEnrollmentCode(code), code);
   assert.equal(parseEnrollmentCode("not-a-code"), undefined);
   assert.equal(parseEnrollmentCode("mvenr_short"), undefined);
+});
+
+test("the exchange URL never inherits the inference /v1 suffix", () => {
+  // An operator pasting the inference URL out of habit must not get a 404 on a
+  // path that looks correct; that reads as a server bug, not a typo.
+  assert.equal(
+    enrollmentExchangeUrl("https://host.example.invalid/v1"),
+    "https://host.example.invalid/hermes-bridge/enrollment/exchange",
+  );
+  assert.equal(
+    enrollmentExchangeUrl("https://host.example.invalid"),
+    "https://host.example.invalid/hermes-bridge/enrollment/exchange",
+  );
+  assert.equal(
+    enrollmentExchangeUrl("https://host.example.invalid///"),
+    "https://host.example.invalid/hermes-bridge/enrollment/exchange",
+  );
+  // A dedicated enrollment hostname is passed through untouched.
+  assert.equal(
+    enrollmentExchangeUrl("https://enroll.host.example.invalid"),
+    "https://enroll.host.example.invalid/hermes-bridge/enrollment/exchange",
+  );
+});
+
+test("enrollment uses the enrollment base, not the inference base", async () => {
+  const { fetchImpl, calls } = scriptedFetch([
+    jsonResponse({ edgeApiKey: "k", expiresAt: Date.now() + 60_000 }),
+  ]);
+  const result = await exchangeEnrollment({
+    endpoint: "https://host.example.invalid/v1",
+    code: `mvenr_${"d".repeat(40)}`,
+    fetchImpl,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(
+    calls[0]!.url,
+    "https://host.example.invalid/hermes-bridge/enrollment/exchange",
+  );
 });
 
 test("a used enrollment code is reported as used, never as a fresh credential", async () => {
