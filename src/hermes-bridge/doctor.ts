@@ -33,6 +33,11 @@ export async function runDoctor(options: {
   mappings: readonly ModelMapping[];
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  /**
+   * Probe the enrollment surface. Off by default: it is an unauthenticated POST
+   * to a deployment endpoint, and the CLI turns it on explicitly.
+   */
+  checkEnrollment?: boolean;
 }): Promise<DoctorReport> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeout = options.timeoutMs ?? 15_000;
@@ -163,6 +168,66 @@ export async function runDoctor(options: {
       status: "warn",
       detail: "no Nous key stored; the fallback is unavailable and an edge outage will fail the turn",
     });
+  }
+
+  // Whether the *enrollment* surface is reachable without a token. This is worth
+  // its own check because it is the one path a machine must reach before it holds
+  // any credential, and because it fails differently from inference: a 302 here
+  // means "you can never enrol", not "you are not authorised yet".
+  if (options.checkEnrollment && options.config.enrollBaseUrl) {
+    const exchangeUrl = `${options.config.enrollBaseUrl
+      .replace(/\/+$/, "")
+      .replace(/\/v1$/i, "")}/hermes-bridge/enrollment/exchange`;
+    const tokenHeaders: Record<string, string> =
+      access && options.secrets.accessClientId && options.secrets.accessClientSecret
+        ? {
+            "cf-access-client-id": options.secrets.accessClientId,
+            "cf-access-client-secret": options.secrets.accessClientSecret,
+          }
+        : {};
+    try {
+      // `redirect: "manual"` on purpose: a 302 is the answer we need to *read*,
+      // not an error to swallow. With `redirect: "error"` the reason is lost and
+      // the operator only learns "unreachable", which is the wrong search.
+      const response = await fetchImpl(exchangeUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...tokenHeaders },
+        body: JSON.stringify({ code: `mvenr_${"0".repeat(43)}` }),
+        redirect: "manual",
+        signal: AbortSignal.timeout(timeout),
+      });
+      if (response.status === 302 || response.status === 301 || response.status === 307) {
+        const location = response.headers.get("location") ?? "";
+        const gatedByAccess = /cloudflareaccess\.com|\/cdn-cgi\/access\//.test(location);
+        checks.push({
+          name: "enrollment surface",
+          status: "fail",
+          detail: gatedByAccess
+            ? "Access intercepts enrollment with a login redirect. A machine holds no token at this point, so it can never enrol: this path needs a Bypass policy or a separate unprotected hostname."
+            : "unexpected redirect from the enrollment path",
+        });
+      } else {
+        // Any other answer proves the path is reachable. `401` is the expected
+        // "this code is not valid" reply and is a success for this check.
+        checks.push({
+          name: "enrollment surface",
+          status: response.status < 500 ? "ok" : "fail",
+          detail:
+            response.status < 500
+              ? `reachable (HTTP ${response.status}); the path is not gated`
+              : `reachable but failing (HTTP ${response.status})`,
+        });
+      }
+    } catch (error) {
+      const message = String((error as Error).message ?? "");
+      checks.push({
+        name: "enrollment surface",
+        status: "fail",
+        detail: /redirect/i.test(message)
+          ? "Access answers with a login redirect: enrollment is gated and must be exempted"
+          : `unreachable: ${message.slice(0, 120)}`,
+      });
+    }
   }
 
   const ok = !checks.some((check) => check.status === "fail");

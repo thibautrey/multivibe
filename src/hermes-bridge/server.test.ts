@@ -443,6 +443,50 @@ test("saturation statuses are recognised, ordinary ones are not", () => {
   for (const status of [400, 401, 404, 500]) assert.equal(isSaturationStatus(status), false, String(status));
 });
 
+// --- enrollment reachability ------------------------------------------------
+
+test("doctor names a gated enrollment surface as the blocker it is", async () => {
+  // A machine must reach this path before it holds any token, so a redirect here
+  // means "you can never enrol" -- not "you are not authorised yet".
+  const { fetchImpl } = scriptedFetch([
+    jsonResponse({}, 200), // edge /models
+    new Response("", {
+      status: 302,
+      headers: {
+        location:
+          "https://thibautrey.cloudflareaccess.com/cdn-cgi/access/login/multivibe.pleiades.solutions?kid=x",
+      },
+    }),
+  ]);
+  const report = await runDoctor({
+    config: config(),
+    secrets: { edgeApiKey: "k" },
+    mappings: MAPPINGS,
+    fetchImpl,
+    checkEnrollment: true,
+  });
+  const check = report.checks.find((entry) => entry.name === "enrollment surface");
+  assert.equal(check?.status, "fail");
+  assert.match(check?.detail ?? "", /can never enrol/);
+});
+
+test("a reachable enrollment surface is accepted even when it refuses the code", async () => {
+  const { fetchImpl } = scriptedFetch([
+    jsonResponse({ data: [] }), // edge /models
+    jsonResponse({ error: { code: "unknown_enrollment_code" } }, 401),
+  ]);
+  const report = await runDoctor({
+    config: config(),
+    secrets: { edgeApiKey: "k" },
+    mappings: MAPPINGS,
+    fetchImpl,
+    checkEnrollment: true,
+  });
+  const check = report.checks.find((entry) => entry.name === "enrollment surface");
+  assert.equal(check?.status, "ok");
+  assert.match(check?.detail ?? "", /401/);
+});
+
 // --- counters ---------------------------------------------------------------
 
 test("counters expose the signals the plan watches, without content", async () => {
