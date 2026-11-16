@@ -16596,6 +16596,7 @@ mod tests {
                 &headers,
                 &json!({"model": "gpt-job", "input": "hello"}),
                 3,
+                None,
             )
             .await
             .unwrap()
@@ -16661,6 +16662,7 @@ mod tests {
                 &headers,
                 &json!({"model": "gpt-job", "input": "hello"}),
                 3,
+                None,
             )
             .await
             .unwrap()
@@ -18330,6 +18332,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 &headers,
                 &json!({"model": "gpt-5.3-codex", "input": "hello"}),
                 3,
+                None,
             )
             .await
             .unwrap()
@@ -18435,6 +18438,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 &headers,
                 &json!({"model": "gpt-job", "input": "hello"}),
                 3,
+                None,
             )
             .await
             .unwrap()
@@ -18495,6 +18499,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 &headers,
                 &json!({"model": "gpt-job", "input": "hello"}),
                 3,
+                None,
             )
             .await
             .unwrap()
@@ -18549,6 +18554,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 &HeaderMap::new(),
                 &json!({"model": "gpt-job", "input": "retry"}),
                 3,
+                None,
             )
             .await
             .unwrap()
@@ -18584,6 +18590,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 &HeaderMap::new(),
                 &json!({"model": "gpt-job", "input": "recover"}),
                 3,
+                None,
             )
             .await
             .unwrap()
@@ -18626,6 +18633,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                     &HeaderMap::new(),
                     &json!({"model": "gpt-job", "input": "rejected"}),
                     3,
+                    None,
                 )
                 .await,
             Err(JobCreateError::Persistence(_))
@@ -18650,6 +18658,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 &headers,
                 &json!({"model": "gpt-job", "input": "hello"}),
                 3,
+                None,
             )
             .await
             .unwrap()
@@ -18705,7 +18714,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         );
         let body = json!({"model": "gpt-job", "input": "hello"});
         let created = manager
-            .create("durable-app", "/v1/responses", &headers, &body, 3)
+            .create("durable-app", "/v1/responses", &headers, &body, 3, None)
             .await
             .unwrap();
 
@@ -18713,7 +18722,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         fs::create_dir(&path).await.unwrap();
 
         let replay = manager
-            .create("durable-app", "/v1/responses", &headers, &body, 3)
+            .create("durable-app", "/v1/responses", &headers, &body, 3, None)
             .await
             .unwrap();
         assert!(!replay.created);
@@ -18726,6 +18735,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                     &headers,
                     &json!({"model": "gpt-job", "input": "different"}),
                     3,
+                    None,
                 )
                 .await,
             Err(JobCreateError::IdempotencyConflict)
@@ -18770,6 +18780,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 &headers,
                 &json!({"model": "gpt-job", "input": "hello"}),
                 3,
+                None,
             )
             .await
             .unwrap()
@@ -18858,6 +18869,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 &headers,
                 &json!({"model": "gpt-job", "input": "hello"}),
                 3,
+                None,
             )
             .await
             .unwrap()
@@ -18993,6 +19005,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 &headers,
                 &json!({"model": "gpt-webhook", "input": "hello"}),
                 3,
+                None,
             )
             .await
             .unwrap()
@@ -19097,6 +19110,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 &headers,
                 &json!({"model": "gpt-webhook", "input": "hello"}),
                 3,
+                None,
             )
             .await
             .unwrap()
@@ -19141,12 +19155,12 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         headers.insert("x-multivibe-priority", HeaderValue::from_static("critical"));
         let body = json!({"model": "gpt-job", "input": "same"});
         let created = manager
-            .create("app-a", "/v1/responses", &headers, &body, 3)
+            .create("app-a", "/v1/responses", &headers, &body, 3, None)
             .await
             .unwrap();
         assert!(created.created);
         let replay = manager
-            .create("app-a", "/v1/responses", &headers, &body, 3)
+            .create("app-a", "/v1/responses", &headers, &body, 3, None)
             .await
             .unwrap();
         assert!(!replay.created);
@@ -19159,6 +19173,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                     &headers,
                     &json!({"model": "gpt-job", "input": "different"}),
                     3,
+                    None,
                 )
                 .await,
             Err(JobCreateError::IdempotencyConflict)
@@ -19211,7 +19226,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
             "failed"
         );
         let other_application = manager
-            .create("app-b", "/v1/responses", &headers, &body, 3)
+            .create("app-b", "/v1/responses", &headers, &body, 3, None)
             .await
             .unwrap();
         assert!(other_application.created);
@@ -19221,7 +19236,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         invalid_deadline.insert("x-multivibe-deadline", HeaderValue::from_static("tomorrow"));
         assert!(matches!(
             manager
-                .create("app-a", "/v1/responses", &invalid_deadline, &body, 3)
+                .create("app-a", "/v1/responses", &invalid_deadline, &body, 3, None)
                 .await,
             Err(JobCreateError::InvalidDeadline)
         ));
@@ -19232,7 +19247,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         );
         assert!(matches!(
             manager
-                .create("app-a", "/v1/responses", &invalid_deadline, &body, 3)
+                .create("app-a", "/v1/responses", &invalid_deadline, &body, 3, None)
                 .await,
             Err(JobCreateError::ExpiredDeadline)
         ));
@@ -19280,6 +19295,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 &headers,
                 &json!({"model": "gpt-job", "input": "hello"}),
                 1,
+                None,
             )
             .await
             .unwrap()
@@ -19446,6 +19462,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                     &headers,
                     &json!({"model": "gpt-job", "input": format!("job-{index}")}),
                     3,
+                    None,
                 )
                 .await
                 .unwrap();

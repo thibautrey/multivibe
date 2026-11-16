@@ -6,7 +6,8 @@
 //! never client-provided URLs.
 
 use super::{
-    ActivityKind, AuthContext, EdgeState, ProxyResult, SseStreamTransformer, authorize,
+    ActivityKind, ApiKeyIdentity, AuthContext, EdgeState, ProxyResult, SseStreamTransformer,
+    authorize,
     bearer_or_api_key, build_trace_context, client_trace_outcome, error_response, hex_bytes,
     new_id, now_ms, parse_sse_events, proxy_inference, raw_string, value_string,
 };
@@ -188,6 +189,7 @@ impl Config {
 #[derive(Clone)]
 struct EphemeralSecret {
     application: String,
+    api_key: Option<ApiKeyIdentity>,
     model: String,
     session: Value,
     expires_at_ms: u64,
@@ -207,6 +209,7 @@ impl SecretStore {
     async fn issue(
         &self,
         application: String,
+        api_key: Option<ApiKeyIdentity>,
         model: String,
         session: Value,
         ttl: Duration,
@@ -230,6 +233,7 @@ impl SecretStore {
             digest,
             EphemeralSecret {
                 application,
+                api_key,
                 model,
                 session,
                 expires_at_ms,
@@ -249,6 +253,8 @@ impl SecretStore {
         Some(SecretGrant {
             auth: AuthContext {
                 application: entry.application,
+                // Ephemeral realtime secrets inherit the key that minted them.
+                api_key: entry.api_key,
             },
             session: entry.session,
         })
@@ -386,7 +392,7 @@ pub async fn client_secret_handler(
     }
     let (value, expires_at_ms) = state
         .realtime_secrets
-        .issue(auth.application, model.clone(), session, ttl)
+        .issue(auth.application, auth.api_key, model.clone(), session, ttl)
         .await;
     super::json_response(
         StatusCode::OK,
@@ -473,6 +479,7 @@ pub async fn websocket_handler(
             state,
             headers,
             grant.auth.application,
+            grant.auth.api_key,
             requested_model,
             preset,
         )
@@ -800,6 +807,7 @@ async fn run_session(
     state: EdgeState,
     headers: HeaderMap,
     application: String,
+    api_key: Option<ApiKeyIdentity>,
     requested_model: String,
     preset: Option<Value>,
 ) {
@@ -1040,6 +1048,7 @@ async fn run_session(
                                         &state,
                                         &headers,
                                         &application,
+                                        api_key.as_ref(),
                                         &sender,
                                         &conversation,
                                         &options,
@@ -1052,6 +1061,7 @@ async fn run_session(
                                             &state,
                                             &headers,
                                             &application,
+                                            api_key.as_ref(),
                                             &options,
                                             &conversation,
                                             &sender,
@@ -1067,6 +1077,7 @@ async fn run_session(
                                     &state,
                                     &headers,
                                     &application,
+                                    api_key.as_ref(),
                                     &sender,
                                     &conversation,
                                     &options,
@@ -1088,6 +1099,7 @@ async fn run_session(
                                         &state,
                                         &headers,
                                         &application,
+                                        api_key.as_ref(),
                                         &sender,
                                         &conversation,
                                         &options,
@@ -1104,6 +1116,7 @@ async fn run_session(
                                     &state,
                                     &headers,
                                     &application,
+                                    api_key.as_ref(),
                                     &options,
                                     &conversation,
                                     &sender,
@@ -1302,6 +1315,7 @@ async fn commit_audio(
     state: &EdgeState,
     headers: &HeaderMap,
     application: &str,
+    api_key: Option<&ApiKeyIdentity>,
     sender: &EventSender,
     conversation: &Conversation,
     options: &SessionOptions,
@@ -1351,6 +1365,7 @@ async fn commit_audio(
         state,
         headers,
         application,
+        api_key,
         &item_id,
         &pcm,
         options.language.as_deref(),
@@ -1430,6 +1445,7 @@ async fn transcribe(
     state: &EdgeState,
     headers: &HeaderMap,
     application: &str,
+    api_key: Option<&ApiKeyIdentity>,
     request_id: &str,
     pcm: &[u8],
     language: Option<&str>,
@@ -1440,6 +1456,7 @@ async fn transcribe(
         state,
         headers,
         application,
+        api_key,
         request_id,
         "/v1/realtime/stt",
         &state.config.realtime_voice.stt_model,
@@ -1526,6 +1543,7 @@ async fn record_adapter_trace<T>(
     state: &EdgeState,
     headers: &HeaderMap,
     application: &str,
+    api_key: Option<&ApiKeyIdentity>,
     request_id: &str,
     route: &str,
     model: &str,
@@ -1539,6 +1557,7 @@ async fn record_adapter_trace<T>(
         headers,
         &metadata,
         application,
+        api_key,
         request_id,
         model,
         model,
@@ -1597,6 +1616,7 @@ async fn start_response(
     state: &EdgeState,
     headers: &HeaderMap,
     application: &str,
+    api_key: Option<&ApiKeyIdentity>,
     options: &SessionOptions,
     conversation: &Conversation,
     sender: &EventSender,
@@ -1627,6 +1647,7 @@ async fn start_response(
         state.clone(),
         headers.clone(),
         application.to_owned(),
+        api_key.cloned(),
         options.clone(),
         conversation.clone(),
         sender.for_generation(generation),
@@ -1726,6 +1747,7 @@ async fn run_response(
     state: EdgeState,
     mut headers: HeaderMap,
     application: String,
+    api_key: Option<ApiKeyIdentity>,
     options: SessionOptions,
     conversation: Conversation,
     sender: EventSender,
@@ -1740,6 +1762,7 @@ async fn run_response(
         &state,
         &mut headers,
         &application,
+        api_key.as_ref(),
         &options,
         &conversation,
         &sender,
@@ -1789,6 +1812,7 @@ async fn run_response_inner(
     state: &EdgeState,
     headers: &mut HeaderMap,
     application: &str,
+    api_key: Option<&ApiKeyIdentity>,
     options: &SessionOptions,
     conversation: &Conversation,
     sender: &EventSender,
@@ -1921,6 +1945,7 @@ async fn run_response_inner(
         let sender = sender.clone();
         let response_id = response_id.to_owned();
         let item_id = item_id.to_owned();
+        let api_key = api_key.cloned();
         let trace_headers = headers.clone();
         let trace_application = application.to_owned();
         let voice = response_options
@@ -1937,6 +1962,7 @@ async fn run_response_inner(
                 sender,
                 trace_headers,
                 trace_application,
+                api_key,
                 response_id,
                 item_id,
                 voice,
@@ -1954,6 +1980,7 @@ async fn run_response_inner(
         headers,
         &body,
         application,
+        api_key,
         Some(ActivityKind::WebsocketTurn),
         None,
     )
@@ -2428,6 +2455,7 @@ async fn synthesize_segments(
     sender: EventSender,
     headers: HeaderMap,
     application: String,
+    api_key: Option<ApiKeyIdentity>,
     response_id: String,
     item_id: String,
     voice: String,
@@ -2449,6 +2477,7 @@ async fn synthesize_segments(
                 &sender,
                 &headers,
                 &application,
+                api_key.as_ref(),
                 &response_id,
                 &item_id,
                 &voice,
@@ -2467,6 +2496,7 @@ async fn synthesize_segment(
     sender: &EventSender,
     headers: &HeaderMap,
     application: &str,
+    api_key: Option<&ApiKeyIdentity>,
     response_id: &str,
     item_id: &str,
     voice: &str,
@@ -2480,6 +2510,7 @@ async fn synthesize_segment(
         state,
         headers,
         application,
+        api_key,
         response_id,
         "/v1/realtime/tts",
         &state.config.realtime_voice.tts_model,
@@ -2694,6 +2725,7 @@ mod tests {
         let (token, _) = store
             .issue(
                 "app-a".to_owned(),
+                None,
                 "multivibe/voice".to_owned(),
                 session.clone(),
                 Duration::from_secs(60),

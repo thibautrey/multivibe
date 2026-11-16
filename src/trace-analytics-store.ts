@@ -434,7 +434,8 @@ export class TraceAnalyticsStore {
     const byProject = [...projects].map(([projectId, p]) => ({ projectId, projectName: p.meta.projectName, projectRemote: p.meta.projectRemote, firstAt: p.firstAt, lastAt: p.lastAt, ...finalizeUsage(p.usage), models: [...p.models].map(([model, value]) => ({ model, ...finalizeUsage(value) })).sort((a,b) => b.costUsd-a.costUsd || b.requests-a.requests) })).sort((a,b) => b.costUsd-a.costUsd || b.requests-a.requests);
     const [since, until] = bounds(args);
     const tracesEvaluated = (this.db.prepare("SELECT count(*) AS n FROM entries WHERE at>=? AND at<=?").get(since, until) as any).n;
-    const byApiKey = by(3, "apiKeyId").map(entry => ({ ...entry, ...(keyMeta.get(entry.apiKeyId) ?? {}) }));
+    const byApiKey = ([...dimensions[3]].map(([apiKeyId, agg]) => ({ apiKeyId, ...(keyMeta.get(apiKeyId) ?? {}), ...finalizeAggregate(agg) })) as Array<Record<string, unknown>>)
+      .sort((a, b) => Number(b.requests) - Number(a.requests));
     return { totals: finalizeAggregate(global), byAccount: by(0, "accountId"), byRoute: by(1, "route"), byApplication: by(2, "application"), byApiKey, byProject, tracesEvaluated, tracesMatched: global.requests };
   }
 
