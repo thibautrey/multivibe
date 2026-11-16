@@ -12,7 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
-import type { BridgeConfig, ModelMapping } from "./config.js";
+import type { BridgeConfig, BridgeSecrets, ModelMapping } from "./config.js";
 import { DEFAULT_BRIDGE_CONFIG } from "./config.js";
 import { runDoctor } from "./doctor.js";
 import { exchangeEnrollment, parseEnrollmentCode } from "./enroll.js";
@@ -164,7 +164,11 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   }
 
   const stored = await loadSecrets(backend);
-  const secrets = stored.secrets;
+  // `loadSecrets` guarantees a key string; the rest stay optional.
+  const secrets: BridgeSecrets = {
+    ...stored.secrets,
+    edgeApiKey: stored.secrets.edgeApiKey ?? "",
+  };
 
   if (args.command === "print-key") {
     if (!stored.localKey) {

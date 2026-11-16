@@ -200,12 +200,18 @@ export async function loadSecrets(backend: SecretBackend): Promise<{
 }
 
 /** Store only the values that are present, leaving the others untouched. */
+const STORED_SECRETS = [
+  "edgeApiKey",
+  "accessClientId",
+  "accessClientSecret",
+  "nousApiKey",
+] as const satisfies ReadonlyArray<Exclude<SecretName, "localKey">>;
+
 export async function storeSecrets(
   backend: SecretBackend,
   values: Partial<BridgeSecrets>,
 ): Promise<void> {
-  const names: SecretName[] = ["edgeApiKey", "accessClientId", "accessClientSecret", "nousApiKey"];
-  for (const name of names) {
+  for (const name of STORED_SECRETS) {
     const value = values[name];
     if (typeof value === "string" && value.length > 0) await backend.write(name, value);
   }

@@ -82,6 +82,23 @@ renewals, so a client cannot reserve a slot indefinitely.
 `x-multivibe-queue-position`. `/v1/capacity` additionally reports `shareLimit`,
 `shareUsed`, `accountActive`, `graceSlots`, `graceActive` and `estimatedWaitMs`.
 
+### `POST /admin/hermes-bridge/enrollment`
+
+Operator-only. Issues a single-use `mvenr_...` code bound to an application name,
+a fair-share policy, and the model mapping table. The code is returned once; it
+cannot be read back.
+
+### `POST /hermes-bridge/enrollment/exchange`
+
+Unauthenticated — the code *is* the credential, which is why it is single-use,
+bound to one application, and expiring. Returns the per-machine key once. A
+replay answers `410 used_enrollment_code`, never a fresh key. Expired codes stay
+reportable for seven days so the operator learns *why* it failed rather than
+seeing "unknown code".
+
+Codes live in memory only: an edge restart invalidates outstanding codes, which
+is the safe direction.
+
 ### `GET /admin/admission/state`
 
 Read-only operator view of the policy and content-free counters. It never returns
