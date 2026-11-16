@@ -597,11 +597,26 @@ export function normalizeTrace(raw: any): TraceEntry | null {
       : undefined;
   const costUsd = preservedCostUsd ?? estimatedCostUsd;
 
+  // The fallback id must be unique per trace. `${at}-${route}-${status}` is not:
+  // two concurrent requests that finish in the same millisecond on the same
+  // route collapse into one entry, because history deduplicates by id. The
+  // client request id distinguishes them; the attempt index separates retries of
+  // one request. Both are absent only when the caller supplied neither, in which
+  // case the old shape is the best available.
+  const fallbackClientId =
+    typeof raw.clientRequestId === "string" && raw.clientRequestId.trim()
+      ? raw.clientRequestId.trim()
+      : undefined;
+  const fallbackAttempt = safeNumber(raw.upstreamAttempt);
+  const fallbackId = [at, route, status, fallbackClientId, fallbackAttempt]
+    .filter((part) => part !== undefined && part !== "")
+    .join("-");
+
   return {
     id:
       typeof raw.id === "string" && raw.id
         ? raw.id
-        : `${at}-${route}-${status}`,
+        : fallbackId,
     at,
     route,
     clientRequestId:
@@ -2357,7 +2372,16 @@ export function createTraceManager(config: TraceManagerConfig) {
   }
 
   async function flushPendingWrites(): Promise<void> {
-    await Promise.all([traceWriteQueue, historyWriteQueue]);
+    // A queued write joins its queue only after its first `await`, so reading
+    // the two promises once can capture a queue that is about to be extended and
+    // return while writes are still pending. Drain until neither queue changes
+    // across a full round; the bound keeps a steady writer from spinning here.
+    for (let round = 0; round < 100; round += 1) {
+      const trace = traceWriteQueue;
+      const history = historyWriteQueue;
+      await Promise.all([trace, history]);
+      if (trace === traceWriteQueue && history === historyWriteQueue) break;
+    }
     await Promise.all([...observers]);
     if (lastWriteError) {
       throw new Error(`trace persistence failed: ${lastWriteError.message}`);
