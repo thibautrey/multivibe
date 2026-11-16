@@ -180,6 +180,12 @@ pub struct EdgeConfig {
     /// share windows). Disabled by default: the phase-0 shadow rollout and the
     /// phase-1 canary both require an explicit enable.
     pub admission_policy_enabled: bool,
+    /// How many edge processes serve this deployment.
+    ///
+    /// Admission counts in memory, so every limit is per-process. Declaring the
+    /// truth is the deployment's job: silently assuming one replica would make
+    /// every limit wrong by a factor of N, and nothing would say so.
+    pub edge_replicas: u32,
     pub admission_grace: admission::GracePolicy,
     pub admin_token: String,
     pub configured_api_keys: Vec<(String, String)>,
@@ -265,6 +271,7 @@ impl Default for EdgeConfig {
                 "gpt-5-codex".to_owned(),
             ],
             admission_policy_enabled: false,
+            edge_replicas: 1,
             admission_grace: admission::GracePolicy::default(),
             admin_token: String::new(),
             configured_api_keys: Vec::new(),
@@ -481,6 +488,10 @@ impl EdgeConfig {
             proxy_models,
             admission_policy_enabled: env("ADMISSION_POLICY_ENABLED")
                 .is_some_and(|value| value.eq_ignore_ascii_case("true")),
+            edge_replicas: env("EDGE_REPLICAS")
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or(1)
+                .max(1),
             admission_grace: admission::GracePolicy {
                 ttl: std::time::Duration::from_millis(
                     env("ADMISSION_GRACE_TTL_MS")
@@ -6194,6 +6205,12 @@ pub struct EdgeState {
 
 impl EdgeState {
     pub async fn new(config: EdgeConfig) -> Result<Self, String> {
+        if config.admission_policy_enabled && config.edge_replicas > 1 {
+            return Err(format!(
+                "ADMISSION_POLICY_ENABLED requires EDGE_REPLICAS=1: admission counts in memory, so {} replicas would multiply every limit by the same factor and the fair share would be silently false. Use a shared admission store before scaling out.",
+                config.edge_replicas
+            ));
+        }
         if !matches!(
             config.cloud_privacy_mode.as_str(),
             "standard" | "confidential_verified"
@@ -14208,6 +14225,8 @@ async fn capacity_handler(
             "recommendation": if free_slots > 0 { "sync" } else { "defer" },
             "estimatedWaitMs": estimated_wait_ms,
             "policyEnabled": state.config.admission_policy_enabled,
+            // Every limit below is per-process; a reviewer must be able to see it.
+            "replicas": state.config.edge_replicas,
             "shareLimit": share_view.map(|(_, _, _, limit)| limit),
             "shareUsed": share_view.map(|(_, _, application_active, _)| application_active),
             "accountActive": share_view.map(|(_, account_active, _, _)| account_active),
@@ -18866,6 +18885,59 @@ mod tests {
         assert_eq!(registry.ceiling("dead-metrics"), Some(4));
         drop(registry);
 
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
+    async fn a_multi_replica_deployment_refuses_to_claim_its_limits_are_true() {
+        // Admission counts in memory, so N replicas means N times the capacity
+        // and every fair share is silently wrong. A note in a document does not
+        // stop that; refusing to start does.
+        let store_path = temporary_path("replicas-accounts");
+        let jobs_path = temporary_path("replicas-jobs");
+        fs::write(&store_path, b"{}").await.unwrap();
+
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.legacy_jobs_db_path = None;
+        config.admission_policy_enabled = true;
+        config.edge_replicas = 3;
+        let error = match EdgeState::new(config).await {
+            Ok(_) => panic!("a multi-replica policy deployment must refuse to start"),
+            Err(error) => error,
+        };
+        assert!(error.contains("EDGE_REPLICAS=1"), "{error}");
+        assert!(error.contains("multiply every limit"), "{error}");
+
+        // One replica is the supported shape.
+        let mut ok = EdgeConfig::default();
+        ok.store_path = store_path.clone();
+        ok.jobs_path = jobs_path.clone();
+        ok.legacy_jobs_db_path = None;
+        ok.admission_policy_enabled = true;
+        ok.edge_replicas = 1;
+        assert!(EdgeState::new(ok).await.is_ok());
+
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
+    async fn a_multi_replica_deployment_may_run_without_the_policy() {
+        // The guard protects the promise, not the process: an operator who has
+        // not enabled admission is unaffected.
+        let store_path = temporary_path("replicas-off-accounts");
+        let jobs_path = temporary_path("replicas-off-jobs");
+        fs::write(&store_path, b"{}").await.unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.legacy_jobs_db_path = None;
+        config.admission_policy_enabled = false;
+        config.edge_replicas = 4;
+        assert!(EdgeState::new(config).await.is_ok());
         let _ = fs::remove_file(store_path).await;
         let _ = fs::remove_file(jobs_path).await;
     }
