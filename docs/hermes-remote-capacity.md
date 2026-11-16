@@ -176,8 +176,16 @@ deployment must satisfy. Until the Spark `strata` runtime publishes
 declared value stays in force and `capacitySource` honestly reports `declared`.
 The edge side is complete; the missing half is the runtime's.
 
-`AdmissionController` counts in memory. **This is only correct for a
-single-process edge.** With N replicas the effective capacity becomes N× the
-declared value and every limit above is wrong. Before running more than one
-replica, admission must move to a shared store; until then the deployment must
-keep a single edge process.
+`AdmissionController` counts in memory, so every limit above is **per process**.
+With N replicas the effective capacity becomes N times the declared value and the
+fair share is silently false.
+
+This is now enforced rather than documented: setting `ADMISSION_POLICY_ENABLED`
+with `EDGE_REPLICAS > 1` makes the edge refuse to start, naming the reason. An
+operator who has not enabled the policy may run any number of replicas, because
+nothing is being claimed.
+
+`/v1/capacity` reports `replicas` alongside `policyEnabled`, so a reviewer sees
+the scope of the numbers rather than assuming it.
+
+Before scaling out with the policy on, admission must move to a shared store.
