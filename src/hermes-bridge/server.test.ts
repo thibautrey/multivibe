@@ -103,13 +103,27 @@ test("a used enrollment code is reported as used, never as a fresh credential", 
 });
 
 test("an Access login redirect is not accepted as a credential response", async () => {
-  // `redirect: "error"` turns the redirect into a thrown TypeError.
+  // `redirect: "error"` turns the redirect into a thrown TypeError. Reporting
+  // that as a network fault would send an operator hunting for a firewall while
+  // the real cause is an Access policy that does not cover the path.
   const { fetchImpl } = scriptedFetch([
-    () => Promise.reject(new TypeError("redirect mode is set to error")),
+    () => Promise.reject(new TypeError("fetch failed: redirect mode is set to error")),
   ]);
   const result = await exchangeEnrollment({
     endpoint: "https://edge.test/v1",
     code: `mvenr_${"c".repeat(40)}`,
+    fetchImpl,
+  });
+  assert.deepEqual(result, { ok: false, reason: "invalid" });
+});
+
+test("a genuine transport failure is still reported as network", async () => {
+  const { fetchImpl } = scriptedFetch([
+    () => Promise.reject(new TypeError("fetch failed: getaddrinfo ENOTFOUND")),
+  ]);
+  const result = await exchangeEnrollment({
+    endpoint: "https://edge.test/v1",
+    code: `mvenr_${"e".repeat(40)}`,
     fetchImpl,
   });
   assert.deepEqual(result, { ok: false, reason: "network" });
