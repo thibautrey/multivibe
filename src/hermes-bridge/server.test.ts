@@ -892,3 +892,74 @@ function get(baseUrl: string, pathname: string, key?: string): Promise<Response>
     headers: key ? { authorization: `Bearer ${key}` } : {},
   });
 }
+
+// --- tool dialect -----------------------------------------------------------
+
+test("a tool call survives the fallback byte for byte, including its stream", async () => {
+  // The bridge relays bytes; it must not "helpfully" reshape `tool_calls` or
+  // `finish_reason` on the way through. A silent rewrite here does not show up
+  // as an error — it shows up as a harness that stops calling tools, or one that
+  // calls the same tool twice, which is far worse to diagnose.
+  const frame = [
+    'data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":null,"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"Read","arguments":""}}]},"finish_reason":null}]}',
+    "",
+    'data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":\"a\"}"}}]},"finish_reason":null}]}',
+    "",
+    'data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}',
+    "",
+    "data: [DONE]",
+    "",
+    "",
+  ].join("\n");
+  const { fetchImpl } = scriptedFetch([
+    jsonResponse({ decision: "admit" }),
+    jsonResponse({ error: {} }, 429),
+    new Response(frame, { status: 200, headers: { "content-type": "text/event-stream" } }),
+  ]);
+  const bridge = createBridge({ config: config(), secrets: SECRETS, mappings: MAPPINGS, fetchImpl });
+  await withBridge(bridge, async (baseUrl) => {
+    const response = await post(
+      baseUrl,
+      "/v1/chat/completions",
+      { model: "hermes-4-405b", messages: [], stream: true, tools: [] },
+      bridge.localKey,
+    );
+    assert.equal(response.status, 200);
+    const body = await response.text();
+    // Exactly the bytes both upstreams would have sent: same names, same order,
+    // same trailing [DONE] the harness waits for to close the turn.
+    assert.equal(body, frame);
+    assert.match(body, /"finish_reason":"tool_calls"/);
+    assert.match(body, /data: \[DONE\]/);
+  });
+});
+
+test("a non-streamed tool call is not rewritten either", async () => {
+  const payload = {
+    id: "chatcmpl-1",
+    object: "chat.completion",
+    choices: [{
+      index: 0,
+      message: {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "call_1", type: "function", function: { name: "Read", arguments: "{}" } }],
+      },
+      finish_reason: "tool_calls",
+    }],
+  };
+  const { fetchImpl } = scriptedFetch([
+    jsonResponse({ decision: "admit" }),
+    jsonResponse(payload),
+  ]);
+  const bridge = createBridge({ config: config(), secrets: SECRETS, mappings: MAPPINGS, fetchImpl });
+  await withBridge(bridge, async (baseUrl) => {
+    const response = await post(
+      baseUrl,
+      "/v1/chat/completions",
+      { model: "hermes-4-405b", messages: [], tools: [] },
+      bridge.localKey,
+    );
+    assert.deepEqual(await response.json(), payload);
+  });
+});
