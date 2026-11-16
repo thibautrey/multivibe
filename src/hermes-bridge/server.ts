@@ -148,6 +148,13 @@ export function createBridge(deps: BridgeDeps) {
   // One entry per conversation. Bounded so a long-lived machine cannot grow it
   // without limit; entries are dropped on expiry and by age.
   const sticky = new Map<string, StickyEntry>();
+  /**
+   * Last capacity reading per model. Reused for `capacityTtlMs` so a turn does
+   * not pay a probe it does not need. A stale reading can only make the bridge
+   * *try* the edge once more; a real `429` still falls back, so this cannot turn
+   * a fast path into a broken one.
+   */
+  const capacityCache = new Map<string, { at: number; value: EdgeAdmission | null; reachable: boolean }>();
   // Content-free counters. `blockedNoMapping` is the one that matters most: it
   // means a client asked for a model the fallback cannot serve, so the promise
   // "you will not notice the switch" is not being kept for that model.
@@ -296,10 +303,24 @@ export function createBridge(deps: BridgeDeps) {
       mapModel(mappings, requestedModel, "nous") !== undefined;
     const controller = AbortSignal.timeout(config.edgeAttemptTimeoutMs);
     const edgeModel = mapModel(mappings, requestedModel, "edge");
-    const edge =
-      !stickilyRouted && edgeModel
-        ? await probeEdge(edgeModel, request.headers, controller)
-        : undefined;
+    let edge: { reachable: boolean; admission?: EdgeAdmission; error?: "timeout" | "http" | "network" | "credential" } | undefined;
+    if (!stickilyRouted && edgeModel) {
+      const cached = capacityCache.get(edgeModel);
+      if (cached && at - cached.at < config.capacityTtlMs) {
+        edge = { reachable: cached.reachable, ...(cached.value ? { admission: cached.value } : {}) };
+      } else {
+        edge = await probeEdge(edgeModel, request.headers, controller);
+        // Only a *usable* reading is cached. A credential refusal or a timeout is
+        // a fault to notice promptly, not a state to bake in for 15 seconds.
+        if (!edge.error) {
+          capacityCache.set(edgeModel, {
+            at,
+            value: edge.admission ?? null,
+            reachable: edge.reachable,
+          });
+        }
+      }
+    }
     const decision = routeTurn(config, mappings, {
       requestedModel,
       stickyUntilMs,
