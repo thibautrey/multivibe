@@ -115,6 +115,10 @@ export async function runDoctor(options: {
   }
 
   // 3. The fallback must work, or the promise "never worse than today" is false.
+  //
+  // A mapped model must actually exist on the fallback: Nous serves a large
+  // catalogue and *no* `hermes-*` model at the time of writing, so a plausible
+  // name is not evidence. The check compares against the live list.
   if (options.secrets.nousApiKey) {
     try {
       const response = await fetchImpl(`${nous}/models`, {
@@ -122,11 +126,34 @@ export async function runDoctor(options: {
         ...REDIRECT,
         signal: AbortSignal.timeout(timeout),
       });
-      checks.push({
-        name: "nous reachability",
-        status: response.ok ? "ok" : "fail",
-        detail: `HTTP ${response.status}`,
-      });
+      if (!response.ok) {
+        checks.push({
+          name: "nous reachability",
+          status: "fail",
+          detail: `HTTP ${response.status}`,
+        });
+      } else {
+        const body = (await response.json().catch(() => ({}))) as { data?: Array<{ id?: string }> };
+        const available = new Set(
+          (body.data ?? []).map((entry) => entry.id).filter((id): id is string => typeof id === "string"),
+        );
+        checks.push({
+          name: "nous reachability",
+          status: "ok",
+          detail: `HTTP ${response.status}, ${available.size} models`,
+        });
+        for (const mapping of options.mappings) {
+          const target = mapModel(options.mappings, mapping.from, "nous");
+          if (!target) continue;
+          checks.push({
+            name: `nous serves ${target}`,
+            status: available.has(target) ? "ok" : "fail",
+            detail: available.has(target)
+              ? "present in the live catalogue"
+              : "missing from the live catalogue; the fallback cannot serve this turn",
+          });
+        }
+      }
     } catch {
       checks.push({ name: "nous reachability", status: "fail", detail: "network error" });
     }
