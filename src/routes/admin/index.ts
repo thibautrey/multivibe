@@ -76,7 +76,7 @@ import {
   requestOpenCodeDeviceCode,
 } from "../../opencode.js";
 import type { CodexProjectRegistry } from "../../codex-projects.js";
-import { aggregateProjectUsage } from "../../project-usage.js";
+import { aggregateProjectUsage, addTrace as addProjectTrace, emptyUsage, finalizeUsage } from "../../project-usage.js";
 import {
   aggregateSessionUsage,
   sessionTurnsFor,
@@ -1791,8 +1791,8 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     const byAccount = new Map<string, ReturnType<typeof createUsageAggregate>>();
     const byRoute = new Map<string, ReturnType<typeof createUsageAggregate>>();
     const byApplication = new Map<string, ReturnType<typeof createUsageAggregate>>();
-    const byApiKey = new Map<string, ReturnType<typeof createUsageAggregate>>();
-    const apiKeyMeta = new Map<string, { application?: string; keyPreview?: string }>();
+    const byApiKey = new Map<string, ReturnType<typeof emptyUsage>>();
+    const apiKeyMeta = new Map<string, { application?: string; keyPreview?: string; firstAt?: number; lastAt?: number }>();
 
     for (const trace of usageTraces) {
       addTraceToAggregate(globalAgg, trace);
@@ -1812,11 +1812,17 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       addTraceToAggregate(byApplication.get(applicationKey)!, trace);
 
       const apiKeyId = trace.apiKeyId ?? "unattributed";
-      if (!byApiKey.has(apiKeyId)) byApiKey.set(apiKeyId, createUsageAggregate());
-      addTraceToAggregate(byApiKey.get(apiKeyId)!, trace);
+      if (!byApiKey.has(apiKeyId)) byApiKey.set(apiKeyId, emptyUsage());
+      addProjectTrace(byApiKey.get(apiKeyId)!, trace);
+      // "unattributed" is not an application; only real keys carry that label.
       const knownKey = apiKeyMeta.get(apiKeyId);
-      if (!knownKey) apiKeyMeta.set(apiKeyId, { application: trace.application, keyPreview: trace.apiKeyPreview });
-      else if (!knownKey.keyPreview && trace.apiKeyPreview) knownKey.keyPreview = trace.apiKeyPreview;
+      const attribution = apiKeyId === "unattributed" ? {} : { application: trace.application, keyPreview: trace.apiKeyPreview };
+      if (!knownKey) apiKeyMeta.set(apiKeyId, { ...attribution, firstAt: trace.at, lastAt: trace.at });
+      else {
+        if (!knownKey.keyPreview && trace.apiKeyPreview) knownKey.keyPreview = trace.apiKeyPreview;
+        knownKey.firstAt = Math.min(knownKey.firstAt ?? trace.at, trace.at);
+        knownKey.lastAt = Math.max(knownKey.lastAt ?? trace.at, trace.at);
+      }
     }
 
     const accounts = await store.listAccounts();
@@ -1853,8 +1859,8 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       .sort((a, b) => b.requests - a.requests);
     const byProjectOut = aggregateProjectUsage(usageTraces);
     const byApiKeyOut = Array.from(byApiKey.entries())
-      .map(([apiKeyId, agg]) => ({ apiKeyId, ...(apiKeyMeta.get(apiKeyId) ?? {}), ...finalizeAggregate(agg) }))
-      .sort((a, b) => b.requests - a.requests);
+      .map(([apiKeyId, usage]) => ({ apiKeyId, ...(apiKeyMeta.get(apiKeyId) ?? {}), ...finalizeUsage(usage) }))
+      .sort((a, b) => b.costUsd - a.costUsd || b.requests - a.requests);
 
     res.json({
       ok: true,
