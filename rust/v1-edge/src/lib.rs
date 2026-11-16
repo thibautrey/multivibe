@@ -5673,10 +5673,11 @@ impl StreamingTrace {
         let sink = self.sink.clone();
         let context = self.context.clone();
         let client_context = self.client_context.clone();
-        // Detached on purpose: the two-record commit is already past the
-        // `finished` guard, and awaiting it here would let request
-        // cancellation drop the handle and lose both records.
-        tokio::spawn(async move {
+        // Past the `finished` guard, so this runs once per stream. Awaiting the
+        // handle keeps a panicking commit visible; dropping it would only
+        // detach the task, which is what lets the write survive a client
+        // disconnect while the records are being committed.
+        let recording = tokio::spawn(async move {
             sink.record(&context, outcome).await;
             sink.record(
                 &client_context,
@@ -5693,6 +5694,9 @@ impl StreamingTrace {
             )
             .await;
         });
+        if let Err(error) = recording.await {
+            eprintln!("stream trace commit task failed: {error}");
+        }
     }
 
 }
@@ -7968,6 +7972,9 @@ struct ChatResponseStreamState {
     /// Index of the refusal part, fixed when the part opens. Recomputing it
     /// per delta would move the part if later content shifted the count.
     refusal_content_index: usize,
+    /// Set once the assistant message item is announced, so a refusal that
+    /// streams before content cannot announce the same item twice.
+    message_started: bool,
     completed_sent: bool,
     finish_pending: bool,
     finish_reason: Option<String>,
@@ -8522,10 +8529,12 @@ impl SseStreamTransformer {
             if let Some(content) =
                 raw_string(delta.get("content")).filter(|content| !content.is_empty())
             {
+                let out_idx = usize::from(!self.chat_response.reasoning.is_empty());
                 if !self.chat_response.content_started {
                     self.chat_response.content_started = true;
-                    output.push_str(&sse_frame("response.output_item.added", &json!({"type": "response.output_item.added", "output_index": usize::from(!self.chat_response.reasoning.is_empty()), "item": {"id": self.chat_response.output_item_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []}})));
-                    output.push_str(&sse_frame("response.content_part.added", &json!({"type": "response.content_part.added", "item_id": self.chat_response.output_item_id, "output_index": usize::from(!self.chat_response.reasoning.is_empty()), "content_index": 0, "part": {"type": "output_text", "text": ""}})));
+                    let item = self.chat_response.ensure_message_item(out_idx);
+                    output.push_str(&item);
+                    output.push_str(&sse_frame("response.content_part.added", &json!({"type": "response.content_part.added", "item_id": self.chat_response.output_item_id, "output_index": out_idx, "content_index": 0, "part": {"type": "output_text", "text": ""}})));
                 }
                 self.chat_response.content.push_str(&content);
                 output.push_str(&sse_frame("response.output_text.delta", &json!({"type": "response.output_text.delta", "item_id": self.chat_response.output_item_id, "output_index": usize::from(!self.chat_response.reasoning.is_empty()), "content_index": 0, "delta": content})));
@@ -8534,9 +8543,8 @@ impl SseStreamTransformer {
                 raw_string(delta.get("refusal")).filter(|refusal| !refusal.is_empty())
             {
                 let out_idx = usize::from(!self.chat_response.reasoning.is_empty());
-                if !self.chat_response.content_started && !self.chat_response.refusal_started {
-                    output.push_str(&sse_frame("response.output_item.added", &json!({"type": "response.output_item.added", "output_index": out_idx, "item": {"id": self.chat_response.output_item_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []}})));
-                }
+                let item = self.chat_response.ensure_message_item(out_idx);
+                output.push_str(&item);
                 if !self.chat_response.refusal_started {
                     self.chat_response.refusal_started = true;
                     self.chat_response.refusal_content_index =
@@ -8590,6 +8598,47 @@ impl SseStreamTransformer {
             }
         }
         self.chat_response.finish_if_ready(output)
+    }
+
+    /// Opens the assistant message item once, whichever part reaches the client
+    /// first.
+    fn ensure_message_item(&mut self, output_index: usize) -> String {
+        if self.message_started {
+            return String::new();
+        }
+        self.message_started = true;
+        sse_frame(
+            "response.output_item.added",
+            &json!({"type": "response.output_item.added", "output_index": output_index, "item": {"id": self.output_item_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []}}),
+        )
+    }
+
+    /// Replays assistant text that the upstream buffered into the terminal
+    /// snapshot instead of streaming it, so a delta-less upstream does not leave
+    /// the chat client with an empty message. Streamed text wins over the
+    /// snapshot.
+    fn replay_buffered_text(&mut self, items: &[Value]) -> String {
+        if !self.response_chat.content.is_empty() {
+            return String::new();
+        }
+        let text = items
+            .iter()
+            .filter(|item| item.get("type").and_then(Value::as_str) == Some("message"))
+            .filter_map(|item| item.get("content").and_then(Value::as_array))
+            .flatten()
+            .filter(|part| {
+                matches!(
+                    part.get("type").and_then(Value::as_str),
+                    Some("output_text" | "text")
+                )
+            })
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .collect::<String>();
+        if text.is_empty() {
+            return String::new();
+        }
+        self.response_chat.content.push_str(&text);
+        self.response_chat.chunk(json!({"content": text}), None)
     }
 
     fn transform_response_event(&mut self, value: &Value) -> String {
@@ -8655,6 +8704,9 @@ impl SseStreamTransformer {
                     }
                 }
             }
+            if let Some(items) = value["response"]["output"].as_array() {
+                output.push_str(&self.replay_buffered_text(items));
+            }
             output.push_str(&self.response_chat.finish());
             return output;
         }
@@ -8679,10 +8731,13 @@ impl SseStreamTransformer {
                     }
                 }
             }
+            if let Some(items) = value["response"]["output"].as_array() {
+                output.push_str(&self.replay_buffered_text(items));
+            }
             output.push_str(&self.response_chat.finish_with_reason(Some(reason)));
             return output;
         }
-        if matches!(event_type, "response.failed" | "response.error") {
+        if matches!(event_type, "response.failed" | "response.error" | "error") {
             if self.response_chat.finished {
                 return String::new();
             }
@@ -8693,13 +8748,28 @@ impl SseStreamTransformer {
                 .filter(|v| !v.is_null())
                 .or_else(|| value.get("error").filter(|v| !v.is_null()))
                 .unwrap_or(value);
-            let message = value_string(detail.get("message"))
-                .unwrap_or_else(|| "upstream stream reported an error".to_owned());
+            let upstream_code = value_string(detail.get("code")).unwrap_or_default();
+            let upstream_message = value_string(detail.get("message")).unwrap_or_default();
+            // Upstream error text routinely embeds account ids, endpoint URLs and
+            // the request echo, so the full text stays in the trace and the client
+            // only receives a fixed message keyed by a known code.
+            eprintln!(
+                "upstream stream error: code={} message={}",
+                trace_string(&upstream_code, 64),
+                trace_string(&upstream_message, 512)
+            );
+            let client_message = match upstream_code.as_str() {
+                "server_overloaded" => "upstream is at capacity, retry later",
+                "rate_limit_exceeded" => "upstream rate limit reached, retry later",
+                "content_filter" => "upstream rejected the request under its content policy",
+                "invalid_request" => "upstream rejected the request",
+                _ => "upstream stream reported an error",
+            };
             let mut output = sse_frame(
                 "error",
                 &json!({
                     "type": "error",
-                    "error": {"type": "upstream_error", "code": "upstream_stream_failed", "message": message}
+                    "error": {"type": "upstream_error", "code": "upstream_stream_failed", "message": client_message}
                 }),
             );
             output.push_str("data: [DONE]\n\n");
@@ -16972,6 +17042,9 @@ mod tests {
                         if traces
                             .iter()
                             .any(|trace| trace["traceKind"] == "client-request")
+                            && traces
+                                .iter()
+                                .any(|trace| trace["traceKind"] == "upstream-attempt")
                         {
                             break traces;
                         }
@@ -16980,7 +17053,25 @@ mod tests {
                 }
             })
             .await
-            .expect("dropping after response.completed should finalize the trace");
+            .expect("the terminal event should commit both trace records");
+            // Both records are written by one detached task, so a regression that
+            // drops the second one has to fail here.
+            assert_eq!(
+                traces
+                    .iter()
+                    .filter(|trace| trace["traceKind"] == "client-request")
+                    .count(),
+                1,
+                "{traces:?}"
+            );
+            assert_eq!(
+                traces
+                    .iter()
+                    .filter(|trace| trace["traceKind"] == "upstream-attempt")
+                    .count(),
+                1,
+                "{traces:?}"
+            );
             for trace in traces.iter().filter(|trace| {
                 matches!(
                     trace["traceKind"].as_str(),
@@ -16990,7 +17081,10 @@ mod tests {
                 assert_eq!(trace["status"], 200);
                 assert_eq!(trace["isError"], expected_error);
                 assert_eq!(trace["lifecycleState"], "completed");
-                assert!(trace["clientDisconnected"].is_boolean());
+                // The edge now finishes on the terminal event, so the client is
+                // still connected when the trace is written.
+                // `pre_terminal_disconnect_traces_as_499` covers the other branch.
+                assert_eq!(trace["clientDisconnected"], false);
                 if expected_error {
                     assert_eq!(
                         trace["error"],
