@@ -9,6 +9,10 @@ before sending.
 > `{{ENROLL_URL}}` — the enrollment base URL (not the inference URL).
 > `{{MODEL}}` — the model name the Hermes already uses (see `LLM_MODEL` in
 > `~/.hermes/.env`).
+> `{{ACCESS_CLIENT_ID}}` / `{{ACCESS_CLIENT_SECRET_PATH}}` — only when the
+> enrollment hostname is gated by Cloudflare Access. The **id** is not secret and
+> can sit in this text; the **secret** must be a path to a file on the machine
+> (or `-` for stdin), never a value pasted here.
 >
 > The enrollment code carries the mapping between `{{MODEL}}`, the equivalent
 > model on MultiVibe, and the equivalent model on Nous Research. If Nous does not
@@ -42,6 +46,39 @@ This exchanges the code for this machine's credentials, stores them in the
 system secret store (macOS Keychain, or the Linux Secret Service), and writes the
 model mapping table. The code cannot be reused; if it has expired, ask for a
 fresh one.
+
+### If enrollment is behind Cloudflare Access
+
+`host.example.invalid` sits behind Cloudflare Access, which is a gate for
+*browsers*; this machine is not one. If `doctor` or this command reports
+`invalid` while a browser can reach the same hostname, the gate is the reason:
+an anonymous exchange is answered with a `302` to a login page, and the bridge
+cannot log in because it has no credential yet.
+
+Two deployments answer this. Check which one you are on **before** running the
+command above:
+
+- **Enrollment bypassed or on its own hostname** — nothing more to do, run the
+  command as written. Do not add Access arguments "just in case": a stray header
+  on an ungated surface is noise, not safety.
+- **Enrollment gated by Access** — you were given an Access **service token**
+  for this machine: a client id and a client secret. Add both:
+
+```
+multivibe-hermes-bridge enroll --code {{ENROLLMENT_CODE}} --edge {{ENROLL_URL}} \
+  --access-id {{ACCESS_CLIENT_ID}} --access-secret {{ACCESS_CLIENT_SECRET_PATH}}
+```
+
+The client id is the token's id (the bridge appends `.access` if you omit it).
+The secret is read from a **file** or stdin — put it in a temporary file with
+mode `0600` first, and delete that file afterwards. Never paste the secret into
+this conversation, a shell history, or a chat message: it is a credential for
+this machine and it is revocable independently of every other client.
+
+Once enrolled, the same token is stored in the secret store and sent on every
+inference request, so the gate needs no further attention from you. If you were
+given neither a bypassed hostname nor a service token, stop and ask. Enrolment
+cannot succeed without one of them, and guessing wastes a single-use code.
 
 ## 2. Supply your Nous key locally
 
