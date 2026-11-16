@@ -775,9 +775,33 @@ impl AccountStore {
     }
 }
 
+/// Stable, non-secret identity of the proxy API key that authorized a call.
+///
+/// `id` is durable (environment keys use `configured:<application>`, stored keys
+/// use their UUID) and `preview` is the masked form already shown by the
+/// dashboard. The raw key is never retained in traces or analytics.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ApiKeyIdentity {
+    pub id: String,
+    pub preview: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct AuthContext {
     pub application: String,
+    pub api_key: Option<ApiKeyIdentity>,
+}
+
+pub(crate) fn proxy_api_key_preview(key: &str) -> String {
+    let chars = key.chars().collect::<Vec<_>>();
+    if chars.len() <= 12 {
+        return format!("{}••••", chars.iter().take(4).collect::<String>());
+    }
+    format!(
+        "{}••••{}",
+        chars.iter().take(8).collect::<String>(),
+        chars.iter().skip(chars.len() - 4).collect::<String>()
+    )
 }
 
 pub fn constant_time_equal(left: &str, right: &str) -> bool {
@@ -869,13 +893,27 @@ pub fn authorize(
     store: &StoreFile,
     config: &EdgeConfig,
 ) -> Result<AuthContext, Response> {
-    let mut keys = config.configured_api_keys.clone();
-    keys.extend(
-        store
-            .proxy_api_keys
-            .iter()
-            .map(|entry| (entry.application.clone(), entry.key.clone())),
-    );
+    // Identity is stable per key: environment keys use `configured:<application>`
+    // (a rotation under the same application intentionally keeps its history),
+    // stored dashboard keys use their UUID.
+    let mut keys = config
+        .configured_api_keys
+        .iter()
+        .map(|(application, key)| {
+            (
+                application.clone(),
+                key.clone(),
+                format!("configured:{application}"),
+            )
+        })
+        .collect::<Vec<_>>();
+    keys.extend(store.proxy_api_keys.iter().map(|entry| {
+        (
+            entry.application.clone(),
+            entry.key.clone(),
+            entry.id.clone(),
+        )
+    }));
     if let Some(internal) = config.internal_job_token.as_deref() {
         if header_value(headers, "x-multivibe-internal-token")
             .is_some_and(|value| constant_time_equal(&value, internal))
@@ -883,12 +921,21 @@ pub fn authorize(
             return Ok(AuthContext {
                 application: header_value(headers, "x-multivibe-internal-application")
                     .unwrap_or_else(|| "internal-job".to_owned()),
+                // Internal jobs carry no client API key; the router omits the dimension.
+                api_key: header_value(headers, "x-multivibe-internal-api-key-id").map(|id| {
+                    ApiKeyIdentity {
+                        preview: header_value(headers, "x-multivibe-internal-api-key-preview")
+                            .unwrap_or_default(),
+                        id,
+                    }
+                }),
             });
         }
     }
     if keys.is_empty() {
         return Ok(AuthContext {
             application: "default".to_owned(),
+            api_key: None,
         });
     }
     if !config.admin_token.is_empty()
@@ -900,16 +947,21 @@ pub fn authorize(
             // Express lets an authenticated dashboard session use the normal
             // default proxy scope; keep the native edge attribution identical.
             application: "default".to_owned(),
+            api_key: None,
         });
     }
     let token = bearer_or_api_key(headers);
     if let Some(token) = token {
-        if let Some((application, _)) = keys
+        if let Some((application, key, id)) = keys
             .iter()
-            .find(|(_, key)| constant_time_equal(&token, key))
+            .find(|(_, key, _)| constant_time_equal(&token, key))
         {
             return Ok(AuthContext {
                 application: application.clone(),
+                api_key: Some(ApiKeyIdentity {
+                    id: id.clone(),
+                    preview: proxy_api_key_preview(key),
+                }),
             });
         }
     }
@@ -4504,6 +4556,9 @@ struct TraceContext {
     trace_kind: &'static str,
     route: String,
     application: String,
+    /// Non-secret identity of the client API key; absent for internal/admin calls.
+    api_key_id: Option<String>,
+    api_key_preview: Option<String>,
     requested_model: Option<String>,
     resolved_model: Option<String>,
     model: Option<String>,
@@ -5379,6 +5434,12 @@ impl TraceSink {
         if let Some(value) = context.provider.as_deref() {
             entry["provider"] = Value::String(value.to_owned());
         }
+        if let Some(value) = context.api_key_id.as_deref() {
+            entry["apiKeyId"] = Value::String(value.to_owned());
+        }
+        if let Some(value) = context.api_key_preview.as_deref() {
+            entry["apiKeyPreview"] = Value::String(value.to_owned());
+        }
         if let Some(value) = context.codex_session_id.as_deref() {
             entry["codexSessionId"] = Value::String(value.to_owned());
         }
@@ -6002,6 +6063,7 @@ fn build_trace_context(
     headers: &HeaderMap,
     body: &Value,
     application: &str,
+    api_key: Option<&ApiKeyIdentity>,
     client_request_id: &str,
     requested_model: &str,
     resolved_model: &str,
@@ -6032,6 +6094,10 @@ fn build_trace_context(
         trace_kind,
         route: path.to_owned(),
         application: application.to_owned(),
+        api_key_id: api_key.map(|value| value.id.clone()),
+        api_key_preview: api_key
+            .map(|value| value.preview.clone())
+            .filter(|value| !value.is_empty()),
         requested_model,
         resolved_model,
         model,
@@ -6774,6 +6840,7 @@ async fn proxy_inference(
     headers: &HeaderMap,
     body: &Value,
     application: &str,
+    api_key: Option<&ApiKeyIdentity>,
     activity_kind: Option<ActivityKind>,
     image_upload: Option<&Bytes>,
 ) -> Result<ProxyResult, Response> {
@@ -6949,6 +7016,7 @@ async fn proxy_inference(
                     headers,
                     body,
                     application,
+                    api_key,
                     &client_request_id,
                     &requested_model,
                     &route.model,
@@ -6965,6 +7033,7 @@ async fn proxy_inference(
                     headers,
                     body,
                     application,
+                    api_key,
                     &client_request_id,
                     &requested_model,
                     &route.model,
@@ -7591,6 +7660,7 @@ async fn proxy_inference(
         headers,
         body,
         application,
+        api_key,
         &client_request_id,
         &requested_model,
         &trace_model,
@@ -8914,6 +8984,11 @@ fn streaming_response(reply: StreamingReply) -> Response {
 struct Job {
     id: String,
     application: String,
+    /// Non-secret API-key identity captured at submission, replayed on execution.
+    #[serde(default)]
+    api_key_id: Option<String>,
+    #[serde(default)]
+    api_key_preview: Option<String>,
     route: String,
     #[serde(default)]
     request_headers: HashMap<String, String>,
@@ -9278,6 +9353,8 @@ fn import_legacy_jobs_blocking(path: &std::path::Path) -> Result<Vec<Job>, Strin
                 events: Vec::new(),
                 id,
                 application: row.get(1)?,
+                api_key_id: None,
+                api_key_preview: None,
                 route: row.get(2)?,
                 request_headers: sqlite_json(row.get(3)?),
                 request_body: row
@@ -9749,6 +9826,7 @@ impl JobManager {
         headers: &HeaderMap,
         body: &Value,
         max_attempts: u32,
+        api_key: Option<&ApiKeyIdentity>,
     ) -> Result<JobCreateResult, JobCreateError> {
         let now = now_ms();
         let priority =
@@ -9770,6 +9848,10 @@ impl JobManager {
         let job = Job {
             id: new_id("job"),
             application: application.to_owned(),
+            api_key_id: api_key.map(|value| value.id.clone()),
+            api_key_preview: api_key
+                .map(|value| value.preview.clone())
+                .filter(|value| !value.is_empty()),
             route: route.to_owned(),
             request_headers: headers
                 .iter()
@@ -10645,12 +10727,17 @@ async fn run_claimed_job(
             ))
         })
         .collect::<HeaderMap>();
+    let replayed_api_key = running.api_key_id.as_ref().map(|id| ApiKeyIdentity {
+        id: id.clone(),
+        preview: running.api_key_preview.clone().unwrap_or_default(),
+    });
     let execution = proxy_inference(
         &state,
         &running.route,
         &headers,
         &running.request_body,
         &running.application,
+        replayed_api_key.as_ref(),
         None,
         None,
     );
@@ -11063,6 +11150,7 @@ async fn inference_handler(State(state): State<EdgeState>, req: Request<Body>) -
                 &job_headers,
                 &body,
                 default_job_max_attempts(),
+                auth.api_key.as_ref(),
             )
             .await
         {
@@ -11133,6 +11221,7 @@ async fn inference_handler(State(state): State<EdgeState>, req: Request<Body>) -
         &headers,
         &body,
         &auth.application,
+        auth.api_key.as_ref(),
         Some(ActivityKind::Request),
         image_upload.as_ref(),
     )
@@ -12926,6 +13015,7 @@ async fn realtime_call_handler(State(state): State<EdgeState>, req: Request<Body
             &headers,
             &trace_body,
             &auth.application,
+            auth.api_key.as_ref(),
             &client_request_id,
             "realtime",
             "realtime",
@@ -13124,6 +13214,7 @@ async fn realtime_call_handler(State(state): State<EdgeState>, req: Request<Body
             &headers,
             &Value::Null,
             &auth.application,
+            auth.api_key.as_ref(),
             &client_request_id,
             "realtime",
             "realtime",
@@ -13152,6 +13243,7 @@ async fn realtime_call_handler(State(state): State<EdgeState>, req: Request<Body
         &headers,
         &Value::Null,
         &auth.application,
+        auth.api_key.as_ref(),
         &client_request_id,
         "realtime",
         "realtime",
@@ -13226,6 +13318,7 @@ async fn realtime_voices_handler(State(state): State<EdgeState>, req: Request<Bo
             &headers,
             &Value::Null,
             &auth.application,
+            auth.api_key.as_ref(),
             &client_request_id,
             "realtime-voices",
             "realtime-voices",
@@ -13261,6 +13354,7 @@ async fn realtime_voices_handler(State(state): State<EdgeState>, req: Request<Bo
         &headers,
         &Value::Null,
         &auth.application,
+        auth.api_key.as_ref(),
         &client_request_id,
         "realtime-voices",
         "realtime-voices",
@@ -13352,6 +13446,7 @@ async fn realtime_voices_handler(State(state): State<EdgeState>, req: Request<Bo
                     &headers,
                     &Value::Null,
                     &auth.application,
+                    auth.api_key.as_ref(),
                     &client_request_id,
                     "realtime-voices",
                     "realtime-voices",
@@ -13400,6 +13495,7 @@ async fn realtime_voices_handler(State(state): State<EdgeState>, req: Request<Bo
                     &headers,
                     &Value::Null,
                     &auth.application,
+                    auth.api_key.as_ref(),
                     &client_request_id,
                     "realtime-voices",
                     "realtime-voices",
@@ -13483,6 +13579,7 @@ async fn realtime_voices_handler(State(state): State<EdgeState>, req: Request<Bo
         &headers,
         &Value::Null,
         &auth.application,
+        auth.api_key.as_ref(),
         &client_request_id,
         "realtime-voices",
         "realtime-voices",
@@ -13534,7 +13631,9 @@ async fn websocket_handler(
         return draining_response();
     }
     headers.remove("x-multivibe-internal-trace-redact");
-    ws.on_upgrade(move |socket| handle_websocket(socket, state, headers, auth.application, path))
+    ws.on_upgrade(move |socket| {
+        handle_websocket(socket, state, headers, auth.application, auth.api_key, path)
+    })
 }
 
 async fn ws_send_json(socket: &mut WebSocket, value: Value) -> bool {
@@ -13947,6 +14046,7 @@ async fn produce_ws_response(
     headers: &HeaderMap,
     frame: &Value,
     application: &str,
+    api_key: Option<&ApiKeyIdentity>,
     events: tokio::sync::mpsc::Sender<Value>,
 ) -> WsTurnResult {
     let mut result = WsTurnResult::default();
@@ -13956,6 +14056,7 @@ async fn produce_ws_response(
         headers,
         frame,
         application,
+        api_key,
         Some(ActivityKind::WebsocketTurn),
         None,
     )
@@ -14181,6 +14282,7 @@ async fn handle_websocket(
     state: EdgeState,
     headers: HeaderMap,
     application: String,
+    api_key: Option<ApiKeyIdentity>,
     path: String,
 ) {
     let mut log = WsConnectionLog::new(&headers, &application, &path);
@@ -14450,7 +14552,15 @@ async fn handle_websocket(
                 let mut turn_result: Option<WsTurnResult> = None;
                 {
                     let work =
-                        produce_ws_response(&state, &path, &headers, &frame, &application, events);
+                        produce_ws_response(
+                            &state,
+                            &path,
+                            &headers,
+                            &frame,
+                            &application,
+                            api_key.as_ref(),
+                            events,
+                        );
                     tokio::pin!(work);
                     let mut finished = false;
                     loop {
@@ -15856,10 +15966,45 @@ mod tests {
 
         let auth = authorize(&headers, "/v1/responses", &store, &config).unwrap();
         assert_eq!(auth.application, "interactive");
+        let identity = auth.api_key.expect("an authorized key carries its identity");
+        assert_eq!(identity.id, "configured:interactive");
+        assert_eq!(identity.preview, proxy_api_key_preview("secret"));
 
         headers.remove(header::AUTHORIZATION);
         let error = authorize(&headers, "/v1/messages", &store, &config).unwrap_err();
         assert_eq!(error.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn stored_keys_report_their_uuid_and_keyless_calls_stay_unattributed() {
+        let mut config = EdgeConfig::default();
+        config.configured_api_keys = vec![("interactive".to_owned(), "env-secret".to_owned())];
+        let mut store = StoreFile::default();
+        store.proxy_api_keys.push(StoredProxyApiKey {
+            id: "9f4f0d1a-6fb8-4b74-9bd3-20ff4c4f0a11".to_owned(),
+            application: "harness-opencode".to_owned(),
+            key: "mv_stored_key_value_1234".to_owned(),
+            created_at: Some(1_788_803_484_000),
+        });
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer mv_stored_key_value_1234"),
+        );
+        let auth = authorize(&headers, "/v1/responses", &store, &config).unwrap();
+        assert_eq!(auth.application, "harness-opencode");
+        assert_eq!(
+            auth.api_key.expect("stored keys keep their durable id").id,
+            "9f4f0d1a-6fb8-4b74-9bd3-20ff4c4f0a11"
+        );
+
+        // A request without any configured key is authenticated as `default` but
+        // must not claim an API-key attribution.
+        let open = StoreFile::default();
+        let bare_config = EdgeConfig::default();
+        let anonymous = authorize(&HeaderMap::new(), "/v1/responses", &open, &bare_config).unwrap();
+        assert_eq!(anonymous.application, "default");
+        assert!(anonymous.api_key.is_none());
     }
 
     #[test]
@@ -21728,6 +21873,8 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
             .unwrap();
         assert_eq!(keys["proxyApiKeys"].as_array().unwrap().len(), 2);
         assert_eq!(keys["proxyApiKeys"][0]["source"], "environment");
+        // Environment ids must match trace attribution so usage rows can join.
+        assert_eq!(keys["proxyApiKeys"][0]["id"], "configured:environment-app");
         assert_eq!(keys["proxyApiKeys"][1]["source"], "dashboard");
         assert_eq!(keys["proxyApiKeys"][1]["createdAt"], 1_788_803_484_000_u64);
         let keys_json = keys.to_string();

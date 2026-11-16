@@ -206,3 +206,37 @@ test("large session turn state updates incrementally, including late retries aft
   assert.ok(Math.abs(report.summary.costUsd-expected.summary.costUsd)<1e-8);
   assert.deepEqual(report.summary.initialInputTokenBuckets,expected.summary.initialInputTokenBuckets);
 });
+
+test("API key attribution: byApiKey, filters and legacy schema upgrade", async t => {
+  const f = await fixture(t);
+  f.config.retentionMax = 20;
+  const at = BASE + 3_600_000;
+  const a = { ...trace("key-a", at), apiKeyId: "configured:codex", apiKeyPreview: "mv_first••••abcd" };
+  const b = { ...trace("key-b", at), apiKeyId: "configured:codex", apiKeyPreview: "mv_first••••abcd", tokensOutput: 9, tokensTotal: 29, costUsd: 0.2 };
+  const c = { ...trace("key-c", at), apiKeyId: "11111111-2222-4333-8444-555555555555", apiKeyPreview: "mv_second••••wxyz", application: "harness-opencode" };
+  const keyless = { ...trace("key-none", at), apiKeyId: undefined };
+  f.store.append([a, b, c, keyless], undefined, true);
+
+  const usage = f.store.usage({});
+  const byKey = new Map(usage.byApiKey.map((entry: any) => [entry.apiKeyId, entry]));
+  assert.equal(byKey.get("configured:codex").requests, 2, "attempts from one key aggregate together");
+  assert.equal(byKey.get("configured:codex").keyPreview, "mv_first••••abcd");
+  assert.equal(byKey.get("configured:codex").application, "codex");
+  assert.equal(byKey.get("11111111-2222-4333-8444-555555555555").requests, 1);
+  assert.equal(byKey.get("11111111-2222-4333-8444-555555555555").application, "harness-opencode");
+  assert.equal(byKey.get("unattributed").requests, 1, "keyless calls stay visible");
+
+  // Aggregated hourly rollups must honour the narrowing filter, not just raw edges.
+  const filtered = f.store.usage({ apiKeyId: "configured:codex" });
+  assert.equal(filtered.totals.requests, 2);
+  assert.equal((filtered as any).byApiKey.length, 1);
+  const exactHour = f.store.usage({ sinceMs: at, untilMs: at + 60_000, apiKeyId: "11111111-2222-4333-8444-555555555555" });
+  assert.equal(exactHour.totals.requests, 1);
+  assert.equal(f.store.sessions({ apiKeyId: "configured:codex" }).sessions.length, 1);
+  assert.equal(f.store.sessions({ apiKeyId: "11111111-2222-4333-8444-555555555555" }).sessions.length, 1);
+
+  // Reopening an older database shape must add the column without losing rows.
+  await f.reopen();
+  assert.equal((f.store.usage({}).byApiKey as any[]).length, 3);
+  assert.equal(f.store.usage({ apiKeyId: "configured:codex" }).totals.requests, 2);
+});
