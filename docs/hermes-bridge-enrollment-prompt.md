@@ -2,10 +2,11 @@
 
 Paste the block below into the client's Hermes (or give it to whoever runs that
 machine). It contains a **one-time enrollment code**, never a long-lived secret:
-once the machine enrols, the code is spent. Replace the two placeholders before
-sending.
+once the machine enrols, the code is spent. Replace the three placeholders
+before sending.
 
 > `{{ENROLLMENT_CODE}}` — a `mvenr_...` code, valid once and for at most 24 hours.
+> `{{ENROLL_URL}}` — the enrollment base URL (not the inference URL).
 > `{{MODEL}}` — the model name the Hermes already uses (see `LLM_MODEL` in
 > `~/.hermes/.env`).
 >
@@ -31,8 +32,11 @@ are two values in `~/.hermes/.env` and one background service on this machine.
 Run:
 
 ```
-multivibe-hermes-bridge enroll --code {{ENROLLMENT_CODE}}
+multivibe-hermes-bridge enroll --code {{ENROLLMENT_CODE}} --edge {{ENROLL_URL}}
 ```
+
+`{{ENROLL_URL}}` is the enrollment endpoint, which is deliberately separate from
+the inference endpoint because the machine has no credential yet.
 
 This exchanges the code for this machine's credentials, stores them in the
 system secret store (macOS Keychain, or the Linux Secret Service), and writes the
