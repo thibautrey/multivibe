@@ -4659,6 +4659,24 @@ impl AdmissionController {
         (free_slots, queue_depth)
     }
 
+    /// How many waiters are ahead of a new arrival on these accounts.
+    ///
+    /// The waiter table is an ordered map of ids assigned monotonically, so its
+    /// length is the real queue depth for this account set — not an estimate.
+    /// Reported as `position` on `/v1/admission`: a client that is told to wait
+    /// needs to know whether it is next or behind a hundred others, and a
+    /// wait-time estimate alone cannot say that.
+    fn queue_position(&self, accounts: &[Account]) -> u32 {
+        let counters = self.counters();
+        let wanted: HashSet<&str> = accounts.iter().map(|a| a.id.as_str()).collect();
+        let ahead = counters
+            .waiters
+            .values()
+            .filter(|account_ids| account_ids.iter().any(|id| wanted.contains(id.as_str())))
+            .count();
+        ahead.try_into().unwrap_or(u32::MAX)
+    }
+
     fn unregister_waiter(&self, id: u64) {
         if self.counters().waiters.remove(&id).is_some() {
             self.bump();
@@ -13741,6 +13759,7 @@ fn admission_body(
     expires_at: Option<u64>,
     renewals: u32,
     switch_ok: bool,
+    position: u32,
 ) -> Value {
     json!({
         "object": "multivibe.admission",
@@ -13765,6 +13784,9 @@ fn admission_body(
             "accountActive": report.account_active,
         },
         "reason": admission_reason(report),
+        // Zero when admitted: nothing is ahead of a client that already has a
+        // slot. Otherwise the number of waiters it is behind.
+        "position": position,
         "generatedAt": now_ms(),
     })
 }
@@ -13936,7 +13958,9 @@ async fn admission_decision_for(
         } else {
             admission::AdmissionDecision::Queue
         };
-        let mut body = admission_body(&report, decision, model, None, None, 0, switch_ok);
+        let queued_behind = state.admission.queue_position(&accounts);
+        let mut body =
+            admission_body(&report, decision, model, None, None, 0, switch_ok, queued_behind);
         if shadowed {
             body["shadow"] = json!({
                 "wouldDecide": report.decision.as_str(),
@@ -13994,6 +14018,7 @@ async fn admission_decision_for(
                         None,
                         0,
                         switch_ok,
+                        state.admission.queue_position(&accounts),
                     ),
                 );
                 if let Ok(value) = HeaderValue::from_str(
@@ -14011,6 +14036,8 @@ async fn admission_decision_for(
                 Some(now + admission::LEASE_TTL_MS),
                 0,
                 switch_ok,
+                // Admitted: nothing is ahead of this caller.
+                0,
             );
             if shadowed {
                 // The decision stays `admit` because that is what actually
@@ -19027,6 +19054,33 @@ mod tests {
             controller.acquire_for(&accounts, Some("hermes"), Some(&share), Some("new"), now);
         assert!(fresh.is_none(), "a new conversation waits");
         assert_eq!(report.session_grace, admission::GraceState::Ineligible);
+    }
+
+    #[test]
+    fn the_queue_position_counts_waiters_ahead_on_the_same_accounts() {
+        // `position` on `/v1/admission` has to be a real rank, not a guess: a
+        // client told to wait needs to know whether it is next or behind a
+        // hundred others, which a wait-time estimate cannot express. An empty
+        // queue reports zero rather than a plausible-looking one.
+        let controller = Arc::new(AdmissionController::new(Arc::new(AtomicU64::new(1))));
+        let accounts = [share_account("acct", 2)];
+        assert_eq!(controller.queue_position(&accounts), 0, "nothing waiting");
+
+        let first = controller.register_waiter(&accounts);
+        let second = controller.register_waiter(&accounts);
+        assert_eq!(controller.queue_position(&accounts), 2, "two are ahead");
+        drop(first);
+        assert_eq!(controller.queue_position(&accounts), 1, "one left the queue");
+
+        // A waiter on an unrelated account is not this caller's queue.
+        let elsewhere = [share_account("other", 2)];
+        assert_eq!(
+            controller.queue_position(&elsewhere),
+            0,
+            "another account's queue is not ours"
+        );
+        drop(second);
+        assert_eq!(controller.queue_position(&accounts), 0);
     }
 
     #[test]

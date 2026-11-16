@@ -456,14 +456,30 @@ pub fn grace_keeps_priority(utilisation: f64, policy: &GracePolicy) -> bool {
 #[must_use]
 pub fn estimated_wait_ms(pressure: AccountPressure, share_limit: u32, average_turn_ms: u64) -> u64 {
     let limit = share_limit.max(1);
-    if pressure.application_active < limit {
-        return 0;
-    }
-    let queued_waves = pressure
-        .application_active
-        .saturating_sub(limit)
-        .saturating_add(1);
-    (queued_waves as u64).saturating_mul(average_turn_ms.max(1_000))
+    let turn = average_turn_ms.max(1_000);
+    // Two independent reasons to wait, and the caller waits for whichever binds
+    // last. Taking the first one encountered reported 0 on a full account whose
+    // application held nothing — the common case — so a caller that had just been
+    // refused was told to retry immediately, turning a queue into a spin.
+    //
+    // Physical saturation: the slot in use must drain before this can run, so
+    // one wave is the floor.
+    let physical = if pressure.account_active >= pressure.capacity {
+        turn
+    } else {
+        0
+    };
+    // Own share: each turn queued past the limit costs one more wave.
+    let share_wait = if pressure.application_active < limit {
+        0
+    } else {
+        let queued_waves = pressure
+            .application_active
+            .saturating_sub(limit)
+            .saturating_add(1);
+        (queued_waves as u64).saturating_mul(turn)
+    };
+    physical.max(share_wait)
 }
 
 /// A bounded sliding window of latency samples, enough to report a real p99.
@@ -576,6 +592,32 @@ mod tests {
         let policy = share(0.125, 2);
         assert_eq!(policy.slots(32, 0, 0), 6, "4 share slots plus 2 idle burst");
         assert_eq!(policy.slots(32, 9, 0), 4, "no burst while others are active");
+    }
+
+    #[test]
+    fn a_physically_saturated_account_reports_a_real_wait() {
+        // Reproduced against a real edge: one busy slot, an application holding
+        // nothing, and `/v1/admission` answered `queue` with `waitMs: 0`. A
+        // caller that trusts that retries in a loop against a full machine.
+        let policy = share(1.0, 0);
+        let scheduled = estimated_wait_ms(pressure(1, 1, 0, 0), policy.slots(1, 1, 0), 20_000);
+        assert_eq!(scheduled, 20_000, "the slot must drain before this can run");
+
+        // Room on the account and inside the share: nothing to wait for.
+        assert_eq!(
+            estimated_wait_ms(pressure(8, 2, 1, 0), 4, 20_000),
+            0
+        );
+        // At the share with room on the account: one wave per queued turn.
+        assert_eq!(
+            estimated_wait_ms(pressure(8, 4, 4, 0), 4, 20_000),
+            20_000
+        );
+        assert_eq!(
+            estimated_wait_ms(pressure(8, 6, 5, 0), 4, 20_000),
+            40_000,
+            "two turns ahead of the share"
+        );
     }
 
     #[test]
