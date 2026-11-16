@@ -35,6 +35,18 @@ Applied in order. Each layer only narrows the previous one.
 | 3. Session grace | Bound to `(application, session_id)`; requires ≥128 decoded tokens; TTL 20 min idle, 2 h absolute; at most 25 % of an account's slots | `admission::GraceRegistry` |
 | 4. Calendar | Share multiplied by 2 between 20:00 and 08:00 Europe/Paris and all weekend | `applicationPolicies[].shareWindows` |
 
+### Phase 0 exists on purpose
+
+Turning the policy off answers "what happens without limits". It does not answer
+"what would the limits do to *this* traffic", because with it off no decision is
+computed. `ADMISSION_SHADOW=true` evaluates the full policy against every real
+request while admitting exactly as before, and `evaluate_with_capacity` takes no
+slot and touches no counter, so the numbers an operator reads are not perturbed by
+the measurement itself.
+
+Shadow does not trip the replica guard: it enforces nothing, so the N-times
+argument does not apply.
+
 ### Measured capacity
 
 A declared `maxConcurrent` cannot know that a runtime loaded a second model, that
@@ -157,7 +169,7 @@ Routing rules, in priority order:
 
 | Phase | What ships | Gate |
 | --- | --- | --- |
-| 0. Shadow | Decisions are computed and logged, no effect | Counters match expectations |
+| 0. Shadow | `ADMISSION_SHADOW=true`: every decision is computed and counted, nothing is enforced | The counters match what you expect before any request is refused |
 | 1. Fair share + leases | `ADMISSION_POLICY_ENABLED=true`, no grace | No starvation between tenants |
 | 2. Grace | Grace enabled for one pilot client | `grace.deniedByCap` low |
 | 3. Bridge | General availability | `http.524.count` stays zero |
