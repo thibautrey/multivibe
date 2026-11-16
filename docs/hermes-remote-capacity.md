@@ -30,10 +30,29 @@ Applied in order. Each layer only narrows the previous one.
 
 | Layer | Limit | Where |
 | --- | --- | --- |
-| 1. Physical capacity | `capacityProfile.maxConcurrent`, else 32 for `cloud` and 1 for `local` | `account_max_concurrent` |
+| 1. Physical capacity | **measured** from `capacityProfile.metricsUrl` when present, else the declared `maxConcurrent`, else 32 for `cloud` and 1 for `local` | `capacity::CapacityRegistry` |
 | 2. Fair share per application | `applicationPolicies[].maxConcurrentShare` (default `0.25`, floor 1 slot) plus `burst` (default `1`, only on an idle account) | `POST /v1/admission`, `proxy_inference` |
 | 3. Session grace | Bound to `(application, session_id)`; requires ≥128 decoded tokens; TTL 20 min idle, 2 h absolute; at most 25 % of an account's slots | `admission::GraceRegistry` |
 | 4. Calendar | Share multiplied by 2 between 20:00 and 08:00 Europe/Paris and all weekend | `applicationPolicies[].shareWindows` |
+
+### Measured capacity
+
+A declared `maxConcurrent` cannot know that a runtime loaded a second model, that
+a GPU is throttling, or that an operator halved the batch size. When an account
+carries `metricsUrl`, the edge polls it every 30 s and the observation **replaces**
+the declaration:
+
+| Rule | Why |
+| --- | --- |
+| A drop takes effect at once | Over-admitting is the expensive mistake |
+| A rise needs 5 minutes below 60 % load | One idle sample must not widen the gate and start an oscillation |
+| A failed or timed-out probe changes nothing | Silence is not evidence of capacity |
+| A stale observation keeps its ceiling | Regressing to a wider declaration during an incident is the dangerous direction |
+| A busier runtime never ramps up | A runtime that is always busy is already saturated |
+
+`/v1/capacity` reports `capacitySource` as `declared`, `measured`, or
+`measured_stale`, so an operator can tell how the number was obtained rather than
+assuming.
 
 ### Why not `batch` priority
 
@@ -149,7 +168,13 @@ Metrics to watch: `admission.decision{reason}`, `grace.active`,
 25 % pool is too small; a non-zero 524 count means an inline wait escaped the
 clamp.
 
-## Known constraint
+## Known constraints
+
+A runtime exposes no metrics endpoint yet: `metricsUrl` is a contract the
+deployment must satisfy. Until the Spark `strata` runtime publishes
+`{maxConcurrent, inFlight, prefillTokensPerSecond, decodeTokensPerSecond}`, the
+declared value stays in force and `capacitySource` honestly reports `declared`.
+The edge side is complete; the missing half is the runtime's.
 
 `AdmissionController` counts in memory. **This is only correct for a
 single-process edge.** With N replicas the effective capacity becomes N× the
