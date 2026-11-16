@@ -556,6 +556,11 @@ async function assemble(options, selectedTarget, work, dependencies, sourceCommi
       await cp(path.join(repositoryRoot, "packaging", installerPlatform, script), destination);
       await chmod(destination, 0o555);
     }
+    // The enrollment prompt tells an operator to run this by name, so it has to
+    // travel with the archive instead of being a file only we know about.
+    const hermesInstaller = path.join(root, "install-hermes-bridge.sh");
+    await cp(path.join(repositoryRoot, "packaging", "linux", "install-hermes-bridge.sh"), hermesInstaller);
+    await chmod(hermesInstaller, 0o555);
   }
   if (selectedTarget.goos === "linux") {
     for (const [source, destinationName] of [
@@ -574,6 +579,7 @@ async function assemble(options, selectedTarget, work, dependencies, sourceCommi
   let updaterDestination;
   let hostDestination;
   let edgeDestination;
+  let hermesBridgeDestination;
   let menuDestination;
   let menuBarDestination;
   let resourceDirectory;
@@ -587,6 +593,11 @@ async function assemble(options, selectedTarget, work, dependencies, sourceCommi
     updaterDestination = path.join(contents, "Helpers", "multivibe-host-updater");
     hostDestination = path.join(contents, "MacOS", "multivibe-host");
     edgeDestination = path.join(contents, "Helpers", "multivibe-v1-edge");
+    // Deliberately not under `Helpers/`: codesign `--deep` treats that directory as
+    // nested code, and a shell script can only be "signed" through a fragile xattr that
+    // packaging tools are free to drop. `Resources/app` is covered by the outer seal
+    // exactly like `Resources/update/install.sh`.
+    hermesBridgeDestination = path.join(applicationDirectory, "bin", "multivibe-hermes-bridge");
     menuBarDestination = path.join(contents, "MacOS", "MultiVibe Host");
     resourceDirectory = path.join(contents, "Resources", "provider");
     verifierDestination = path.join(contents, "Resources", "verify-provider-host.mjs");
@@ -624,6 +635,13 @@ async function assemble(options, selectedTarget, work, dependencies, sourceCommi
     updaterDestination = path.join(root, "bin", `multivibe-host-updater${executableSuffix}`);
     hostDestination = path.join(root, "bin", `multivibe-host${executableSuffix}`);
     menuDestination = path.join(root, "bin", `multivibe-host-menu${executableSuffix}`);
+    // The Hermes bridge is a separate loopback service with its own lifecycle; the
+    // enrollment prompt tells an operator to run it by name, so the archive must
+    // actually contain that name. Windows waits for its own launcher: a /bin/sh
+    // script called `.exe` would be a lie.
+    if (selectedTarget.goos !== "windows") {
+      hermesBridgeDestination = path.join(root, "bin", "multivibe-hermes-bridge");
+    }
     nodeDestination = path.join(root, "bin", `node${executableSuffix}`);
     resourceDirectory = path.join(root, "resources", "provider");
     verifierDestination = path.join(root, "verify-provider-host.mjs");
@@ -652,6 +670,27 @@ async function assemble(options, selectedTarget, work, dependencies, sourceCommi
   await buildGo(path.join(repositoryRoot, "host", "updater"), updaterDestination, "hostUpdaterVersion", options.version, selectedTarget);
   await buildGo(path.join(repositoryRoot, "host", "application"), hostDestination, "hostApplicationVersion", options.version, selectedTarget);
   if (edgeDestination) await buildRustEdge(edgeDestination);
+
+  // A thin Node launcher, like the others in `bin/`: the bridge's code already
+  // ships inside `dist/`, and the archive's own Node runtime executes it. Without
+  // this file the enrollment prompt would name a command that does not exist.
+  if (hermesBridgeDestination) {
+    const bridgeDirectory = path.dirname(hermesBridgeDestination);
+    await mkdir(bridgeDirectory, { recursive: true, mode: 0o755 });
+    const relativeNode = path.relative(bridgeDirectory, nodeDestination);
+    // `dist/` sits under the application directory, which differs per platform,
+    // so derive it rather than hard-coding `../app`.
+    const relativeScript = path.relative(
+      bridgeDirectory,
+      path.join(applicationDirectory, "dist", "hermes-bridge", "bin.js"),
+    );
+    const script = `#!/bin/sh
+# Managed by the MultiVibe Host packaging. Runs the bundled Node.
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec "$here/${relativeNode}" "$here/${relativeScript}" "$@"
+`;
+    await writeFile(hermesBridgeDestination, script, { mode: 0o755 });
+  }
   if (menuDestination) {
     await buildGo(
       path.join(repositoryRoot, "host", "menu"), menuDestination, "menuApplicationVersion", options.version, selectedTarget,

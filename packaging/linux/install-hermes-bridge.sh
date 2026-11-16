@@ -44,6 +44,10 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+if [ "$(id -u)" = "0" ]; then
+  fail "run as the user who runs Hermes, without sudo"
+fi
+
 if [ "$UNINSTALL" = "true" ]; then
   if [ "$(uname -s)" = "Darwin" ]; then
     PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
@@ -57,6 +61,17 @@ if [ "$UNINSTALL" = "true" ]; then
   printf 'Uninstalled. Credentials remain in the system secret store.\n'
   exit 0
 fi
+
+# This installs a *per-user* service. Under sudo it would write a LaunchAgent or
+# systemd user unit into root's home, where the client's login never looks, and
+# the harness would then talk to nothing. Refuse instead of half-succeeding.
+if [ "$(id -u)" = "0" ]; then
+  fail "run as the user who runs Hermes, without sudo: the service must live in that user's session"
+fi
+case "$HOME" in
+  /*) ;;
+  *) fail "HOME must be an absolute path" ;;
+esac
 
 [ -n "$BINARY" ] || fail "--binary is required"
 case "$BINARY" in

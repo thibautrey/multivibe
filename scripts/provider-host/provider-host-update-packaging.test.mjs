@@ -62,6 +62,11 @@ test("native packages include the updater and platform schedulers", async () => 
   assert.match(packager, /buildGo\(path\.join\(repositoryRoot, "host", "updater"\)/u);
   assert.match(packager, /buildRustEdge\(edgeDestination\)/u);
   assert.match(packager, /path\.join\(contents, "Helpers", "multivibe-v1-edge"\)/u);
+  // The Hermes bridge ships as a launcher plus its compiled entrypoint, and it must
+  // stay outside `Helpers/`: `codesign --deep` rejects an unsigned script there.
+  assert.match(packager, /path\.join\(applicationDirectory, "bin", "multivibe-hermes-bridge"\)/u);
+  assert.match(packager, /path\.join\(applicationDirectory, "dist", "hermes-bridge", "bin\.js"\)/u);
+  assert.doesNotMatch(packager, /Helpers", "multivibe-hermes-bridge"/u);
   assert.match(packager, /packaging", "macos", "Edge\.entitlements"/u);
   assert.match(packager, /buildGo\(\s*path\.join\(repositoryRoot, "host", "menu"\)/u);
   assert.match(packager, /CGO_ENABLED: selectedTarget\.goos === "linux" \? "1" : "0"/u);
@@ -103,6 +108,8 @@ test("native packages include the updater and platform schedulers", async () => 
   assert.match(macos, /body\.version!==process\.argv\[1\]/u);
   assert.match(verifier, /multivibe-host-updater/u);
   assert.match(verifier, /multivibe-v1-edge/u);
+  assert.match(verifier, /Resources\/app\/bin\/multivibe-hermes-bridge/u);
+  assert.match(verifier, /app\/dist\/hermes-bridge\/bin\.js/u);
   assert.match(verifier, /multivibe-host-menu/u);
   assert.match(uninstall, /multivibe-host-menu\.desktop/u);
   assert.match(packager, /windows-amd64.*zip/su);
