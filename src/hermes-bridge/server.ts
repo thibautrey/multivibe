@@ -199,7 +199,11 @@ export function createBridge(deps: BridgeDeps) {
       const response = await fetchImpl(`${base}/admission`, {
         method: "POST",
         headers: { ...edgeHeaders(secrets, incoming), "content-type": "application/json" },
-        body: JSON.stringify({ model, switch_ok: true }),
+        // `reserve: false` on purpose: the bridge asks "is there room?" and may
+        // then choose Nous. A reservation left behind would hold a real slot for
+        // the lease TTL, so asking the question would consume the capacity the
+        // question was about.
+        body: JSON.stringify({ model, switch_ok: true, reserve: false }),
         signal,
         redirect: "error",
       });

@@ -13563,6 +13563,14 @@ struct AdmissionRequest {
     /// than wait. The server never invents a switch the caller cannot adopt.
     #[serde(default)]
     switch_ok: Option<bool>,
+    /// Whether to reserve a slot. Defaults to true.
+    ///
+    /// A caller asking "do you have room?" and then deciding to go elsewhere
+    /// must not take the slot while it decides: the reservation outlives the
+    /// question by the lease TTL, and an abandoned lease holds capacity that
+    /// nobody is using. `reserve: false` answers with the decision only.
+    #[serde(default)]
+    reserve: Option<bool>,
 }
 
 /// A short, content-free explanation of an admission decision.
@@ -13658,6 +13666,7 @@ async fn admission_handler(State(state): State<EdgeState>, req: Request<Body>) -
             priority: None,
             session: None,
             switch_ok: None,
+            reserve: None,
         }
     } else {
         match serde_json::from_slice(&bytes) {
@@ -13696,6 +13705,7 @@ async fn admission_handler(State(state): State<EdgeState>, req: Request<Body>) -
         &model,
         request.session.as_deref(),
         request.switch_ok.unwrap_or(false),
+        request.reserve.unwrap_or(true),
     )
     .await
 }
@@ -13707,6 +13717,7 @@ async fn admission_decision_for(
     model: &str,
     session: Option<&str>,
     switch_ok: bool,
+    reserve: bool,
 ) -> Response {
     let catalog = exposed_models(state, store, false).await;
     let route = routes_for_model(store, model, model, &catalog)
@@ -13746,7 +13757,9 @@ async fn admission_decision_for(
     // enforced promise, and a client that receives `queue` would switch upstream
     // -- a behavioural effect the measurement must not cause. Report what the
     // policy would have said, and admit as before.
-    let shadowed = state.config.admission_shadow;
+    // Shadow and a non-reserving probe both answer without taking a slot; only
+    // the enforcement path is allowed to hold capacity.
+    let shadowed = state.config.admission_shadow || !reserve;
     let (acquired, report) = if shadowed {
         let (_, evaluated) = state.admission.evaluate_with_capacity(
             &accounts,
