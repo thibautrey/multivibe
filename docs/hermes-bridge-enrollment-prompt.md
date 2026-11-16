@@ -46,7 +46,16 @@ multivibe-hermes-bridge enroll --code {{ENROLLMENT_CODE}} --nous-key ~/.hermes/n
 (or `--nous-key -` to paste it on stdin). The key stays on this machine and is
 used only for direct requests to `inference-api.nousresearch.com`.
 
-## 3. Start the bridge
+## 3. Install and start the bridge
+
+For a service that starts at login and restarts on failure:
+
+```
+sudo ./install-hermes-bridge.sh --binary /absolute/path/to/multivibe-hermes-bridge
+```
+
+macOS installs a per-user LaunchAgent; Linux installs a systemd user unit. To run
+it in the foreground instead:
 
 ```
 multivibe-hermes-bridge run

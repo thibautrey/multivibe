@@ -250,9 +250,20 @@ export function createBridge(deps: BridgeDeps) {
 
     // One bounded probe, then a single decision. Never a second decision after
     // bytes have reached the harness.
+    //
+    // A sticky conversation skips the probe entirely: asking the edge about
+    // capacity we have already decided not to use would add a round trip to
+    // every turn of a conversation that is pinned to Nous.
+    const stickilyRouted =
+      stickyUntilMs !== undefined &&
+      stickyUntilMs > at &&
+      mapModel(mappings, requestedModel, "nous") !== undefined;
     const controller = AbortSignal.timeout(config.edgeAttemptTimeoutMs);
     const edgeModel = mapModel(mappings, requestedModel, "edge");
-    const edge = edgeModel ? await probeEdge(edgeModel, request.headers, controller) : undefined;
+    const edge =
+      !stickilyRouted && edgeModel
+        ? await probeEdge(edgeModel, request.headers, controller)
+        : undefined;
     const decision = routeTurn(config, mappings, {
       requestedModel,
       stickyUntilMs,
