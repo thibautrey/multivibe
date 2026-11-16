@@ -162,11 +162,19 @@ Routing rules, in priority order:
 | 2. Grace | Grace enabled for one pilot client | `grace.deniedByCap` low |
 | 3. Bridge | General availability | `http.524.count` stays zero |
 
-Metrics to watch: `admission.decision{reason}`, `grace.active`,
-`grace.deniedByCap`, `switch.count`, `switch.blockedNoMapping`,
-`inlineWaitMsMean`, and `queue.wait`. A sustained `grace.deniedByCap` means the
-25 % pool is too small; a non-zero 524 count means an inline wait escaped the
-clamp.
+| Signal | Where | What it tells you |
+| --- | --- | --- |
+| `decision{admit,queue,switch}` | `/admin/admission/state` | How often work is refused at the door |
+| `queued`, `inlineWaitMsMax` | same | The wait *tail*; a mean hides a single 50 s admission |
+| `switchRecommended` | same | Turns the edge could not serve and told the client to avoid |
+| `grace.active`, `deniedByCap` | same | Whether the 25 % grace pool is binding |
+| `blockedNoMapping` | bridge `/health` | A client asked for a model the fallback cannot serve |
+| `refusedCredential` | bridge `/health` | The edge rejected this machine — a config fault |
+| `fallbackUnavailable` | bridge `/health` | The edge failed **and** no fallback was possible |
+
+`deniedByCap` staying high means the grace pool is too small; `blockedNoMapping`
+above zero means the promise cannot be kept for that model and the mapping table
+needs a real equivalent.
 
 ## Known constraints
 

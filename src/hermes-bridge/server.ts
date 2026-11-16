@@ -148,6 +148,16 @@ export function createBridge(deps: BridgeDeps) {
   // One entry per conversation. Bounded so a long-lived machine cannot grow it
   // without limit; entries are dropped on expiry and by age.
   const sticky = new Map<string, StickyEntry>();
+  // Content-free counters. `blockedNoMapping` is the one that matters most: it
+  // means a client asked for a model the fallback cannot serve, so the promise
+  // "you will not notice the switch" is not being kept for that model.
+  const counters = {
+    turns: 0,
+    switched: 0,
+    blockedNoMapping: 0,
+    refusedCredential: 0,
+    fallbackUnavailable: 0,
+  };
   // The key the harness presents. Stable when the caller supplies the persisted
   // one: rotating it on every start would invalidate the value already written
   // to `.hermes/.env` and answer 401 to a harness that worked a moment ago,
@@ -219,6 +229,7 @@ export function createBridge(deps: BridgeDeps) {
         mode: config.mode,
         secrets: redactSecrets(secrets),
         mappings: mappings.map((mapping) => mapping.from),
+        counters,
       });
       log({ kind: "health", status: 200 });
       return;
@@ -297,6 +308,7 @@ export function createBridge(deps: BridgeDeps) {
     });
 
     if (decision.upstream === null) {
+      if (decision.reason === "no_equivalent_model") counters.blockedNoMapping += 1;
       sendJson(response, 503, {
         error: {
           message: `No equivalent model is available for '${requestedModel}' on either upstream.`,
@@ -322,7 +334,10 @@ export function createBridge(deps: BridgeDeps) {
      */
     async function fallBackToNous(reason: SwitchReason): Promise<boolean> {
       const fallback = mapModel(mappings, requestedModel, "nous");
-      if (!fallback || !secrets.nousApiKey) return false;
+      if (!fallback || !secrets.nousApiKey) {
+        if (upstream === "edge") counters.fallbackUnavailable += 1;
+        return false;
+      }
       try {
         const retried = await fetchImpl(`${nous}${isChat ? "/chat/completions" : "/responses"}`, {
           method: "POST",
@@ -378,6 +393,7 @@ export function createBridge(deps: BridgeDeps) {
       });
     }
     if (edge?.error === "credential") {
+      counters.refusedCredential += 1;
       // Loud on purpose: this will not resolve itself and every turn is being
       // paid for on the fallback until someone fixes the credential.
       log({
@@ -388,6 +404,8 @@ export function createBridge(deps: BridgeDeps) {
         message: "the edge refused this machine's credentials; check the Access service token and API key",
       });
     }
+    counters.turns += 1;
+    if (upstream === "nous" && decision.reason !== "mode") counters.switched += 1;
     log({
       kind: "turn",
       upstream,

@@ -443,6 +443,45 @@ test("saturation statuses are recognised, ordinary ones are not", () => {
   for (const status of [400, 401, 404, 500]) assert.equal(isSaturationStatus(status), false, String(status));
 });
 
+// --- counters ---------------------------------------------------------------
+
+test("counters expose the signals the plan watches, without content", async () => {
+  const { fetchImpl } = scriptedFetch([
+    jsonResponse({ decision: "admit" }),
+    jsonResponse({ error: { message: "bad" } }, 400),
+    jsonResponse({ decision: "admit" }),
+    jsonResponse({ choices: [] }),
+  ]);
+  const bridge = createBridge({ config: config(), secrets: SECRETS, mappings: MAPPINGS, fetchImpl });
+  await withBridge(bridge, async (baseUrl) => {
+    // An unmapped model: the fallback cannot serve it at all.
+    const blocked = await post(
+      baseUrl,
+      "/v1/chat/completions",
+      { model: "not-mapped", messages: [] },
+      bridge.localKey,
+    );
+    assert.equal(blocked.status, 503);
+
+    // A served turn.
+    await post(baseUrl, "/v1/chat/completions", { model: "hermes-4-405b", messages: [] }, bridge.localKey);
+
+    const health = (await (await get(baseUrl, "/health")).json()) as {
+      counters: Record<string, number>;
+    };
+    assert.equal(health.counters.blockedNoMapping, 1);
+    assert.equal(health.counters.turns, 1);
+    // No prompt, no model name, no session in the counters.
+    assert.deepEqual(Object.keys(health.counters).sort(), [
+      "blockedNoMapping",
+      "fallbackUnavailable",
+      "refusedCredential",
+      "switched",
+      "turns",
+    ]);
+  });
+});
+
 // --- doctor -----------------------------------------------------------------
 
 test("doctor catches a mapped model the fallback does not actually serve", async () => {

@@ -11101,6 +11101,12 @@ struct AdmissionMetrics {
     grace_ineligible: AtomicU64,
     inline_wait_ms_total: AtomicU64,
     inline_wait_samples: AtomicU64,
+    /// Largest wait reported, so an operator sees the tail without a histogram.
+    inline_wait_ms_max: AtomicU64,
+    /// Count of admissions that had to queue rather than being served at once.
+    queued: AtomicU64,
+    /// Count of turns that the bridge could have served but the edge could not.
+    switch_recommended: AtomicU64,
 }
 
 impl AdmissionMetrics {
@@ -11111,9 +11117,11 @@ impl AdmissionMetrics {
             }
             admission::AdmissionDecision::Queue => {
                 self.queue.fetch_add(1, AtomicOrdering::Relaxed);
+                self.queued.fetch_add(1, AtomicOrdering::Relaxed);
             }
             admission::AdmissionDecision::Switch => {
                 self.switch.fetch_add(1, AtomicOrdering::Relaxed);
+                self.switch_recommended.fetch_add(1, AtomicOrdering::Relaxed);
             }
         }
         match report.session_grace {
@@ -11132,6 +11140,19 @@ impl AdmissionMetrics {
         }
         self.inline_wait_ms_total
             .fetch_add(report.wait_ms, AtomicOrdering::Relaxed);
+        // Track the maximum, so the tail is visible without a histogram.
+        let mut current = self.inline_wait_ms_max.load(AtomicOrdering::Relaxed);
+        while report.wait_ms > current {
+            match self.inline_wait_ms_max.compare_exchange_weak(
+                current,
+                report.wait_ms,
+                AtomicOrdering::Relaxed,
+                AtomicOrdering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(observed) => current = observed,
+            }
+        }
         self.inline_wait_samples.fetch_add(1, AtomicOrdering::Relaxed);
     }
 
@@ -11151,6 +11172,9 @@ impl AdmissionMetrics {
                 "ineligible": self.grace_ineligible.load(AtomicOrdering::Relaxed),
             },
             "inlineWaitMsMean": if samples == 0 { 0 } else { total / samples },
+            "inlineWaitMsMax": self.inline_wait_ms_max.load(AtomicOrdering::Relaxed),
+            "queued": self.queued.load(AtomicOrdering::Relaxed),
+            "switchRecommended": self.switch_recommended.load(AtomicOrdering::Relaxed),
         })
     }
 }
@@ -19008,6 +19032,40 @@ mod tests {
         let share = application_share(&store, "a").expect("policy");
         assert_eq!(share.share_windows.len(), 1, "only the valid window survives");
         assert_eq!(share.share_windows[0].multiplier, 8.0, "and its multiplier is bounded");
+    }
+
+    #[test]
+    fn the_wait_tail_and_queue_counts_are_reported() {
+        // `queue.wait` was named in the plan but nothing produced it. An operator
+        // sizing the share needs the tail, not only the mean: a single 50 s wait
+        // is invisible in an average over many fast admissions.
+        let metrics = AdmissionMetrics::default();
+        let mut admitted = AdmissionReport::default();
+        admitted.decision = admission::AdmissionDecision::Admit;
+        admitted.wait_ms = 1_000;
+        metrics.record(&admitted);
+
+        let mut queued = AdmissionReport::default();
+        queued.decision = admission::AdmissionDecision::Queue;
+        queued.wait_ms = 50_000;
+        metrics.record(&queued);
+
+        let snapshot = metrics.snapshot(0);
+        assert_eq!(snapshot["inlineWaitMsMax"], 50_000);
+        assert_eq!(snapshot["queued"], 1);
+        assert_eq!(snapshot["decision"]["queue"], 1);
+        assert_eq!(snapshot["decision"]["admit"], 1);
+    }
+
+    #[test]
+    fn a_recommended_switch_is_counted_separately_from_a_decision() {
+        let metrics = AdmissionMetrics::default();
+        let mut report = AdmissionReport::default();
+        report.decision = admission::AdmissionDecision::Switch;
+        metrics.record(&report);
+        let snapshot = metrics.snapshot(0);
+        assert_eq!(snapshot["switchRecommended"], 1);
+        assert_eq!(snapshot["decision"]["switch"], 1);
     }
 
     #[test]
