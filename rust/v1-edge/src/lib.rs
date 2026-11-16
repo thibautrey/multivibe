@@ -19261,6 +19261,101 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_expired_grace_lease_returns_its_slot_to_the_pool() {
+        // The end-to-end form of the leak: a graced session admits through the
+        // lease endpoint, the lease expires unused, and the pool must come back.
+        // Before the lease learned what it borrowed, the account slot returned
+        // and the grace slot did not, so a client that waited politely slowly
+        // lost the very priority it had earned.
+        let store_path = temporary_path("grace-lease-accounts");
+        let jobs_path = temporary_path("grace-lease-jobs");
+        let mut store = store_with_accounts(vec![share_account("grace-lease-acct", 8)]);
+        store.application_policies.push(ApplicationPolicy {
+            application: "hermes-a".to_owned(),
+            fairness_weight: Some(1.0),
+            max_concurrent_share: Some(0.25),
+            burst: Some(0),
+            share_windows: None,
+            webhooks: Vec::new(),
+            ..Default::default()
+        });
+        fs::write(&store_path, serde_json::to_vec(&store).unwrap()).await.unwrap();
+
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.configured_api_keys = vec![("hermes-a".to_owned(), "edge-secret".to_owned())];
+        config.admission_policy_enabled = true;
+        let state = EdgeState::new(config).await.unwrap();
+
+        let accounts = store.accounts.clone();
+        let share = application_share(&store, "hermes-a").expect("policy");
+        // A fixed weekday afternoon. Using the real clock would make the share
+        // depend on when the suite runs: after 20:00 Europe/Paris the default
+        // calendar doubles it, and this test would fill the wrong number of
+        // slots. Pinned deliberately, not incidentally.
+        // Wednesday 2026-11-18 14:00 Europe/Paris.
+        let now = 1_795_006_800_000;
+        assert_eq!(share.slots(8, 0, now), 2, "a weekday afternoon is not doubled");
+
+        // Earn grace, then fill the fair share so the next slot must be borrowed.
+        state
+            .admission
+            .observe_session("hermes-a", "conv-1", "grace-lease-acct", 512, now);
+        let mut held = Vec::new();
+        for _ in 0..2 {
+            let (lease, _) = state.admission.acquire_for(
+                &accounts, Some("hermes-a"), Some(&share), Some("conv-1"), now);
+            held.push(lease.expect("within share").1);
+        }
+        let (borrowed, report) = state.admission.acquire_for(
+            &accounts, Some("hermes-a"), Some(&share), Some("conv-1"), now);
+        assert!(
+            report.borrowed_from_grace,
+            "the third slot is borrowed, not taken from the share"
+        );
+        let lease = borrowed.expect("grace lends a slot").1;
+        assert_eq!(state.admission.grace_active_total(&accounts, now), 1);
+
+        // The lease is granted from that borrowed slot and then expires.
+        state
+            .admission_leases
+            .lock()
+            .await
+            .grant("adml_x".into(), "hermes-a", "grace-lease-acct", true, now)
+            .expect("granted");
+        // Revoking is the same release path as expiry, and it is reachable from
+        // outside the registry, so it exercises the real credit without reaching
+        // into a private sweep.
+        let released: Vec<crate::lease::ExpiredReservation> = {
+            let mut leases = state.admission_leases.lock().await;
+            leases
+                .revoke("hermes-a", "adml_x")
+                .map(|reservation| vec![reservation])
+                .unwrap_or_default()
+        };
+        assert_eq!(released.len(), 1);
+        for expired in released {
+            state.admission.release_for_with_grace(
+                &expired.account_id,
+                Some(&expired.application),
+                expired.borrowed_from_grace,
+            );
+        }
+        drop(lease);
+        drop(held);
+
+        assert_eq!(
+            state.admission.grace_active_total(&accounts, now),
+            0,
+            "the pool is credited when the lease goes away"
+        );
+
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
     async fn a_completed_turn_earns_grace_and_a_failed_one_does_not() {
         // The upstream answers with real usage so the session has something to
         // be credited with, which is the whole basis of grace.
