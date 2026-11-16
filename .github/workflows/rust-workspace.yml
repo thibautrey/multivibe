@@ -29,6 +29,7 @@ jobs:
       - name: Install the shipping Rust toolchain
         run: |
           rustup toolchain install 1.88.0 --profile minimal --no-self-update
+          rustup component add rustfmt clippy --toolchain 1.88.0
           rustup default 1.88.0
           rustc --version
           cargo --version
@@ -37,11 +38,35 @@ jobs:
       - name: Test the workspace
         run: cargo test --locked --workspace
       # Informational until the crate is formatted and lint-clean: main carries
-      # roughly 190 formatting hunks and 100 clippy warnings today, so a
-      # blocking gate here would be red on arrival and teach people to ignore it.
-      - name: Formatting
-        continue-on-error: true
-        run: cargo fmt --all --check
-      - name: Clippy
-        continue-on-error: true
-        run: cargo clippy --locked --workspace --all-targets
+      # 194 formatting hunks and 80 clippy warnings today, so a blocking gate
+      # would be red on arrival and teach people to ignore it. These steps still
+      # fail hard when the component is missing, so a skipped check cannot pass
+      # for a clean one.
+      - name: Formatting drift
+        run: |
+          status=0
+          cargo fmt --all --check > fmt.log 2>&1 || status=$?
+          if grep -q "not installed" fmt.log; then
+            echo "::error::rustfmt is not available in this toolchain"
+            cat fmt.log
+            exit 1
+          fi
+          hunks=$(grep -c '^Diff in' fmt.log || true)
+          echo "::warning::rustfmt reports ${hunks} hunk(s) of formatting drift; not blocking yet"
+          head -60 fmt.log
+      - name: Clippy warnings
+        run: |
+          status=0
+          cargo clippy --locked --workspace --all-targets > clippy.log 2>&1 || status=$?
+          if grep -q "no such command\|not installed" clippy.log; then
+            echo "::error::clippy is not available in this toolchain"
+            cat clippy.log
+            exit 1
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "::error::clippy failed to build the workspace"
+            tail -80 clippy.log
+            exit 1
+          fi
+          warnings=$(grep -c '^warning:' clippy.log || true)
+          echo "::warning::clippy reports ${warnings} warning(s); not blocking yet"
