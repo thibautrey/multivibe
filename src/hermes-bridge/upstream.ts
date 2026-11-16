@@ -49,7 +49,12 @@ export type RouteInput = {
   edge?: {
     reachable: boolean;
     admission?: EdgeAdmission;
-    error?: "timeout" | "http" | "network";
+    /**
+     * `credential` means the edge answered but refused our identity (an Access
+     * policy or API key problem). It is a configuration fault, not load, and it
+     * will not fix itself by waiting.
+     */
+    error?: "timeout" | "http" | "network" | "credential";
   };
 };
 

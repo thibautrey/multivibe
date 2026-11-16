@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { exchangeEnrollment, isEnrollmentCode, parseEnrollmentCode } from "./enroll.js";
 import { runDoctor } from "./doctor.js";
-import { createBridge, conversationKey, edgeHeaders, isSaturationStatus, nousHeaders } from "./server.js";
+import { createBridge, conversationKey, edgeHeaders, isSaturationStatus, nousHeaders, type BridgeLogEvent } from "./server.js";
 import { DEFAULT_BRIDGE_CONFIG, type BridgeConfig, type BridgeSecrets, type ModelMapping } from "./config.js";
 
 const MAPPINGS: ModelMapping[] = [
@@ -354,6 +354,36 @@ test("a 400 from the edge is a client error and must not be retried", async () =
     assert.equal(response.status, 400);
   });
   assert.equal(calls.length, 2, "no third attempt");
+});
+
+test("a refused credential is reported, not mistaken for load", async () => {
+  // Conflating "Access rejects you" with "we are busy" would route every turn to
+  // Nous forever while the edge sits idle, and nobody would learn why.
+  const events: BridgeLogEvent[] = [];
+  const { fetchImpl } = scriptedFetch([
+    jsonResponse({ error: { code: "invalid_api_key" } }, 401),
+    jsonResponse({ choices: [] }),
+  ]);
+  const bridge = createBridge({
+    config: config(),
+    secrets: SECRETS,
+    mappings: MAPPINGS,
+    fetchImpl,
+    log: (event) => events.push(event),
+  });
+  await withBridge(bridge, async (baseUrl) => {
+    const response = await post(
+      baseUrl,
+      "/v1/chat/completions",
+      { model: "hermes-4-405b", messages: [] },
+      bridge.localKey,
+    );
+    // The turn still succeeds via the fallback: the customer is served.
+    assert.equal(response.status, 200);
+  });
+  const credential = events.find((event) => event.status === 401);
+  assert.ok(credential, "the refusal is logged");
+  assert.match(credential!.message ?? "", /service token and API key/);
 });
 
 test("saturation statuses are recognised, ordinary ones are not", () => {
