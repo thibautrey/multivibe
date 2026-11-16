@@ -308,3 +308,56 @@ async fn chat_to_responses_terminal_releases_held_open_socket() {
     assert_held_open_terminal_closes(StreamTransform::ChatToResponse, ClientDialect::Responses)
         .await;
 }
+
+#[test]
+fn refusal_streamed_before_content_keeps_distinct_content_indexes() {
+    // An upstream may stream a refusal delta before any text. Both parts then
+    // need their own content_index, and the terminal snapshot has to list them
+    // in the order the client was told.
+    let mut converter = SseStreamTransformer::new(StreamTransform::ChatToResponse, "m");
+    let mut output = converter.push(
+        b"data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"refusal\":\"cannot comply\"},\"finish_reason\":null}]}\n\n",
+    );
+    output.push_str(&converter.push(
+        b"data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n",
+    ));
+    output.push_str(&converter.push(
+        b"data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+    ));
+    output.push_str(&converter.push(
+        b"data: {\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3}}\n\ndata: [DONE]\n\n",
+    ));
+    let events = parse_sse_events(&output);
+
+    let part_index = |event_type: &str, part_type: &str| -> u64 {
+        events
+            .iter()
+            .find(|(_, e)| e["type"] == event_type && e["part"]["type"] == part_type)
+            .unwrap_or_else(|| panic!("no {event_type} for {part_type}: {output}"))
+            .1["content_index"]
+            .as_u64()
+            .unwrap()
+    };
+    let refusal_index = part_index("response.content_part.added", "refusal");
+    let text_index = part_index("response.content_part.added", "output_text");
+    assert_ne!(refusal_index, text_index, "{output}");
+    assert_eq!(
+        part_index("response.content_part.done", "refusal"),
+        refusal_index,
+        "{output}"
+    );
+    assert_eq!(
+        part_index("response.content_part.done", "output_text"),
+        text_index,
+        "{output}"
+    );
+
+    let (_, done) = events
+        .iter()
+        .find(|(_, e)| e["type"] == "response.output_item.done")
+        .unwrap_or_else(|| panic!("no response.output_item.done: {output}"));
+    let parts = done["item"]["content"].as_array().unwrap();
+    assert_eq!(parts[refusal_index as usize]["type"], "refusal", "{output}");
+    assert_eq!(parts[text_index as usize]["type"], "output_text", "{output}");
+    assert_eq!(parts[text_index as usize]["text"], "hello", "{output}");
+}
