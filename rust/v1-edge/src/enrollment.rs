@@ -115,6 +115,8 @@ impl EnrollmentCodes {
         Ok(entry.grant.clone())
     }
 
+    /// Outstanding codes, for the operator view. Used codes are included until
+    /// they expire, so this is "entries retained", not "codes still usable".
     pub fn len(&self) -> usize {
         self.entries.len()
     }
