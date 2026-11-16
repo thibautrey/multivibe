@@ -7,6 +7,7 @@
 //! boundary on the hot path.
 
 mod admission;
+mod capacity;
 mod chat_tools;
 mod codex_prefix;
 mod confidential;
@@ -4230,6 +4231,23 @@ impl AdmissionController {
         session: Option<&str>,
         now: u64,
     ) -> (Option<(usize, AdmissionLease)>, AdmissionReport) {
+        self.acquire_for_with_capacity(accounts, application, share, session, now, &|_| None)
+    }
+
+    /// As `acquire_for`, but consulting a measured ceiling when one exists.
+    ///
+    /// `measured` returns the observed ceiling for an account, or `None` when
+    /// none was measured. The measured value *replaces* the declaration: it is
+    /// an observation of the same quantity, not an adjustment to it.
+    fn acquire_for_with_capacity(
+        self: &Arc<Self>,
+        accounts: &[Account],
+        application: Option<&str>,
+        share: Option<&admission::ApplicationShare>,
+        session: Option<&str>,
+        now: u64,
+        measured: &dyn Fn(&str) -> Option<u32>,
+    ) -> (Option<(usize, AdmissionLease)>, AdmissionReport) {
         let grace_policy = self.grace().policy().clone();
         let grace_qualifies = match (application, session) {
             (Some(application), Some(session)) => {
@@ -4249,7 +4267,9 @@ impl AdmissionController {
             ..AdmissionReport::default()
         };
         for (index, account) in accounts.iter().enumerate() {
-            let capacity = account_max_concurrent(account);
+            let capacity = measured(&account.id)
+                .filter(|value| *value >= 1)
+                .unwrap_or_else(|| declared_max_concurrent(account));
             let active = counters
                 .active_by_account
                 .get(&account.id)
@@ -4601,7 +4621,8 @@ impl AdmissionReport {
     }
 }
 
-fn account_max_concurrent(account: &Account) -> u32 {
+/// The declared ceiling, before any measurement is applied.
+fn declared_max_concurrent(account: &Account) -> u32 {
     account
         .capacity_profile
         .as_ref()
@@ -4614,6 +4635,11 @@ fn account_max_concurrent(account: &Account) -> u32 {
             }
         })
         .max(1)
+}
+
+/// Kept for the paths that have no measured registry (tests, one-off callers).
+fn account_max_concurrent(account: &Account) -> u32 {
+    declared_max_concurrent(account)
 }
 
 fn admission_wait(headers: &HeaderMap) -> Result<Duration, Response> {
@@ -6154,6 +6180,9 @@ pub struct EdgeState {
     capacity_version: Arc<AtomicU64>,
     admission: Arc<AdmissionController>,
     admission_metrics: Arc<AdmissionMetrics>,
+    /// Measured ceilings per account. An unmeasured account falls back to its
+    /// declared `maxConcurrent`, so a deployment without metrics is unchanged.
+    capacity: Arc<Mutex<capacity::CapacityRegistry>>,
     admission_leases: Arc<Mutex<lease::LeaseRegistry>>,
     enrollment: Arc<Mutex<enrollment::EnrollmentCodes>>,
     drain: DrainController,
@@ -6252,6 +6281,7 @@ impl EdgeState {
                 admission_grace.clone(),
             )),
             admission_metrics: Arc::new(AdmissionMetrics::default()),
+            capacity: Arc::new(Mutex::new(capacity::CapacityRegistry::new())),
             admission_leases: Arc::new(Mutex::new(lease::LeaseRegistry::new(
                 lease::LeaseLimits::default(),
             ))),
@@ -6300,6 +6330,14 @@ impl EdgeState {
         cache.restored_at = now_ms();
     }
 
+    /// Start the capacity probe for this edge.
+    ///
+    /// Idempotent in effect: a second call would spawn a second loop, so this is
+    /// only called once from `main`.
+    pub fn start_capacity_probe(&self) -> Result<tokio::task::JoinHandle<()>, std::io::Error> {
+        start_capacity_probe(self.clone())
+    }
+
     pub fn start_job_runner(&self) -> Option<tokio::task::JoinHandle<()>> {
         if self
             .job_runner_started
@@ -6316,6 +6354,23 @@ impl EdgeState {
                 webhook_delivery_loop(webhooks)
             );
         }))
+    }
+
+    /// Resolve measured ceilings once per admission decision.
+    ///
+    /// Collected under one short lock so the decision loop does not re-lock per
+    /// account, and so every account in one decision sees the same snapshot
+    /// rather than a registry mutating mid-loop.
+    async fn measured_capacity_snapshot(&self, accounts: &[Account]) -> HashMap<String, u32> {
+        let registry = self.capacity.lock().await;
+        accounts
+            .iter()
+            .filter_map(|account| {
+                registry
+                    .ceiling(&account.id)
+                    .map(|ceiling| (account.id.clone(), ceiling))
+            })
+            .collect()
     }
 
     async fn mark_blocked(&self, account: &Account, model: &str, duration: Duration) {
@@ -7441,24 +7496,19 @@ async fn proxy_inference(
                     .admission_policy_enabled
                     .then(|| application_share(&store, application))
                     .flatten();
-                let (admission, admission_report) = if admission_share.is_some() {
-                    state.admission.acquire_for(
+                // A measured ceiling replaces the declaration; an account with
+                // no measurement keeps its declared value.
+                let measured = state.measured_capacity_snapshot(&accounts).await;
+                let capacity_of = |account_id: &str| measured.get(account_id).copied();
+                let (admission, admission_report) =
+                    state.admission.acquire_for_with_capacity(
                         &accounts,
-                        Some(application),
+                        admission_share.is_some().then_some(application),
                         admission_share.as_ref(),
                         prompt_cache_session_id.as_deref(),
                         now_ms(),
-                    )
-                } else {
-                    let (lease, report) = state.admission.acquire_for(
-                        &accounts,
-                        None,
-                        None,
-                        None,
-                        now_ms(),
+                        &capacity_of,
                     );
-                    (lease, report)
-                };
                 record_admission_decision(&state, application, &admission_report).await;
                 last_admission_wait_ms = admission_report.wait_ms;
                 // Echoed on the response (`push_admission_headers`) so a client
@@ -11088,6 +11138,107 @@ impl AdmissionMetrics {
     }
 }
 
+/// Refresh measured ceilings from each account's `metricsUrl`.
+///
+/// Runs slowly on purpose: this gate changes over minutes, and probing a
+/// runtime's metrics endpoint tightly is its own kind of load. A probe that
+/// fails or times out changes nothing — silence is not evidence of capacity.
+async fn capacity_probe_once(state: &EdgeState) {
+    let store = match state.store.snapshot().await {
+        Ok(store) => store,
+        Err(_) => return,
+    };
+    let now = now_ms();
+    for account in store.accounts.iter().filter(|account| account.enabled) {
+        let declared = declared_max_concurrent(account);
+        {
+            let mut registry = state.capacity.lock().await;
+            registry.declare(&account.id, declared);
+        }
+        let Some(url) = account
+            .capacity_profile
+            .as_ref()
+            .and_then(|profile| profile.metrics_url.as_deref())
+            .filter(|url| url.starts_with("http://") || url.starts_with("https://"))
+        else {
+            continue;
+        };
+        let response = match state
+            .webhook_client
+            .get(url)
+            .timeout(capacity::PROBE_TIMEOUT)
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            // Unreachable metrics: keep the last observation.
+            Err(_) => continue,
+        };
+        if !response.status().is_success() {
+            continue;
+        }
+        // Bound the body: this endpoint is ours, but an unbounded read is how a
+        // proxy becomes an amplifier.
+        let body = match response.bytes().await {
+            Ok(body) if body.len() <= 64 * 1024 => body,
+            _ => continue,
+        };
+        let Ok(value) = serde_json::from_slice::<Value>(&body) else {
+            continue;
+        };
+        let sample = capacity::MetricSample::from_json(&value);
+        let before = {
+            let registry = state.capacity.lock().await;
+            registry.ceiling(&account.id)
+        };
+        let outcome = state.capacity.lock().await.apply(&account.id, &sample, now);
+        let after = {
+            let registry = state.capacity.lock().await;
+            registry.ceiling(&account.id)
+        };
+        if before != after {
+            // Capacity version drives the SSE stream, so a client waiting for a
+            // slot learns that the gate moved without polling.
+            state.capacity_version.fetch_add(1, AtomicOrdering::Relaxed);
+            eprintln!(
+                "capacity change account={} from={:?} to={:?} outcome={:?}",
+                account.id, before, after, outcome
+            );
+        }
+    }
+}
+
+/// Start the capacity probe. Returns a handle the caller may drop to stop it.
+fn start_capacity_probe(
+    state: EdgeState,
+) -> Result<tokio::task::JoinHandle<()>, std::io::Error> {
+    Ok(tokio::spawn(capacity_probe_loop(state)))
+}
+
+async fn capacity_probe_loop(state: EdgeState) {
+    {
+        // Subscribed once: a receiver per iteration would be a new channel each
+        // time and would miss a shutdown that arrived in between.
+        let mut shutdown = state.shutdown.subscribe();
+        let mut interval = tokio::time::interval(capacity::PROBE_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            if state.drain.is_draining() {
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                    _ = shutdown.recv() => break,
+                }
+                continue;
+            }
+            capacity_probe_once(&state).await;
+            tokio::select! {
+                _ = interval.tick() => {}
+                _ = shutdown.recv() => break,
+            }
+        }
+    }
+}
+
 async fn record_admission_decision(
     state: &EdgeState,
     _application: &str,
@@ -13419,12 +13570,15 @@ async fn admission_decision_for(
         .admission_policy_enabled
         .then(|| application_share(store, application))
         .flatten();
-    let (acquired, report) = state.admission.acquire_for(
+    let measured = state.measured_capacity_snapshot(&accounts).await;
+    let capacity_of = |account_id: &str| measured.get(account_id).copied();
+    let (acquired, report) = state.admission.acquire_for_with_capacity(
         &accounts,
         share.is_some().then_some(application),
         share.as_ref(),
         session,
         now_ms(),
+        &capacity_of,
     );
     state.admission_metrics.record(&report);
 
@@ -13763,6 +13917,30 @@ async fn admission_state_handler(State(state): State<EdgeState>, req: Request<Bo
             })
         })
         .collect::<Vec<_>>();
+    let measured_view = {
+        let registry = state.capacity.lock().await;
+        json!({
+            "probeIntervalMs": capacity::PROBE_INTERVAL.as_millis() as u64,
+            "rampUpAfterMs": capacity::RAMP_UP_AFTER_MS,
+            "staleAfterMs": capacity::STALE_AFTER_MS,
+            "accounts": accounts
+                .iter()
+                .filter_map(|account| {
+                    registry.ceiling(&account.id).map(|ceiling| json!({
+                        "accountId": account.id,
+                        "ceiling": ceiling,
+                        "declared": declared_max_concurrent(account),
+                        "stale": registry.is_stale(&account.id, now),
+                        // Throughput the runtime reported, when it reports any.
+                        "prefillTokensPerSecond":
+                            registry.prefill_tokens_per_second(&account.id),
+                        "decodeTokensPerSecond":
+                            registry.decode_tokens_per_second(&account.id),
+                    }))
+                })
+                .collect::<Vec<_>>(),
+        })
+    };
     json_response(
         StatusCode::OK,
         json!({
@@ -13788,6 +13966,7 @@ async fn admission_state_handler(State(state): State<EdgeState>, req: Request<Bo
                 "maxRenewals": admission::LEASE_MAX_RENEWALS,
             },
             "inlineMaxWaitMs": admission::INLINE_MAX_WAIT_MS,
+            "capacity": measured_view,
             "applications": policies,
             "metrics": state.admission_metrics.snapshot(
                 u64::from(state.admission.grace_active_total(&accounts, now))
@@ -13929,10 +14108,22 @@ async fn capacity_handler(
         .then(|| application_share(&store, &auth.application))
         .flatten();
     let now = now_ms();
+    let measured = state.measured_capacity_snapshot(&accounts).await;
+    let capacity_of = |account_id: &str| measured.get(account_id).copied();
+    let observed_count = measured.len();
+    let stale_count = {
+        let registry = state.capacity.lock().await;
+        accounts
+            .iter()
+            .filter(|account| registry.is_stale(&account.id, now))
+            .count()
+    };
     let share_view = share.as_ref().map(|share| {
         let capacity: u32 = accounts
             .iter()
-            .map(account_max_concurrent)
+            .map(|account| {
+                capacity_of(&account.id).unwrap_or_else(|| declared_max_concurrent(account))
+            })
             .sum();
         let account_active: u32 = accounts
             .iter()
@@ -14005,6 +14196,10 @@ async fn capacity_handler(
             "shareUsed": share_view.map(|(_, _, application_active, _)| application_active),
             "accountActive": share_view.map(|(_, account_active, _, _)| account_active),
             "accountCapacity": share_view.map(|(capacity, _, _, _)| capacity),
+            // How the number above was obtained: declared, or measured by the
+            // runtime and possibly stale. An operator must be able to tell.
+            "capacitySource": if observed_count == 0 { "declared" } else if stale_count > 0 { "measured_stale" } else { "measured" },
+            "capacityMeasuredAccounts": observed_count,
             "graceSlots": grace_view.0,
             "graceActive": grace_view.1,
             "version": state.capacity_version.load(AtomicOrdering::Relaxed),
@@ -18543,6 +18738,118 @@ mod tests {
 
         edge_task.abort();
         upstream_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
+    async fn a_measured_ceiling_narrows_admission_without_a_restart() {
+        // The runtime reports two slots while the operator declared eight. The
+        // gate must follow the observation, not the declaration.
+        let metrics = Router::new().route(
+            "/metrics",
+            get(|| async {
+                Json(json!({"maxConcurrent": 2, "inFlight": 0}))
+            }),
+        );
+        let (metrics_url, metrics_task) = start_server(metrics).await;
+
+        let store_path = temporary_path("capacity-metrics-accounts");
+        let jobs_path = temporary_path("capacity-metrics-jobs");
+        let mut target = account("measured");
+        target.provider = Some("openai-compatible".to_owned());
+        target.base_url = Some("http://127.0.0.1:1".to_owned());
+        target.capacity_profile = Some(CapacityProfile {
+            max_concurrent: Some(8),
+            metrics_url: Some(format!("{metrics_url}/metrics")),
+            ..Default::default()
+        });
+        let mut store = store_with_accounts(vec![target]);
+        store.application_policies.push(ApplicationPolicy {
+            application: "hermes-a".to_owned(),
+            fairness_weight: Some(1.0),
+            max_concurrent_share: Some(1.0),
+            burst: Some(0),
+            share_windows: None,
+            webhooks: Vec::new(),
+            ..Default::default()
+        });
+        fs::write(&store_path, serde_json::to_vec(&store).unwrap())
+            .await
+            .unwrap();
+
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.configured_api_keys = vec![("hermes-a".to_owned(), "edge-secret".to_owned())];
+        config.admission_policy_enabled = true;
+        let state = EdgeState::new(config).await.unwrap();
+
+        // Before the first probe, the declaration governs.
+        assert_eq!(state.measured_capacity_snapshot(&store.accounts).await.get("measured"), None);
+
+        capacity_probe_once(&state).await;
+        let snapshot = state.measured_capacity_snapshot(&store.accounts).await;
+        assert_eq!(
+            snapshot.get("measured"),
+            Some(&2),
+            "the measured ceiling replaces the declared eight"
+        );
+
+        // Eight slots was the declaration; only two are actually admitted.
+        let share = application_share(&store, "hermes-a").expect("policy");
+        let mut held = Vec::new();
+        for _ in 0..3 {
+            let capacity = snapshot.get("measured").copied();
+            let (lease, report) = state.admission.acquire_for_with_capacity(
+                &store.accounts,
+                Some("hermes-a"),
+                Some(&share),
+                None,
+                now_ms(),
+                &|_| capacity,
+            );
+            if let Some((_, lease)) = lease {
+                held.push(lease);
+            } else {
+                assert_eq!(report.share_limit, 2, "the share reflects the measurement");
+            }
+        }
+        assert_eq!(held.len(), 2, "only two slots exist");
+
+        metrics_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
+    async fn a_failing_metrics_endpoint_leaves_the_declaration_in_force() {
+        // Silence is not evidence of capacity: an unreachable probe must not
+        // change the gate, in either direction.
+        let store_path = temporary_path("capacity-dead-accounts");
+        let jobs_path = temporary_path("capacity-dead-jobs");
+        let mut target = account("dead-metrics");
+        target.capacity_profile = Some(CapacityProfile {
+            max_concurrent: Some(4),
+            metrics_url: Some("http://127.0.0.1:1/metrics".to_owned()),
+            ..Default::default()
+        });
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(vec![target])).unwrap(),
+        )
+        .await
+        .unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        let state = EdgeState::new(config).await.unwrap();
+
+        capacity_probe_once(&state).await;
+        let registry = state.capacity.lock().await;
+        assert_eq!(registry.ceiling("dead-metrics"), Some(4));
+        drop(registry);
+
         let _ = fs::remove_file(store_path).await;
         let _ = fs::remove_file(jobs_path).await;
     }
