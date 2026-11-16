@@ -55,6 +55,11 @@ export function conversationKey(
   );
 }
 
+/** Statuses that mean "the edge is busy", not "your request is wrong". */
+export function isSaturationStatus(status: number): boolean {
+  return status === 429 || status === 503 || status === 529;
+}
+
 function constantTimeEqual(left: string, right: string): boolean {
   const a = Buffer.from(left);
   const b = Buffer.from(right);
@@ -291,6 +296,32 @@ export function createBridge(deps: BridgeDeps) {
     }
     const forwardBody = { ...body, model: decision.model };
 
+    /**
+     * Send the same turn to Nous. Only legal before any byte reaches the
+     * harness, which is why every caller is a pre-body failure path.
+     */
+    async function fallBackToNous(reason: SwitchReason): Promise<boolean> {
+      const fallback = mapModel(mappings, requestedModel, "nous");
+      if (!fallback || !secrets.nousApiKey) return false;
+      try {
+        const retried = await fetchImpl(`${nous}${isChat ? "/chat/completions" : "/responses"}`, {
+          method: "POST",
+          headers: nousHeaders(secrets, request.headers),
+          body: JSON.stringify({ ...body, model: fallback }),
+          redirect: "error",
+        });
+        // Only a usable response deserves stickiness; falling back to an error
+        // and then pinning the conversation there would compound the outage.
+        if (!retried.ok) return false;
+        if (conversation) sticky.set(conversation, { until: at + config.nousStickinessMs });
+        log({ kind: "switch", upstream: "nous", reason, status: retried.status });
+        await relay(retried, response, isChat);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
     let upstreamResponse: Response;
     try {
       upstreamResponse = await fetchImpl(target, {
@@ -302,30 +333,23 @@ export function createBridge(deps: BridgeDeps) {
     } catch (error) {
       // The decision was taken before any byte was emitted, so a transport
       // failure here may still fall back — this is the only legal retry.
-      if (upstream === "edge") {
-        const fallback = mapModel(mappings, requestedModel, "nous");
-        if (fallback && secrets.nousApiKey) {
-          try {
-            const retried = await fetchImpl(`${nous}${isChat ? "/chat/completions" : "/responses"}`, {
-              method: "POST",
-              headers: nousHeaders(secrets, request.headers),
-              body: JSON.stringify({ ...body, model: fallback }),
-              redirect: "error",
-            });
-            if (conversation) sticky.set(conversation, { until: at + config.nousStickinessMs });
-            log({ kind: "switch", upstream: "nous", reason: "edge_unavailable", status: retried.status });
-            await relay(retried, response, isChat);
-            return;
-          } catch {
-            /* fall through to the generic error below */
-          }
-        }
-      }
+      if (upstream === "edge" && (await fallBackToNous("edge_unavailable"))) return;
       sendJson(response, 502, {
         error: { message: String((error as Error).message), type: "upstream_error", code: "upstream_unavailable" },
       });
       log({ kind: "error", upstream, status: 502 });
       return;
+    }
+
+    // `429` is exactly what the edge answers when our machines are saturated,
+    // and `503` when no slot exists at all. Those are the situations the
+    // fallback exists for: returning them to the harness would break the
+    // promise at the moment it matters most. Nothing has been written to the
+    // client yet, so the retry is still the same single turn.
+    if (upstream === "edge" && (isSaturationStatus(upstreamResponse.status) || upstreamResponse.status >= 500)) {
+      const reason: SwitchReason =
+        upstreamResponse.status === 429 ? "edge_queued" : "edge_unavailable";
+      if (await fallBackToNous(reason)) return;
     }
 
     if (conversation) {
