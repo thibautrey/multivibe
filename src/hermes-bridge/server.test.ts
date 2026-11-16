@@ -487,6 +487,93 @@ test("a reachable enrollment surface is accepted even when it refuses the code",
   assert.match(check?.detail ?? "", /401/);
 });
 
+// --- capacity cache ---------------------------------------------------------
+
+test("a fresh capacity reading is reused instead of probed per turn", async () => {
+  // Probing every turn costs a round trip on the path the customer is waiting on.
+  let clock = 1_000_000;
+  const { fetchImpl, calls } = scriptedFetch([
+    jsonResponse({ decision: "admit" }),
+    jsonResponse({ choices: [] }),
+    jsonResponse({ choices: [] }),
+  ]);
+  const bridge = createBridge({
+    config: config(),
+    secrets: SECRETS,
+    mappings: MAPPINGS,
+    fetchImpl,
+    now: () => clock,
+  });
+  await withBridge(bridge, async (baseUrl) => {
+    const key = bridge.localKey;
+    const turn = () =>
+      post(baseUrl, "/v1/chat/completions", { model: "hermes-4-405b", messages: [] }, key);
+    await turn();
+    clock += 1_000; // still inside the TTL
+    await turn();
+  });
+  const probes = calls.filter((call) => call.url.endsWith("/admission")).length;
+  assert.equal(probes, 1, "one probe covers both turns");
+  assert.equal(calls.length, 3, "probe, then two forwards");
+});
+
+test("an expired reading is probed again", async () => {
+  let clock = 1_000_000;
+  const { fetchImpl, calls } = scriptedFetch([
+    jsonResponse({ decision: "admit" }),
+    jsonResponse({ choices: [] }),
+    jsonResponse({ decision: "admit" }),
+    jsonResponse({ choices: [] }),
+  ]);
+  const bridge = createBridge({
+    config: config(),
+    secrets: SECRETS,
+    mappings: MAPPINGS,
+    fetchImpl,
+    now: () => clock,
+  });
+  await withBridge(bridge, async (baseUrl) => {
+    const key = bridge.localKey;
+    const turn = () =>
+      post(baseUrl, "/v1/chat/completions", { model: "hermes-4-405b", messages: [] }, key);
+    await turn();
+    clock += DEFAULT_BRIDGE_CONFIG.capacityTtlMs + 1;
+    await turn();
+  });
+  assert.equal(calls.filter((call) => call.url.endsWith("/admission")).length, 2);
+});
+
+test("a failed probe is not cached, so a fault is noticed promptly", async () => {
+  // Baking a credential refusal or a timeout in for 15 s would hide it.
+  let clock = 1_000_000;
+  const events: BridgeLogEvent[] = [];
+  const { fetchImpl, calls } = scriptedFetch([
+    jsonResponse({ error: { code: "invalid_api_key" } }, 401),
+    jsonResponse({ choices: [] }),
+    jsonResponse({ decision: "admit" }),
+    jsonResponse({ choices: [] }),
+  ]);
+  const bridge = createBridge({
+    config: config(),
+    secrets: SECRETS,
+    mappings: MAPPINGS,
+    fetchImpl,
+    now: () => clock,
+    log: (event) => events.push(event),
+  });
+  await withBridge(bridge, async (baseUrl) => {
+    const key = bridge.localKey;
+    const turn = () =>
+      post(baseUrl, "/v1/chat/completions", { model: "hermes-4-405b", messages: [] }, key);
+    await turn();
+    clock += 1_000;
+    await turn();
+  });
+  const probes = calls.filter((call) => call.url.endsWith("/admission")).length;
+  assert.equal(probes, 2, "the failure was not cached");
+  assert.ok(events.some((event) => event.status === 401));
+});
+
 // --- counters ---------------------------------------------------------------
 
 test("counters expose the signals the plan watches, without content", async () => {

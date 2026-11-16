@@ -46,6 +46,15 @@ export type BridgeConfig = {
    * `nous-first` switches on any queue, because a queued turn is a slower turn.
    */
   maxQueueWaitMs: number;
+  /**
+   * How long a capacity reading may be reused before the next probe.
+   *
+   * Probing every turn costs a round trip on the path the customer is waiting
+   * on. The reading is only a *hint* for whether probing is worth it: a stale
+   * "plenty free" still meets a real `429`, which falls back, so caching cannot
+   * make the bridge wrong -- only occasionally one request slower.
+   */
+  capacityTtlMs: number;
 };
 
 export const DEFAULT_BRIDGE_CONFIG: Omit<BridgeConfig, "mappings"> = {
@@ -58,6 +67,7 @@ export const DEFAULT_BRIDGE_CONFIG: Omit<BridgeConfig, "mappings"> = {
   nousStickinessMs: 10 * 60_000,
   edgeAttemptTimeoutMs: 45_000,
   maxQueueWaitMs: 120_000,
+  capacityTtlMs: 15_000,
 };
 
 /**

@@ -160,7 +160,13 @@ Routing rules, in priority order:
    the prompt cache on both sides and avoiding flapping.
 5. **The Nous key never leaves the machine.** All fallback traffic goes directly
    from the customer's host; nothing is proxied through us or billed by us.
-6. **A saturated edge is a reason to fall back, not to fail.** `429` and `503`
+6. **A capacity reading is reused for 15 s.** Probing on every turn costs a round
+   trip on the path the customer is waiting on. The reading is only a hint for
+   whether probing is worth it: a stale "plenty free" still meets a real `429`,
+   which falls back, so caching can make a turn one request slower but not wrong.
+   A failed probe is **not** cached — a credential refusal or a timeout is a fault
+   to notice promptly, not a state to bake in.
+7. **A saturated edge is a reason to fall back, not to fail.** `429` and `503`
    from the edge — our machines busy, or no slot at all — are retried on Nous
    before any byte reaches the harness. A `400` is not: retrying a malformed
    request against a second provider would double the failure and hide its cause.
