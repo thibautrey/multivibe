@@ -25,12 +25,12 @@ const MAX = Number.MAX_SAFE_INTEGER;
 const BATCH = 1000;
 const encode = (value: unknown) => JSON.stringify(value, (_key, item) => item instanceof Map ? { $map: [...item] } : item);
 const decode = (value: string) => JSON.parse(value, (_key, item) => item && item.$map ? new Map(item.$map) : item);
-type Filter = { sinceMs?: number; untilMs?: number; accountId?: string; route?: string; application?: string; projectId?: string };
+type Filter = { sinceMs?: number; untilMs?: number; accountId?: string; route?: string; application?: string; projectId?: string; apiKeyId?: string };
 type Rollup = { meta: TraceEntry; usage: UsageAggregate; project: MutableUsage; sessionAttempts: number };
 function bounds(args: Filter) { return [Number.isFinite(args.sinceMs) ? args.sinceMs! : MIN, Number.isFinite(args.untilMs) ? args.untilMs! : MAX]; }
 function visible(t: TraceEntry) { return !isHiddenTraceRoute(t.route) && t.traceKind !== "diagnostic"; }
 function attempt(t: TraceEntry) { return !t.traceKind || t.traceKind === "upstream-attempt"; }
-function matches(t: TraceEntry, f: Filter) { return (!f.accountId || t.accountId === f.accountId) && (!f.route || t.route === f.route) && (!f.application || t.application === f.application) && (!f.projectId || t.projectId === f.projectId); }
+function matches(t: TraceEntry, f: Filter) { return (!f.accountId || t.accountId === f.accountId) && (!f.route || t.route === f.route) && (!f.application || t.application === f.application) && (!f.projectId || t.projectId === f.projectId) && (!f.apiKeyId || t.apiKeyId === f.apiKeyId); }
 function mergeUsage(target: UsageAggregate, source: UsageAggregate) {
   for (const key of ["requests", "ok", "errors", "stream", "latencyMsTotal", "requestsWithUsage", "promptTokens", "completionTokens", "totalTokens"] as const) target[key] += source[key];
   for (const [key, value] of Object.entries(source.statusCounts)) target.statusCounts[key] = (target.statusCounts[key] ?? 0) + value;
@@ -90,6 +90,10 @@ export class TraceAnalyticsStore {
       CREATE TABLE IF NOT EXISTS session_reports (scope TEXT, key TEXT, payload TEXT, cost REAL, turns INTEGER, last_at INTEGER, PRIMARY KEY(scope,key));
       CREATE INDEX IF NOT EXISTS session_reports_page ON session_reports(scope,cost DESC,turns DESC,last_at DESC,key);
     `);
+    // Additive migration: existing databases gain the API-key column and index.
+    const entryColumns = new Set((this.db.prepare("PRAGMA table_info(entries)").all() as any[]).map(row => String(row.name)));
+    if (!entryColumns.has("api_key")) this.db.exec("ALTER TABLE entries ADD COLUMN api_key TEXT");
+    this.db.exec("CREATE INDEX IF NOT EXISTS entries_api_key_at ON entries(api_key, at)");
     this.status.indexed = Number((this.db.prepare("SELECT value FROM metadata WHERE key='count'").get() as any)?.value ?? 0);
     this.status.ready = !!this.db.prepare("SELECT 1 FROM metadata WHERE key='history_imported'").get();
   }
@@ -127,10 +131,11 @@ export class TraceAnalyticsStore {
     for (const t of this.range({ sinceMs: at, untilMs: at + HOUR - 1 })) {
       addTraceToBucket(bucket, t);
       if (!attempt(t)) continue;
-      const key = JSON.stringify([t.accountId, t.route, t.application, t.projectId, t.model]);
+      const key = JSON.stringify([t.accountId, t.route, t.application, t.apiKeyId, t.projectId, t.model]);
       let rollup = rollups.get(key);
       if (!rollup) {
-        rollup = { meta: { accountId: t.accountId, route: t.route, application: t.application, projectId: t.projectId,
+        rollup = { meta: { accountId: t.accountId, route: t.route, application: t.application, apiKeyId: t.apiKeyId,
+          apiKeyPreview: t.apiKeyPreview, projectId: t.projectId,
           projectName: t.projectName, projectRemote: t.projectRemote, model: t.model } as TraceEntry,
           usage: createUsageAggregate(), project: emptyUsage(), sessionAttempts: 0 };
         rollups.set(key, rollup);
@@ -229,7 +234,7 @@ export class TraceAnalyticsStore {
   append(entries: TraceEntry[], cursor?: { identity: string; offset: number }, journal = false) {
     const buckets = new Map<number, TraceBucketAggregate>();
     const rollups = new Map<string, { at: number; key: string; value: Rollup }>();
-    const insert = this.db.prepare("INSERT OR IGNORE INTO entries VALUES (?,?,?,?,?,?,?,?,?)");
+    const insert = this.db.prepare("INSERT OR IGNORE INTO entries VALUES (?,?,?,?,?,?,?,?,?,?)");
     const deleteRecent = this.db.prepare("DELETE FROM recent WHERE id=?");
     const insertRecent = this.db.prepare("INSERT INTO recent(id,payload) VALUES (?,?)");
     const getBucket = this.db.prepare("SELECT payload FROM buckets WHERE at=?");
@@ -256,7 +261,7 @@ export class TraceAnalyticsStore {
         }
         if (normalized.lifecycleState === "started" || !visible(normalized)) continue;
         const t = toStatsHistoryEntry(normalized);
-        if (!insert.run(t.id, t.at, t.completedAt ?? t.at, sessionKeyOf(t) ?? null, t.application ?? null, t.projectId ?? null, t.clientRequestId ?? t.id, t.traceKind ?? null, JSON.stringify(t)).changes) continue;
+        if (!insert.run(t.id, t.at, t.completedAt ?? t.at, sessionKeyOf(t) ?? null, t.application ?? null, t.projectId ?? null, t.clientRequestId ?? t.id, t.traceKind ?? null, JSON.stringify(t), t.apiKeyId ?? null).changes) continue;
         inserted++;
         markRevision.run(t.id,this.status.indexed+inserted);
         const sessionKey = attempt(t) ? sessionKeyOf(t) : undefined;
@@ -266,12 +271,12 @@ export class TraceAnalyticsStore {
         if (!bucket) { const row = getBucket.get(hour) as any; bucket = row ? decode(row.payload) : createEmptyBucket(hour); buckets.set(hour, bucket!); }
         addTraceToBucket(bucket!, t);
         if (!attempt(t)) continue;
-        const key = JSON.stringify([t.accountId, t.route, t.application, t.projectId, t.model]);
+        const key = JSON.stringify([t.accountId, t.route, t.application, t.apiKeyId, t.projectId, t.model]);
         const combined = `${hour}:${key}`;
         let rollup = rollups.get(combined);
         if (!rollup) {
           const row = getRollup.get(hour, key) as any;
-          rollup = { at: hour, key, value: row ? JSON.parse(row.payload) : { meta: { accountId: t.accountId, route: t.route, application: t.application, projectId: t.projectId, projectName: t.projectName, projectRemote: t.projectRemote, model: t.model }, usage: createUsageAggregate(), project: emptyUsage(), sessionAttempts: 0 } };
+          rollup = { at: hour, key, value: row ? JSON.parse(row.payload) : { meta: { accountId: t.accountId, route: t.route, application: t.application, apiKeyId: t.apiKeyId, apiKeyPreview: t.apiKeyPreview, projectId: t.projectId, projectName: t.projectName, projectRemote: t.projectRemote, model: t.model }, usage: createUsageAggregate(), project: emptyUsage(), sessionAttempts: 0 } };
           rollups.set(combined, rollup);
         }
         if (sessionKeyOf(t)) rollup.value.sessionAttempts++;
@@ -366,6 +371,7 @@ export class TraceAnalyticsStore {
     const bindings: any[] = [since, until];
     if (args.application) { clauses.push("application = ?"); bindings.push(args.application); }
     if (args.projectId) { clauses.push("project_id = ?"); bindings.push(args.projectId); }
+    if (args.apiKeyId) { clauses.push("api_key = ?"); bindings.push(args.apiKeyId); }
     const sql = `SELECT payload FROM entries WHERE ${clauses.join(" AND ")} ${extra}`;
     for (const row of this.db.prepare(sql).iterate(...bindings, ...params) as Iterable<{ payload: string }>) {
       const t = JSON.parse(row.payload); if (matches(t, args)) yield t;
@@ -403,13 +409,18 @@ export class TraceAnalyticsStore {
   usage(args: Filter) {
     const { firstFull, fullEnd, edge } = this.edgeAndHours(args);
     const global = createUsageAggregate();
-    const dimensions = [new Map<string, UsageAggregate>(), new Map<string, UsageAggregate>(), new Map<string, UsageAggregate>()];
+    const dimensions = [new Map<string, UsageAggregate>(), new Map<string, UsageAggregate>(), new Map<string, UsageAggregate>(), new Map<string, UsageAggregate>()];
+    const keyMeta = new Map<string, { application?: string; keyPreview?: string }>();
     const projects = new Map<string, { meta: TraceEntry; usage: MutableUsage; models: Map<string, MutableUsage>; firstAt?: number; lastAt?: number }>();
     const merge = (r: Rollup) => {
       if (!matches(r.meta, args)) return;
       mergeUsage(global, r.usage);
-      const keys = [r.meta.accountId ?? "unknown", r.meta.route ?? "unknown", r.meta.application ?? "unattributed"];
+      const keys = [r.meta.accountId ?? "unknown", r.meta.route ?? "unknown", r.meta.application ?? "unattributed", r.meta.apiKeyId ?? "unattributed"];
       dimensions.forEach((map, i) => { const agg = map.get(keys[i]) ?? createUsageAggregate(); mergeUsage(agg, r.usage); map.set(keys[i], agg); });
+      const keyId = keys[3];
+      const known = keyMeta.get(keyId);
+      if (!known) keyMeta.set(keyId, { application: r.meta.application, keyPreview: r.meta.apiKeyPreview });
+      else if (!known.keyPreview && r.meta.apiKeyPreview) known.keyPreview = r.meta.apiKeyPreview;
       const key = r.meta.projectId ?? "unattributed";
       const p = projects.get(key) ?? { meta: r.meta, usage: emptyUsage(), models: new Map<string, MutableUsage>() };
       mergeProject(p.usage, r.project);
@@ -423,7 +434,8 @@ export class TraceAnalyticsStore {
     const byProject = [...projects].map(([projectId, p]) => ({ projectId, projectName: p.meta.projectName, projectRemote: p.meta.projectRemote, firstAt: p.firstAt, lastAt: p.lastAt, ...finalizeUsage(p.usage), models: [...p.models].map(([model, value]) => ({ model, ...finalizeUsage(value) })).sort((a,b) => b.costUsd-a.costUsd || b.requests-a.requests) })).sort((a,b) => b.costUsd-a.costUsd || b.requests-a.requests);
     const [since, until] = bounds(args);
     const tracesEvaluated = (this.db.prepare("SELECT count(*) AS n FROM entries WHERE at>=? AND at<=?").get(since, until) as any).n;
-    return { totals: finalizeAggregate(global), byAccount: by(0, "accountId"), byRoute: by(1, "route"), byApplication: by(2, "application"), byProject, tracesEvaluated, tracesMatched: global.requests };
+    const byApiKey = by(3, "apiKeyId").map(entry => ({ ...entry, ...(keyMeta.get(entry.apiKeyId) ?? {}) }));
+    return { totals: finalizeAggregate(global), byAccount: by(0, "accountId"), byRoute: by(1, "route"), byApplication: by(2, "application"), byApiKey, byProject, tracesEvaluated, tracesMatched: global.requests };
   }
 
   /** Oversized sessions spill turn state to SQLite instead of growing a JS map without limit. */
@@ -484,7 +496,7 @@ export class TraceAnalyticsStore {
     // Recompute only sessions touched since the last durable report for this window.
     // A rolling live window reuses its scope until its lower bound changes.
     const [since, until] = bounds(args);
-    const scope = JSON.stringify([since, args.application ?? "", args.projectId ?? ""]);
+    const scope = JSON.stringify([since, args.application ?? "", args.projectId ?? "", args.apiKeyId ?? ""]);
     const previous = this.db.prepare("SELECT revision,until_ms FROM session_scopes WHERE scope=?").get(scope) as any;
     const rebuild = !previous || until < previous.until_ms;
     this.db.exec("CREATE TEMP TABLE IF NOT EXISTS changed_sessions (key TEXT PRIMARY KEY); DELETE FROM changed_sessions;");

@@ -48,6 +48,10 @@ export type TraceEntry = {
   /** A failed provider attempt was recovered before responding to the client. */
   recoveredRetry?: boolean;
   application?: string;
+  /** Durable identity of the client API key (`configured:<app>` or key UUID). */
+  apiKeyId?: string;
+  /** Masked key form shown in the dashboard; never the secret itself. */
+  apiKeyPreview?: string;
   codexSessionId?: string;
   /** Privacy-preserving session fingerprint retained in long-term stats. */
   sessionKey?: string;
@@ -629,6 +633,14 @@ export function normalizeTrace(raw: any): TraceEntry | null {
     application:
       typeof raw.application === "string" && raw.application.trim()
         ? raw.application.trim()
+        : undefined,
+    apiKeyId:
+      typeof raw.apiKeyId === "string" && raw.apiKeyId.trim()
+        ? raw.apiKeyId.trim().slice(0, 200)
+        : undefined,
+    apiKeyPreview:
+      typeof raw.apiKeyPreview === "string" && raw.apiKeyPreview.trim()
+        ? raw.apiKeyPreview.trim().slice(0, 120)
         : undefined,
     codexSessionId:
       typeof raw.codexSessionId === "string" && raw.codexSessionId.trim()
@@ -2158,9 +2170,12 @@ export function createTraceManager(config: TraceManagerConfig) {
   async function getTraceStats(
     sinceMs?: number,
     untilMs?: number,
+    filters: { application?: string; projectId?: string; apiKeyId?: string } = {},
   ): Promise<{ totalStored: number; matched: number; stats: TraceStats }> {
     await syncExternalTraces();
-    if (analytics) return analytics.call("stats", { sinceMs, untilMs });
+    // Only narrow through the durable index: legacy in-memory buckets carry no
+    // per-key attribution, so an unfiltered fallback would misstate the range.
+    if (analytics) return analytics.call("stats", { sinceMs, untilMs, ...filters });
     return buildBucketTraceStats([...statsBuckets.values()].sort((a, b) => a.at - b.at), totalStored, sinceMs, untilMs);
   }
 

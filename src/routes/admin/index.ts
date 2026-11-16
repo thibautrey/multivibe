@@ -1030,8 +1030,9 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     const managed = await store.listProxyApiKeys();
     res.json({
       proxyApiKeys: [
-        ...configuredProxyApiKeys.map((entry, index) => ({
-          id: `configured:${index}`,
+        ...configuredProxyApiKeys.map((entry) => ({
+          // Stable identity shared with trace attribution so usage can join.
+          id: `configured:${entry.application}`,
           application: entry.application,
           keyPreview: proxyApiKeyPreview(entry.key),
           source: "environment" as const,
@@ -1759,15 +1760,17 @@ export function createAdminRouter(options: AdminRoutesOptions) {
         : "";
     const projectIdFilter =
       typeof req.query.projectId === "string" ? req.query.projectId.trim() : "";
+    const apiKeyFilter =
+      typeof req.query.apiKeyId === "string" ? req.query.apiKeyId.trim() : "";
     const sinceMs = parseQueryNumber(req.query.sinceMs);
     const untilMs = parseQueryNumber(req.query.untilMs);
 
     if (traceManager.queryAnalytics) {
-      const report = await traceManager.queryAnalytics("usage", { sinceMs, untilMs, accountId: accountIdFilter, route: routeFilter, application: applicationFilter, projectId: projectIdFilter });
+      const report = await traceManager.queryAnalytics("usage", { sinceMs, untilMs, accountId: accountIdFilter, route: routeFilter, application: applicationFilter, projectId: projectIdFilter, apiKeyId: apiKeyFilter });
       const accounts = await store.listAccounts();
       const meta = new Map(accounts.map(a => [a.id, { id: a.id, provider: a.provider ?? "openai", email: a.email, enabled: a.enabled }]));
       report.byAccount = report.byAccount.map((entry: any) => ({ ...entry, account: meta.get(entry.accountId) ?? { id: entry.accountId } }));
-      return res.json({ ok: true, filters: { sinceMs, untilMs, accountId: accountIdFilter || undefined, route: routeFilter || undefined, application: applicationFilter || undefined, projectId: projectIdFilter || undefined }, ...report, analytics: traceManager.getPersistenceStatus().analytics });
+      return res.json({ ok: true, filters: { sinceMs, untilMs, accountId: accountIdFilter || undefined, route: routeFilter || undefined, application: applicationFilter || undefined, projectId: projectIdFilter || undefined, apiKeyId: apiKeyFilter || undefined }, ...report, analytics: traceManager.getPersistenceStatus().analytics });
     }
 
     const traces = filterVisibleTraces(await readStatsHistoryRange(sinceMs, untilMs));
@@ -1776,6 +1779,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       if (routeFilter && t.route !== routeFilter) return false;
       if (applicationFilter && t.application !== applicationFilter) return false;
       if (projectIdFilter && t.projectId !== projectIdFilter) return false;
+      if (apiKeyFilter && t.apiKeyId !== apiKeyFilter) return false;
       return true;
     });
     const usageTraces = filtered.filter(
@@ -1787,6 +1791,8 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     const byAccount = new Map<string, ReturnType<typeof createUsageAggregate>>();
     const byRoute = new Map<string, ReturnType<typeof createUsageAggregate>>();
     const byApplication = new Map<string, ReturnType<typeof createUsageAggregate>>();
+    const byApiKey = new Map<string, ReturnType<typeof createUsageAggregate>>();
+    const apiKeyMeta = new Map<string, { application?: string; keyPreview?: string }>();
 
     for (const trace of usageTraces) {
       addTraceToAggregate(globalAgg, trace);
@@ -1805,6 +1811,12 @@ export function createAdminRouter(options: AdminRoutesOptions) {
         byApplication.set(applicationKey, createUsageAggregate());
       addTraceToAggregate(byApplication.get(applicationKey)!, trace);
 
+      const apiKeyId = trace.apiKeyId ?? "unattributed";
+      if (!byApiKey.has(apiKeyId)) byApiKey.set(apiKeyId, createUsageAggregate());
+      addTraceToAggregate(byApiKey.get(apiKeyId)!, trace);
+      const knownKey = apiKeyMeta.get(apiKeyId);
+      if (!knownKey) apiKeyMeta.set(apiKeyId, { application: trace.application, keyPreview: trace.apiKeyPreview });
+      else if (!knownKey.keyPreview && trace.apiKeyPreview) knownKey.keyPreview = trace.apiKeyPreview;
     }
 
     const accounts = await store.listAccounts();
@@ -1840,6 +1852,9 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       .map(([application, agg]) => ({ application, ...finalizeAggregate(agg) }))
       .sort((a, b) => b.requests - a.requests);
     const byProjectOut = aggregateProjectUsage(usageTraces);
+    const byApiKeyOut = Array.from(byApiKey.entries())
+      .map(([apiKeyId, agg]) => ({ apiKeyId, ...(apiKeyMeta.get(apiKeyId) ?? {}), ...finalizeAggregate(agg) }))
+      .sort((a, b) => b.requests - a.requests);
 
     res.json({
       ok: true,
@@ -1848,6 +1863,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
         route: routeFilter || undefined,
         application: applicationFilter || undefined,
         projectId: projectIdFilter || undefined,
+        apiKeyId: apiKeyFilter || undefined,
         sinceMs,
         untilMs,
       },
@@ -1855,6 +1871,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       byAccount: byAccountOut,
       byRoute: byRouteOut,
       byApplication: byApplicationOut,
+      byApiKey: byApiKeyOut,
       byProject: byProjectOut,
       tracesEvaluated: traces.length,
       tracesMatched: usageTraces.length,
@@ -1937,14 +1954,21 @@ export function createAdminRouter(options: AdminRoutesOptions) {
   router.get("/stats/traces", async (req, res) => {
     const sinceMs = parseQueryNumber(req.query.sinceMs);
     const untilMs = parseQueryNumber(req.query.untilMs);
+    const apiKeyFilter =
+      typeof req.query.apiKeyId === "string" ? req.query.apiKeyId.trim() : "";
+    const applicationFilter =
+      typeof req.query.application === "string" ? req.query.application.trim() : "";
+    const projectIdFilter =
+      typeof req.query.projectId === "string" ? req.query.projectId.trim() : "";
     const { totalStored, matched, stats } = await getTraceStats(
       sinceMs,
       untilMs,
+      { application: applicationFilter || undefined, projectId: projectIdFilter || undefined, apiKeyId: apiKeyFilter || undefined },
     );
 
     res.json({
       ok: true,
-      filters: { sinceMs, untilMs },
+      filters: { sinceMs, untilMs, application: applicationFilter || undefined, projectId: projectIdFilter || undefined, apiKeyId: apiKeyFilter || undefined },
       totalStored,
       matched,
       stats,

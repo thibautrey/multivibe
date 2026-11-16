@@ -26,7 +26,7 @@ import { Metric } from "../Metric";
 import { TtftComparisonChart } from "../TtftComparisonChart";
 import { WidgetGrid } from "../WidgetGrid";
 import { TracingSessions } from "./TracingSessions";
-import type { ActivityView, Account, ProjectUsageStats, SessionTurn, SessionsResponse, StoreSettings, Trace, TracePagination, TraceRange, TraceStats } from "../../types";
+import type { ActivityView, Account, ProjectUsageStats, ProxyApiKey, SessionTurn, SessionsResponse, StoreSettings, Trace, TracePagination, TraceRange, TraceStats } from "../../types";
 
 type Props = {
   accounts: Account[];
@@ -43,6 +43,9 @@ type Props = {
   traceExportInProgress: boolean;
   traces: Trace[];
   projectUsageStats: ProjectUsageStats;
+  apiKeys: ProxyApiKey[];
+  apiKeyFilter: string;
+  setApiKeyFilter: (value: string) => void;
   sessionStats: SessionsResponse;
   sessionStatsLoading: boolean;
   expandedSessionKey: string | null;
@@ -224,6 +227,9 @@ function TracingTabContent(props: Props) {
     traceExportInProgress,
     traces,
     projectUsageStats,
+    apiKeys,
+    apiKeyFilter,
+    setApiKeyFilter,
     sessionStats,
     sessionStatsLoading,
     expandedSessionKey,
@@ -337,6 +343,25 @@ function TracingTabContent(props: Props) {
         </nav>
         <div className="trace-workspace-controls">
           <div className="trace-range-controls">
+            <label className="inline trace-key-filter" htmlFor="trace-api-key-filter">
+              <span className="muted">API key</span>
+              <select
+                id="trace-api-key-filter"
+                value={apiKeyFilter}
+                onChange={(event) => setApiKeyFilter(event.target.value)}
+              >
+                <option value="">All keys</option>
+                {apiKeys.map((key) => (
+                  <option key={key.id} value={key.id}>
+                    {key.application} · {key.keyPreview}
+                    {key.source === "environment" ? " (env)" : ""}
+                  </option>
+                ))}
+                {apiKeyFilter && !apiKeys.some((key) => key.id === apiKeyFilter) && (
+                  <option value={apiKeyFilter}>{apiKeyFilter}</option>
+                )}
+              </select>
+            </label>
             <TraceRangePicker range={traceRange} onChange={setTraceRange} />
             <button className="btn secondary trace-export-button" type="button" title="Export all recorded traces as a ZIP archive" onClick={() => void exportTracesZip()} disabled={traceExportInProgress}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M5 16v4h14v-4" /></svg>
@@ -631,6 +656,32 @@ function TracingTabContent(props: Props) {
           </section>
 
           <HostHarnessCards />
+          <section className="panel trace-apikey-panel">
+            <div className="section-split-header">
+              <div><h2>Usage by API key</h2><p className="muted">Consumption attributed to the key that authorized each request. Unattributed covers internal and keyless calls.</p></div>
+              <span className="badge">{(projectUsageStats.byApiKey ?? []).length} key{(projectUsageStats.byApiKey ?? []).length === 1 ? "" : "s"}</span>
+            </div>
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr><th>API key</th><th>Attempts</th><th>Attempt errors</th><th>Input tokens</th><th>Output tokens</th><th>Total tokens</th><th>Cost</th><th>Avg latency</th><th>p95 latency</th></tr>
+                </thead>
+                <tbody>
+                  {(projectUsageStats.byApiKey ?? []).map((entry) => (
+                    <tr key={entry.apiKeyId}>
+                      <td>
+                        <div className="mono">{entry.apiKeyId === "unattributed" ? "Unattributed" : entry.application ?? entry.apiKeyId}</div>
+                        <div className="muted mono">{entry.apiKeyId === "unattributed" ? "internal or keyless" : entry.keyPreview ?? (sanitized ? maskId(entry.apiKeyId) : entry.apiKeyId)}</div>
+                        <div className="muted">{entry.requestsWithCost}/{entry.requests} priced attempts</div>
+                      </td>
+                      <td>{entry.requests}</td><td>{entry.errors}</td><td>{formatTokenCount(entry.tokens.input)}</td><td>{formatTokenCount(entry.tokens.output)}</td><td>{formatTokenCount(entry.tokens.total)}</td><td>{usd(entry.costUsd)}</td><td>{formatLatency(entry.avgLatencyMs)}</td><td>{formatLatency(entry.latencyP95Ms)}</td>
+                    </tr>
+                  ))}
+                  {!(projectUsageStats.byApiKey ?? []).length && <tr><td colSpan={9} className="muted">No API-key-attributed usage in this range.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </section>
           <section className="panel trace-project-panel">
             <div className="section-split-header">
               <div><h2>Usage by project</h2><p className="muted">Codex-attributed consumption with model-level details on demand.</p></div>
