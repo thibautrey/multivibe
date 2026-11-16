@@ -164,6 +164,13 @@ export function createBridge(deps: BridgeDeps) {
     blockedNoMapping: 0,
     refusedCredential: 0,
     fallbackUnavailable: 0,
+    /**
+     * Cloudflare answers 524 itself and never forwards a byte to us, so the edge
+     * cannot count this — only the bridge sits close enough to see it. The plan
+     * alerts on any non-zero value because a 524 means a request waited past the
+     * 100-second budget and was cut off, which no amount of queueing fixes.
+     */
+    http524: 0,
   };
   // The key the harness presents. Stable when the caller supplies the persisted
   // one: rotating it on every start would invalidate the value already written
@@ -354,6 +361,20 @@ export function createBridge(deps: BridgeDeps) {
     const forwardBody = { ...body, model: decision.model };
 
     /**
+     * Count one served turn, exactly once.
+     *
+     * The fallback path used to `return` before the counter line, so every
+     * turn the edge could not serve — the case `switch.count` and `turns` exist
+     * to measure — was silently uncounted. One helper called at each exit makes
+     * that unrepresentable: neither path can serve a turn without counting it,
+     * and neither can count it twice.
+     */
+    function countTurn(servedUpstream: Upstream, reason: string): void {
+      counters.turns += 1;
+      if (servedUpstream === "nous" && reason !== "mode") counters.switched += 1;
+    }
+
+    /**
      * Send the same turn to Nous. Only legal before any byte reaches the
      * harness, which is why every caller is a pre-body failure path.
      */
@@ -374,6 +395,7 @@ export function createBridge(deps: BridgeDeps) {
         // and then pinning the conversation there would compound the outage.
         if (!retried.ok) return false;
         if (conversation) sticky.set(conversation, { until: at + config.nousStickinessMs });
+        countTurn("nous", reason);
         log({ kind: "switch", upstream: "nous", reason, status: retried.status });
         await relay(retried, response, isChat);
         return true;
@@ -406,6 +428,7 @@ export function createBridge(deps: BridgeDeps) {
     // fallback exists for: returning them to the harness would break the
     // promise at the moment it matters most. Nothing has been written to the
     // client yet, so the retry is still the same single turn.
+    if (upstream === "edge" && upstreamResponse.status === 524) counters.http524 += 1;
     if (upstream === "edge" && (isSaturationStatus(upstreamResponse.status) || upstreamResponse.status >= 500)) {
       const reason: SwitchReason =
         upstreamResponse.status === 429 ? "edge_queued" : "edge_unavailable";
@@ -429,8 +452,7 @@ export function createBridge(deps: BridgeDeps) {
         message: "the edge refused this machine's credentials; check the Access service token and API key",
       });
     }
-    counters.turns += 1;
-    if (upstream === "nous" && decision.reason !== "mode") counters.switched += 1;
+    countTurn(upstream, decision.reason);
     log({
       kind: "turn",
       upstream,
