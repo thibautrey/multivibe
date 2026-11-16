@@ -1885,6 +1885,8 @@ export function createAdminRouter(options: AdminRoutesOptions) {
         : "";
     const projectIdFilter =
       typeof req.query.projectId === "string" ? req.query.projectId.trim() : "";
+    const apiKeyFilter =
+      typeof req.query.apiKeyId === "string" ? req.query.apiKeyId.trim() : "";
     const sinceMs = parseQueryNumber(req.query.sinceMs);
     const untilMs = parseQueryNumber(req.query.untilMs);
     const limit = Math.max(
@@ -1897,8 +1899,8 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     );
 
     if (traceManager.queryAnalytics) {
-      const report = await traceManager.queryAnalytics("sessions", { sinceMs, untilMs, application: applicationFilter, projectId: projectIdFilter, limit, offset });
-      return res.json({ ok: true, filters: { sinceMs, untilMs, application: applicationFilter || undefined, projectId: projectIdFilter || undefined }, ...report,
+      const report = await traceManager.queryAnalytics("sessions", { sinceMs, untilMs, application: applicationFilter, projectId: projectIdFilter, apiKeyId: apiKeyFilter, limit, offset });
+      return res.json({ ok: true, filters: { sinceMs, untilMs, application: applicationFilter || undefined, projectId: projectIdFilter || undefined, apiKeyId: apiKeyFilter || undefined }, ...report,
         coverage: { totalAttempts: report.summary.totalAttempts, identifiedAttempts: report.summary.attempts, ratio: report.summary.coverage }, analytics: traceManager.getPersistenceStatus().analytics });
     }
 
@@ -1908,6 +1910,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     const filtered = traces.filter((t) => {
       if (applicationFilter && t.application !== applicationFilter) return false;
       if (projectIdFilter && t.projectId !== projectIdFilter) return false;
+      if (apiKeyFilter && t.apiKeyId !== apiKeyFilter) return false;
       return true;
     });
     const { summary, sessions } = aggregateSessionUsage(filtered);
@@ -1917,6 +1920,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       filters: {
         application: applicationFilter || undefined,
         projectId: projectIdFilter || undefined,
+        apiKeyId: apiKeyFilter || undefined,
         sinceMs,
         untilMs,
       },
@@ -1938,10 +1942,12 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     }
     const sinceMs = parseQueryNumber(req.query.sinceMs);
     const untilMs = parseQueryNumber(req.query.untilMs);
+    const apiKeyFilter =
+      typeof req.query.apiKeyId === "string" ? req.query.apiKeyId.trim() : "";
     if (traceManager.queryAnalytics) {
-      const report = await traceManager.queryAnalytics("turns", { sinceMs, untilMs, sessionKey, limit: parseQueryNumber(req.query.limit), offset: parseQueryNumber(req.query.offset) });
+      const report = await traceManager.queryAnalytics("turns", { sinceMs, untilMs, sessionKey, apiKeyId: apiKeyFilter || undefined, limit: parseQueryNumber(req.query.limit), offset: parseQueryNumber(req.query.offset) });
       if (!report.total) return res.status(404).json({ error: "not found" });
-      return res.json({ ok: true, filters: { sinceMs, untilMs }, sessionKey, ...report, analytics: traceManager.getPersistenceStatus().analytics });
+      return res.json({ ok: true, filters: { sinceMs, untilMs, apiKeyId: apiKeyFilter || undefined }, sessionKey, ...report, analytics: traceManager.getPersistenceStatus().analytics });
     }
     const traces = filterVisibleTraces(
       await readStatsHistoryRange(sinceMs, untilMs),
