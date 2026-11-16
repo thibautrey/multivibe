@@ -15,14 +15,29 @@ Three facts drive the design:
 2. **Prefill is the expensive part of a conversation.** A turn that is already
    running has mostly paid that cost. Refusing it mid-conversation wastes work
    that has already been done.
-3. **A shared machine still has to stay fair.** Any grace that can exceed a
-   tenant's fair share becomes a bypass: a client that farms session identifiers
-   would take the whole account.
+3. **A shared machine still has to stay fair.** Any grace that can grow without
+   a ceiling becomes a bypass: a client that farms session identifiers would
+   take the whole account.
 
-Hence the invariant:
+Hence the invariants:
 
-> **Session grace never grants capacity beyond the application's fair share. It
-> only decides who waits inside that share.**
+> **Grace lends capacity from a pool it cannot exceed.** The pool is a fraction
+> of the account's slots (25 % by default), counted in **slots, not sessions**:
+> a conversation holding three turns has borrowed three slots.
+>
+> **Grace never exceeds physical capacity**, and **never takes a slot another
+> tenant was promised** — the pool is deducted from the account, so the other
+> tenant's share is still there when it asks.
+
+So a session may hold its application's fair share *plus* a slice of the pool,
+never more. A client farming `session_id` gains at most the pool, whatever it
+does.
+
+This was wrong once, and the tests did not notice: the pool was counted from the
+registry's tally of known sessions, and one session never becomes two, so the cap
+could not bind. A single graced conversation took 8 of 8 slots and every other
+tenant was refused. `one_graced_session_cannot_eat_the_whole_account` is the
+regression test.
 
 ## The four layers
 
@@ -32,7 +47,7 @@ Applied in order. Each layer only narrows the previous one.
 | --- | --- | --- |
 | 1. Physical capacity | **measured** from `capacityProfile.metricsUrl` when present, else the declared `maxConcurrent`, else 32 for `cloud` and 1 for `local` | `capacity::CapacityRegistry` |
 | 2. Fair share per application | `applicationPolicies[].maxConcurrentShare` (default `0.25`, floor 1 slot) plus `burst` (default `1`, only on an idle account) | `POST /v1/admission`, `proxy_inference` |
-| 3. Session grace | Bound to `(application, session_id)`; requires ≥128 decoded tokens; TTL 20 min idle, 2 h absolute; at most 25 % of an account's slots | `admission::GraceRegistry` |
+| 3. Session grace | Bound to `(application, session_id)`; requires ≥128 decoded tokens; TTL 20 min idle, 2 h absolute; borrowed slots capped at 25 % of the account, on top of the fair share | `admission::GraceRegistry` + `grace_slots_held` |
 | 4. Calendar | Share multiplied by 2 between 20:00 and 08:00 Europe/Paris and all weekend | `applicationPolicies[].shareWindows` |
 
 ### Phase 0 exists on purpose
@@ -189,7 +204,7 @@ requires the admin token: these numbers describe one tenant's load.
 | `admission_decision_total{reason}` | edge `/admin/admission/metrics` | How often work is refused, **and by which layer**: `share_available`, `grace`, `share_exhausted`, `account_saturated`, `grace_pool_full`, `switch_requested` |
 | `admission_inline_wait_p99_ms` | same | The wait tail over recent samples, not a permanent record of the worst one. Absent, never `0`, until something has been sampled |
 | `queue_wait_p99_ms` | same | Real time spent blocked for a slot, which is what the caller felt — the estimate can be wrong, the wait cannot |
-| `grace_active` | same | Sessions currently holding grace |
+| `grace_active` | same | Grace-borrowed **slots** in use, against `grace_slots` |
 | `grace_denied_by_cap` | same | Eligible sessions the 25 % grace pool turned away |
 | `counters.switched` | bridge `/health` (JSON) | Turns served by Nous because the edge could not serve them, including inline fallbacks |
 | `counters.blockedNoMapping` | bridge `/health` (JSON) | A client asked for a model the fallback cannot serve |

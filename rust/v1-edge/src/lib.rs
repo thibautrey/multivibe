@@ -4186,6 +4186,15 @@ struct AdmissionCounters {
     /// Slots held per `(application, account)`. Bounded by the same lifecycle
     /// as `active_by_account`, since every increment comes with a lease.
     active_by_application: HashMap<(String, String), u32>,
+    /// Slots currently lent by the grace pool, per account.
+    ///
+    /// Counted in **slots**, not in sessions. It used to be derived from the
+    /// registry's tally of known sessions, which cannot bound slots at all: one
+    /// session that kept sending turns stayed "one session", so `grace_active`
+    /// never reached the cap and the session took every slot on the account —
+    /// eight of eight in the reproduction, starving every other tenant. A
+    /// session that holds three turns has borrowed three slots.
+    grace_slots_held: HashMap<String, u32>,
     waiters: HashMap<u64, HashSet<String>>,
     next_waiter_id: u64,
 }
@@ -4308,7 +4317,7 @@ impl AdmissionController {
                 })
                 .unwrap_or_default();
             let grace_active = if application.is_some() {
-                self.grace().active_on_account(&account.id, now)
+                counters.grace_slots_held.get(&account.id).copied().unwrap_or_default()
             } else {
                 0
             };
@@ -4407,7 +4416,7 @@ impl AdmissionController {
                 })
                 .unwrap_or_default();
             let grace_active = if application.is_some() {
-                self.grace().active_on_account(&account.id, now)
+                counters.grace_slots_held.get(&account.id).copied().unwrap_or_default()
             } else {
                 0
             };
@@ -4454,6 +4463,18 @@ impl AdmissionController {
                     .entry((name.to_owned(), account_id.clone()))
                     .or_default() += 1;
             }
+            // A slot granted above the application's fair share is borrowed from
+            // the grace pool, and must be debited as a *slot*: that is what makes
+            // the pool a real ceiling. Debiting a session instead let one
+            // conversation take the whole account, because its count never grew.
+            let borrowed =
+                grace_qualifies && application_active >= limit && application.is_some();
+            if borrowed {
+                *counters
+                    .grace_slots_held
+                    .entry(account_id.clone())
+                    .or_default() += 1;
+            }
             drop(counters);
             self.bump();
             report.decision = admission::AdmissionDecision::Admit;
@@ -4464,6 +4485,7 @@ impl AdmissionController {
                         controller: self.clone(),
                         account_id: Some(account_id),
                         application: application.map(str::to_owned),
+                        borrowed_from_grace: borrowed,
                     },
                 )),
                 report,
@@ -4488,11 +4510,26 @@ impl AdmissionController {
             .copied()
     }
 
-    fn grace_active_total(&self, accounts: &[Account], now: u64) -> u32 {
-        let mut grace = self.grace();
+    /// Grace-borrowed **slots** in use across these accounts.
+    ///
+    /// Reported as slots, matching `graceSlots` and the pool's arithmetic. It
+    /// used to count known sessions, which is a different quantity: a session
+    /// that holds three turns is three slots, and reporting "1" against a pool
+    /// of 2 would say the pool is idle while it is exhausted.
+    ///
+    /// `now` is kept in the signature so callers that prune the registry still
+    /// can; the slot counter has its own lifecycle through the leases.
+    fn grace_active_total(&self, accounts: &[Account], _now: u64) -> u32 {
+        let counters = self.counters();
         accounts
             .iter()
-            .map(|account| grace.active_on_account(&account.id, now))
+            .map(|account| {
+                counters
+                    .grace_slots_held
+                    .get(&account.id)
+                    .copied()
+                    .unwrap_or_default()
+            })
             .fold(0_u32, u32::saturating_add)
     }
 
@@ -4632,7 +4669,30 @@ impl AdmissionController {
     }
 
     fn release_for(&self, account_id: &str, application: Option<&str>) {
+        self.release_for_with_grace(account_id, application, false);
+    }
+
+    /// `release_for`, plus returning a grace-borrowed slot to the pool.
+    ///
+    /// Kept separate rather than folded into `release_for` so the existing
+    /// callers that hold no lease (lease revocation, drain, expiry sweeps) keep
+    /// their exact behaviour: they never borrowed a grace slot, and decrementing
+    /// the pool for them would leak capacity in the other direction.
+    fn release_for_with_grace(
+        &self,
+        account_id: &str,
+        application: Option<&str>,
+        borrowed_from_grace: bool,
+    ) {
         let mut counters = self.counters();
+        if borrowed_from_grace
+            && let Some(held) = counters.grace_slots_held.get_mut(account_id)
+        {
+            *held = held.saturating_sub(1);
+            if *held == 0 {
+                counters.grace_slots_held.remove(account_id);
+            }
+        }
         if let Some(application) = application {
             let key = (application.to_owned(), account_id.to_owned());
             if let Some(active) = counters.active_by_application.get_mut(&key) {
@@ -4679,13 +4739,22 @@ struct AdmissionLease {
     /// Present when the request was admitted under an application policy; the
     /// per-application counter must be released alongside the account slot.
     application: Option<String>,
+    /// This slot came from the grace pool rather than the application's own
+    /// share, so dropping the lease must return it to that pool. Without this
+    /// the pool would only ever fill, and grace would slowly become the
+    /// default admission path for every long-lived conversation.
+    borrowed_from_grace: bool,
 }
 
 impl Drop for AdmissionLease {
     fn drop(&mut self) {
         if let Some(account_id) = self.account_id.take() {
-            self.controller
-                .release_for(&account_id, self.application.take().as_deref());
+            let borrowed = std::mem::replace(&mut self.borrowed_from_grace, false);
+            self.controller.release_for_with_grace(
+                &account_id,
+                self.application.take().as_deref(),
+                borrowed,
+            );
         }
     }
 }
@@ -18934,6 +19003,168 @@ mod tests {
             controller.acquire_for(&accounts, Some("hermes"), Some(&share), Some("new"), now);
         assert!(fresh.is_none(), "a new conversation waits");
         assert_eq!(report.session_grace, admission::GraceState::Ineligible);
+    }
+
+    #[test]
+    fn one_graced_session_cannot_eat_the_whole_account() {
+        // Reproduced before the fix: a single graced conversation took 8 of 8
+        // slots and `hermes-b` was refused. The pool was counting *sessions*
+        // (`GraceRegistry::active_on_account`), and one session never becomes two, so the
+        // cap could not bind. It now counts borrowed *slots*.
+        let controller = Arc::new(AdmissionController::new(Arc::new(AtomicU64::new(1))));
+        let accounts = [share_account("acct", 8)];
+        let share = hermes_share(0.25, 0);
+        let now = 1_000;
+        controller.observe_session("hermes-a", "a-1", "acct", 512, now);
+
+        let mut held = Vec::new();
+        for _ in 0..10 {
+            let (lease, _) = controller.acquire_for(
+                &accounts, Some("hermes-a"), Some(&share), Some("a-1"), now);
+            match lease {
+                Some(lease) => held.push(lease.1),
+                None => break,
+            }
+        }
+        // Two of its own share (25 % of eight), plus two borrowed from the grace
+        // pool (25 % of eight) — never the whole account.
+        assert_eq!(held.len(), 4, "grace is bounded by its own pool");
+        assert!(
+            controller.application_active_on("acct", "hermes-a").unwrap_or_default()
+                <= 4,
+            "the application never exceeds share plus grace pool"
+        );
+
+        // The other tenant keeps the capacity it was promised.
+        let (b_lease, _) =
+            controller.acquire_for(&accounts, Some("hermes-b"), Some(&share), None, now);
+        assert!(b_lease.is_some(), "hermes-b is never starved by grace");
+
+        // Dropping the leases returns both the account slots and the pool.
+        drop(held);
+        assert_eq!(controller.active_on_account("acct"), Some(1), "only hermes-b holds one");
+    }
+
+    #[test]
+    fn grace_lends_beyond_the_share_but_only_from_its_own_pool() {
+        // The plan states grace may hold "at most 25 % of an account's slots",
+        // which is a pool *on top of* the fair share, not a subset of it. An
+        // earlier version of this test asserted the opposite (grace never
+        // exceeding the share) and passed only because grace never worked at
+        // all — the pool counted sessions, so it could not bind. This test pins
+        // the real rule: share + grace pool, never more, never less.
+        let controller = Arc::new(AdmissionController::new(Arc::new(AtomicU64::new(1))));
+        let accounts = [share_account("acct", 8)];
+        let share = hermes_share(0.25, 0);
+        let now = 1_000;
+
+        // A conversation that started while the account was quiet earns grace.
+        controller.observe_session("hermes-a", "a-1", "acct", 512, now);
+
+        // Four turns: two from its share, two borrowed from the pool.
+        let mut held = Vec::new();
+        for _ in 0..4 {
+            let (lease, report) =
+                controller.acquire_for(&accounts, Some("hermes-a"), Some(&share), Some("a-1"), now);
+            assert_eq!(report.session_grace, admission::GraceState::Granted);
+            assert_eq!(report.share_limit, 2, "fair share of eight slots");
+            assert_eq!(report.grace_slots, 2, "grace pool of eight slots");
+            held.push(lease.expect("share then pool").1);
+        }
+
+        // Beyond share plus pool: the pool is full, so the session queues like
+        // anyone else even though it individually qualifies.
+        let (blocked, report) =
+            controller.acquire_for(&accounts, Some("hermes-a"), Some(&share), Some("a-1"), now);
+        assert!(blocked.is_none(), "the grace pool is a ceiling");
+        assert_eq!(report.grace_active, report.grace_slots, "the pool is what binds");
+
+        // A session with no history never reaches the pool at all.
+        let (fresh, report) =
+            controller.acquire_for(&accounts, Some("hermes-a"), Some(&share), Some("new"), now);
+        assert!(fresh.is_none(), "a new conversation waits");
+        assert_eq!(report.session_grace, admission::GraceState::Ineligible);
+
+        // The other tenant is untouched by any of it: four of eight slots are
+        // used, so it still holds its own.
+        let (b_lease, _) =
+            controller.acquire_for(&accounts, Some("hermes-b"), Some(&share), None, now);
+        assert!(b_lease.is_some(), "grace in one application never starves another");
+
+        // Releasing returns borrowed slots to the pool, so a later spike can use
+        // them. Without this the pool would only fill, and grace would become
+        // the default path for every long-lived conversation.
+        drop(held);
+        assert_eq!(controller.application_active_on("acct", "hermes-a"), None);
+        let (recovered, report) =
+            controller.acquire_for(&accounts, Some("hermes-a"), Some(&share), Some("a-1"), now);
+        assert!(recovered.is_some(), "the pool refills when leases drop");
+        assert_eq!(report.grace_active, 0, "nothing is borrowed right now");
+    }
+
+    #[tokio::test]
+    async fn a_restart_loses_grace_without_breaking_the_session() {
+        // Grace is deliberately in-memory: resurrecting a claim from a previous
+        // process lifetime would let a long-dead conversation keep priority. The
+        // cost is that a restart makes the session wait like any other — it must
+        // not make the session *fail*.
+        let store_path = temporary_path("grace-restart-accounts");
+        let jobs_path = temporary_path("grace-restart-jobs");
+        let mut target = account("restart-acct");
+        target.capacity_profile = Some(CapacityProfile {
+            max_concurrent: Some(4),
+            ..Default::default()
+        });
+        let mut store = store_with_accounts(vec![target]);
+        store.application_policies.push(ApplicationPolicy {
+            application: "hermes-a".to_owned(),
+            fairness_weight: Some(1.0),
+            max_concurrent_share: Some(0.5),
+            burst: Some(0),
+            share_windows: None,
+            webhooks: Vec::new(),
+            ..Default::default()
+        });
+        let store_bytes = serde_json::to_vec(&store).unwrap();
+        fs::write(&store_path, &store_bytes).await.unwrap();
+
+        let build = |store_path: PathBuf, jobs_path: PathBuf| {
+            let mut config = EdgeConfig::default();
+            config.store_path = store_path;
+            config.jobs_path = jobs_path;
+            config.admission_policy_enabled = true;
+            config
+        };
+
+        let before = EdgeState::new(build(store_path.clone(), jobs_path.clone())).await.unwrap();
+        before
+            .admission
+            .observe_session("hermes-a", "conv-1", "restart-acct", 512, now_ms());
+        assert!(before.admission.grace().qualifies("hermes-a", "conv-1", now_ms()));
+        // The store on disk is untouched by grace: nothing about it is durable.
+        assert_eq!(fs::read(&store_path).await.unwrap(), store_bytes);
+        drop(before);
+
+        // A new process, on the same files.
+        let after = EdgeState::new(build(store_path.clone(), jobs_path.clone())).await.unwrap();
+        assert!(
+            !after.admission.grace().qualifies("hermes-a", "conv-1", now_ms()),
+            "grace must not survive a restart"
+        );
+        // But the policy did survive, and admission still answers rather than
+        // erroring on an unknown session.
+        assert_eq!(after.admission.grace().len(), 0);
+        let accounts = [share_account("restart-acct", 4)];
+        let share = application_share(&store, "hermes-a").expect("policy survives");
+        let (lease, report) =
+            after
+                .admission
+                .acquire_for(&accounts, Some("hermes-a"), Some(&share), Some("conv-1"), now_ms());
+        assert!(lease.is_some(), "the conversation continues, without priority");
+        assert_eq!(report.session_grace, admission::GraceState::Ineligible);
+
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
     }
 
     #[test]
