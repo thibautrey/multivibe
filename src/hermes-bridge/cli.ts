@@ -30,7 +30,8 @@ Commands:
 Options:
   --mode nous-first|edge-first|nous-only|edge-only   (default: nous-first)
   --port <port>               (default: 8787)
-  --edge <url>                Override the MultiVibe edge base URL
+  --edge <url>                Override the MultiVibe inference base URL
+  --enroll <url>              Override the enrollment base URL (no /v1)
   --nous <url>                Override the Nous Research base URL
   --nous-key <path|->         Read the Nous API key from a file, or stdin
   --json                      Machine-readable output
@@ -90,6 +91,7 @@ export async function loadConfig(args: ParsedArgs): Promise<BridgeConfig> {
   const port = Number(args.values.get("port") ?? stored.port ?? DEFAULT_BRIDGE_CONFIG.port);
   if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error("invalid --port");
   const edge = args.values.get("edge");
+  const enroll = args.values.get("enroll");
   const nous = args.values.get("nous");
   return {
     ...DEFAULT_BRIDGE_CONFIG,
@@ -98,6 +100,14 @@ export async function loadConfig(args: ParsedArgs): Promise<BridgeConfig> {
     port,
     mappings: stored.mappings ?? [],
     ...(edge ? { edgeBaseUrl: edge } : {}),
+    // `--edge` is the only URL an operator normally supplies, so the enrollment
+    // base follows it unless it is given explicitly. Without this the command
+    // silently targets production while the operator pointed at a test edge.
+    ...(enroll
+      ? { enrollBaseUrl: enroll }
+      : edge
+        ? { enrollBaseUrl: edge.replace(/\/+$/, "").replace(/\/v1$/i, "") }
+        : {}),
     ...(nous ? { nousBaseUrl: nous } : {}),
   };
 }
@@ -130,7 +140,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       process.stderr.write("A valid --code mvenr_... value is required.\n");
       return 2;
     }
-    const result = await exchangeEnrollment({ endpoint: config.edgeBaseUrl, code });
+    const result = await exchangeEnrollment({ endpoint: config.enrollBaseUrl, code });
     if (!result.ok) {
       process.stderr.write(`Enrollment failed: ${result.reason}.\n`);
       return 1;

@@ -23,7 +23,17 @@ export type BridgeConfig = {
   host: string;
   port: number;
   mode: BridgeMode;
+  /** Inference base, e.g. `https://host/v1`. */
   edgeBaseUrl: string;
+  /**
+   * Enrollment base, **without** the `/v1` suffix.
+   *
+   * Enrollment happens before any credential exists, so it is deliberately a
+   * different surface: the exchange must not be gated by the same Access policy
+   * as inference, and it lives outside `/v1`. Deriving it from `edgeBaseUrl`
+   * would produce `/v1/hermes-bridge/enrollment/exchange`, which does not exist.
+   */
+  enrollBaseUrl: string;
   nousBaseUrl: string;
   /** Model substitutions applied per upstream. */
   mappings: ModelMapping[];
@@ -43,6 +53,7 @@ export const DEFAULT_BRIDGE_CONFIG: Omit<BridgeConfig, "mappings"> = {
   port: 8787,
   mode: "nous-first",
   edgeBaseUrl: "https://host.example.invalid/v1",
+  enrollBaseUrl: "https://host.example.invalid",
   nousBaseUrl: "https://inference-api.nousresearch.com/v1",
   nousStickinessMs: 10 * 60_000,
   edgeAttemptTimeoutMs: 45_000,
