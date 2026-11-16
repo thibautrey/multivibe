@@ -18404,6 +18404,143 @@ mod tests {
         let _ = fs::remove_file(jobs_path).await;
     }
 
+    #[tokio::test]
+    async fn a_completed_turn_earns_grace_and_a_failed_one_does_not() {
+        // The upstream answers with real usage so the session has something to
+        // be credited with, which is the whole basis of grace.
+        let upstream = Router::new()
+            .route(
+                "/backend-api/codex/models",
+                get(|| async { Json(json!({"models": [{"slug": "gpt-grace"}]})) }),
+            )
+            .route(
+                "/backend-api/codex/responses",
+                post(|| async {
+                    Json(json!({
+                        "id": "resp_1",
+                        "object": "response",
+                        "status": "completed",
+                        "model": "gpt-grace",
+                        "output": [{
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "ok"}]
+                        }],
+                        "usage": {"input_tokens": 10, "output_tokens": 300, "total_tokens": 310}
+                    }))
+                }),
+            );
+        let (upstream_url, upstream_task) = start_server(upstream).await;
+
+        let store_path = temporary_path("grace-turn-accounts");
+        let jobs_path = temporary_path("grace-turn-jobs");
+        let mut target = account("grace-account");
+        target.capacity_profile = Some(CapacityProfile {
+            max_concurrent: Some(8),
+            ..Default::default()
+        });
+        let mut store = store_with_accounts(vec![target]);
+        store.application_policies.push(ApplicationPolicy {
+            application: "hermes-a".to_owned(),
+            fairness_weight: Some(1.0),
+            max_concurrent_share: Some(0.25),
+            burst: Some(0),
+            share_windows: None,
+            webhooks: Vec::new(),
+            ..Default::default()
+        });
+        fs::write(&store_path, serde_json::to_vec(&store).unwrap())
+            .await
+            .unwrap();
+
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.chatgpt_base_url = upstream_url;
+        config.configured_api_keys = vec![("hermes-a".to_owned(), "edge-secret".to_owned())];
+        config.models_cache_ttl = Duration::from_secs(60);
+        config.admission_policy_enabled = true;
+
+        let state = EdgeState::new(config).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(state.clone())).await;
+        let client = reqwest::Client::new();
+
+        // Before any turn, the session is unknown and cannot claim grace.
+        assert!(!state.admission.grace().qualifies("hermes-a", "conv-1", now_ms()));
+
+        let response = client
+            .post(format!("{edge_url}/v1/responses"))
+            .header("authorization", "Bearer edge-secret")
+            .header("session_id", "conv-1")
+            .json(&json!({"model": "gpt-grace", "input": "hello"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["status"], "completed");
+
+        // The turn decoded 300 tokens, so the session now holds grace...
+        let at = now_ms();
+        assert!(
+            state.admission.grace().qualifies("hermes-a", "conv-1", at),
+            "a completed turn with output earns grace"
+        );
+        // ...scoped to its own application and its own conversation.
+        assert!(!state.admission.grace().qualifies("hermes-b", "conv-1", at));
+        assert!(!state.admission.grace().qualifies("hermes-a", "conv-2", at));
+
+        // A provider error must not credit anything. The second account is
+        // unreachable, so its turn fails and leaves the registry untouched.
+        let failing_store = temporary_path("grace-fail-accounts");
+        let failing_jobs = temporary_path("grace-fail-jobs");
+        let mut unreachable = account("unreachable");
+        unreachable.provider = Some("openai-compatible".to_owned());
+        unreachable.base_url = Some("http://127.0.0.1:1".to_owned());
+        fs::write(
+            &failing_store,
+            serde_json::to_vec(&store_with_accounts(vec![unreachable])).unwrap(),
+        )
+        .await
+        .unwrap();
+        let mut failing_config = EdgeConfig::default();
+        failing_config.store_path = failing_store.clone();
+        failing_config.jobs_path = failing_jobs.clone();
+        failing_config.configured_api_keys = vec![("hermes-a".to_owned(), "edge-secret".to_owned())];
+        failing_config.admission_policy_enabled = true;
+        failing_config.models_cache_ttl = Duration::from_secs(60);
+        failing_config.upstream_timeout = Duration::from_secs(2);
+        let failing_state = EdgeState::new(failing_config).await.unwrap();
+        let (failing_url, failing_task) = start_server(build_router(failing_state.clone())).await;
+        let failed = client
+            .post(format!("{failing_url}/v1/chat/completions"))
+            .header("authorization", "Bearer edge-secret")
+            .header("session_id", "conv-fail")
+            .json(&json!({
+                "model": "gpt-unreachable",
+                "messages": [{"role": "user", "content": "hello"}]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert!(failed.status().is_server_error() || failed.status().is_client_error());
+        assert!(
+            !failing_state
+                .admission
+                .grace()
+                .qualifies("hermes-a", "conv-fail", now_ms()),
+            "a failed turn must not earn grace"
+        );
+        failing_task.abort();
+        let _ = fs::remove_file(failing_store).await;
+        let _ = fs::remove_file(failing_jobs).await;
+
+        edge_task.abort();
+        upstream_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
     #[test]
     fn admission_headers_report_the_decision_and_never_leak_a_session() {
         let mut headers: Vec<(String, String)> = vec![
