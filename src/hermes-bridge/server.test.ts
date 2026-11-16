@@ -963,3 +963,60 @@ test("a non-streamed tool call is not rewritten either", async () => {
     assert.deepEqual(await response.json(), payload);
   });
 });
+
+// --- cloudflare access at enrollment ----------------------------------------
+
+test("enrollment sends the Access service token when it is supplied", async () => {
+  // The deployment gates the enrollment hostname. Without these two headers the
+  // exchange is anonymous and Cloudflare answers 302 to a login page the bridge
+  // can never complete: it has no credential yet and the code is single-use.
+  const seen: Record<string, string> = {};
+  const result = await exchangeEnrollment({
+    endpoint: "https://multivibe.pleiades.solutions",
+    code: "mvenr_" + "a".repeat(40),
+    accessClientId: "abc123.access",
+    accessClientSecret: "s3cret",
+    fetchImpl: async (_url, init) => {
+      Object.assign(seen, init?.headers ?? {});
+      return jsonResponse({ edgeApiKey: "mv_k", expiresAt: Date.now() + 60_000 });
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(seen["CF-Access-Client-Id"], "abc123.access");
+  assert.equal(seen["CF-Access-Client-Secret"], "s3cret");
+});
+
+test("enrollment sends no Access headers when none are supplied", async () => {
+  // A bypassed or separate enrollment hostname must not receive a stray header,
+  // and a half-supplied pair must not look authenticated when it is not.
+  const seen: Record<string, string> = {};
+  await exchangeEnrollment({
+    endpoint: "https://multivibe.pleiades.solutions",
+    code: "mvenr_" + "a".repeat(40),
+    fetchImpl: async (_url, init) => {
+      Object.assign(seen, init?.headers ?? {});
+      return jsonResponse({ edgeApiKey: "mv_k", expiresAt: Date.now() + 60_000 });
+    },
+  });
+  assert.equal(seen["CF-Access-Client-Id"], undefined);
+  assert.equal(seen["CF-Access-Client-Secret"], undefined);
+});
+
+test("a half-supplied Access pair is refused before any request", async () => {
+  const fake = (options: { accessClientId?: string; accessClientSecret?: string }) =>
+    exchangeEnrollment({
+      endpoint: "https://e.example",
+      code: "mvenr_" + "a".repeat(40),
+      fetchImpl: async (_url, init) => {
+        const headers = (init?.headers ?? {}) as Record<string, string>;
+        assert.equal(headers["CF-Access-Client-Id"], undefined);
+        assert.equal(headers["CF-Access-Client-Secret"], undefined);
+        return jsonResponse({ edgeApiKey: "mv_k", expiresAt: Date.now() + 60_000 });
+      },
+      ...options,
+    });
+  // The library only forwards a complete pair; the CLI refuses half a pair
+  // outright. Either way an anonymous request never carries one header alone.
+  await fake({ accessClientId: "only-id.access" });
+  await fake({ accessClientSecret: "only-secret" });
+});

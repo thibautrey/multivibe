@@ -59,15 +59,31 @@ export function enrollmentExchangeUrl(base: string): string {
 export async function exchangeEnrollment(options: {
   endpoint: string;
   code: string;
+  /**
+   * Cloudflare Access service token, when the enrollment hostname is gated.
+   *
+   * Without it the exchange is anonymous, which a gated hostname answers with a
+   * `302` to the Access login page — the exact failure this bridge cannot
+   * recover from, because it has no credential yet and the code is single-use.
+   * Operators therefore hand the client an Access token before enrolment; if the
+   * deployment bypasses the path instead, these are simply omitted.
+   */
+  accessClientId?: string;
+  accessClientSecret?: string;
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
 }): Promise<ExchangeResult> {
   const fetchImpl = options.fetchImpl ?? fetch;
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (options.accessClientId && options.accessClientSecret) {
+    headers["CF-Access-Client-Id"] = options.accessClientId;
+    headers["CF-Access-Client-Secret"] = options.accessClientSecret;
+  }
   let response: Response;
   try {
     response = await fetchImpl(enrollmentExchangeUrl(options.endpoint), {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       body: JSON.stringify({ code: options.code }),
       redirect: "error",
       signal: options.signal ?? AbortSignal.timeout(20_000),
