@@ -189,7 +189,17 @@ Routing rules, in priority order:
    about correctness because the TTL still governs. It retries with backoff on
    an unref'd timer and is closed with the server, so it can never hold shutdown
    open.
-7. **A saturated edge is a reason to fall back, not to fail.** `429` and `503`
+7. **Both upstarts speak the same dialect, and the bridge does not translate.**
+   The plan allows normalising `tool_calls` and `finish_reason` "between the two
+   upstreams". They were compared, not assumed: the edge already emits the same
+   `chat.completion[.chunk]` shape with `finish_reason: "tool_calls"`, and Nous
+   serves the same OpenAI dialect. Rewriting the stream against a difference that
+   does not exist would risk corrupting the one thing that must survive a
+   fallback — a tool call crossing the boundary intact — so the bridge relays
+   bytes and a test pins that a streamed `tool_calls` sequence, `[DONE]`
+   included, comes out identical. If a real divergence appears, `doctor` fails on
+   the mapping before it fails in a conversation.
+8. **A saturated edge is a reason to fall back, not to fail.** `429` and `503`
    from the edge — our machines busy, or no slot at all — are retried on Nous
    before any byte reaches the harness. A `400` is not: retrying a malformed
    request against a second provider would double the failure and hide its cause.
