@@ -8306,11 +8306,19 @@ async fn proxy_inference(
         }
         if capacity_exhausted && attempted < state.config.max_account_retry_attempts {
             let remaining_wait = max_admission_wait.saturating_sub(admission_started_at.elapsed());
+            let waited_before = admission_started_at.elapsed();
             if state
                 .admission
                 .wait_for_capacity(&saturated_accounts, remaining_wait)
                 .await
             {
+                // Charged only when the client really blocked and then got a
+                // slot: a wait that ended in a `429` is already visible as a
+                // queue decision, and counting it twice would make the tail
+                // look worse than the latency the caller actually saw.
+                state
+                    .admission_metrics
+                    .record_queue_wait(waited_before.as_millis() as u64);
                 continue 'admission;
             }
         }
@@ -11232,14 +11240,26 @@ struct AdmissionMetrics {
     inline_wait_samples: AtomicU64,
     /// Largest wait reported, so an operator sees the tail without a histogram.
     inline_wait_ms_max: AtomicU64,
+    /// Recent inline waits, so `admission.inline_wait_p99` is a real percentile
+    /// of recent traffic instead of a permanent record of the worst outlier.
+    inline_wait_window: StdMutex<admission::LatencyWindow>,
     /// Count of admissions that had to queue rather than being served at once.
     queued: AtomicU64,
     /// Count of turns that the bridge could have served but the edge could not.
     switch_recommended: AtomicU64,
+    /// Per-reason decision counts. The plan asks for
+    /// `admission.decision{reason}`, because the total alone cannot say whether
+    /// a queue came from the fair share, the physical ceiling, or a full grace
+    /// pool — three very different operator actions.
+    by_reason: StdMutex<HashMap<&'static str, u64>>,
+    /// Actual time spent blocked waiting for a slot, not the estimate. This is
+    /// `queue.wait_p99`: the estimate can be wrong, the wait cannot.
+    queue_wait_window: StdMutex<admission::LatencyWindow>,
 }
 
 impl AdmissionMetrics {
     fn record(&self, report: &AdmissionReport) {
+        self.record_reason(admission_reason(report));
         match report.decision {
             admission::AdmissionDecision::Admit => {
                 self.admit.fetch_add(1, AtomicOrdering::Relaxed);
@@ -11283,6 +11303,30 @@ impl AdmissionMetrics {
             }
         }
         self.inline_wait_samples.fetch_add(1, AtomicOrdering::Relaxed);
+        self.inline_wait_window
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .record(report.wait_ms);
+    }
+
+    /// Count one decision against its reason.
+    ///
+    /// Separated from `record` so the shadow path can label a decision it never
+    /// enforces, and so tests can assert a reason without fabricating a report.
+    fn record_reason(&self, reason: &'static str) {
+        let mut counts = self
+            .by_reason
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *counts.entry(reason).or_insert(0) += 1;
+    }
+
+    /// Record how long a request really waited for a slot.
+    fn record_queue_wait(&self, waited_ms: u64) {
+        self.queue_wait_window
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .record(waited_ms);
     }
 
     fn snapshot(&self, grace_active: u64) -> Value {
@@ -11302,8 +11346,24 @@ impl AdmissionMetrics {
             },
             "inlineWaitMsMean": if samples == 0 { 0 } else { total / samples },
             "inlineWaitMsMax": self.inline_wait_ms_max.load(AtomicOrdering::Relaxed),
+            // `null`, never a confident 0, when nothing has been sampled.
+            "inlineWaitMsP99": self
+                .inline_wait_window
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .percentile(0.99),
             "queued": self.queued.load(AtomicOrdering::Relaxed),
             "switchRecommended": self.switch_recommended.load(AtomicOrdering::Relaxed),
+            "byReason": self
+                .by_reason
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
+            "queueWaitMsP99": self
+                .queue_wait_window
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .percentile(0.99),
         })
     }
 }
@@ -14197,6 +14257,104 @@ async fn admission_state_handler(State(state): State<EdgeState>, req: Request<Bo
     )
 }
 
+/// Escape a Prometheus label value.
+///
+/// Reasons are `&'static str` from our own table, but escaping anyway keeps a
+/// future dynamic label from turning a metric line into a broken exposition
+/// that fails the whole scrape.
+fn prometheus_label(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace('"', "\\\"")
+}
+
+/// `GET /admin/admission/metrics` — the counters the plan watches, in
+/// Prometheus text exposition format.
+///
+/// Admin-only: these numbers describe one tenant's load, so publishing them on
+/// a public path would leak the operator's capacity picture. Kept next to
+/// `/admin/admission/state` (JSON, for humans) so an operator has one obvious
+/// place to look and a scraper has one obvious place to scrape.
+async fn admission_metrics_handler(State(state): State<EdgeState>, req: Request<Body>) -> Response {
+    if !dashboard::request_authorized(req.headers(), &state.config) {
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "admin authentication is required",
+            "unauthorized",
+        );
+    }
+    let store = match state.store.snapshot().await {
+        Ok(store) => store,
+        Err(error) => {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, error, "store_unavailable");
+        }
+    };
+    let accounts = store.accounts.clone();
+    let now = now_ms();
+    let grace_active = state.admission.grace_active_total(&accounts, now);
+    let metrics = state.admission_metrics.snapshot(u64::from(grace_active));
+    let mut body = String::with_capacity(2 * 1024);
+    body.push_str("# HELP admission_decision_total Admission decisions by reason.\n");
+    body.push_str("# TYPE admission_decision_total counter\n");
+    if let Some(reasons) = metrics.get("byReason").and_then(Value::as_object) {
+        // Sorted so two scrapes of an unchanged edge produce identical text,
+        // which makes diffing a stored scrape meaningful.
+        let mut entries: Vec<(String, u64)> = reasons
+            .iter()
+            .filter_map(|(reason, count)| count.as_u64().map(|count| (reason.clone(), count)))
+            .collect();
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        for (reason, count) in entries {
+            body.push_str(&format!(
+                "admission_decision_total{{reason=\"{}\"}} {count}\n",
+                prometheus_label(&reason)
+            ));
+        }
+    }
+    for (name, help, key) in [
+        ("grace_active", "Sessions currently holding grace.", "active"),
+        ("grace_denied_by_cap", "Eligible sessions denied by the grace slot pool.", "deniedByCap"),
+    ] {
+        let value = metrics
+            .get("grace")
+            .and_then(|grace| grace.get(key))
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        body.push_str(&format!("# HELP {name} {help}\n# TYPE {name} gauge\n{name} {value}\n"));
+    }
+    // Omitted, never reported as 0, when nothing has been sampled: a confident
+    // zero on a latency percentile hides a silent pipeline.
+    for (name, help, key) in [
+        (
+            "admission_inline_wait_p99_ms",
+            "99th percentile of inline admission waits, recent samples.",
+            "inlineWaitMsP99",
+        ),
+        (
+            "queue_wait_p99_ms",
+            "99th percentile of real time spent queued for a slot, recent samples.",
+            "queueWaitMsP99",
+        ),
+    ] {
+        if let Some(value) = metrics.get(key).and_then(Value::as_u64) {
+            body.push_str(&format!(
+                "# HELP {name} {help}\n# TYPE {name} gauge\n{name} {value}\n"
+            ));
+        }
+    }
+    let mut response = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")
+        .body(Body::from(body))
+        .unwrap_or_else(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "metrics encoding failed", "internal_error"));
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store"),
+    );
+    response
+}
+
 async fn admission_lease_handler(
     State(state): State<EdgeState>,
     Path(lease_id): Path<String>,
@@ -16921,6 +17079,7 @@ fn build_base_router(state: &EdgeState) -> Router<EdgeState> {
         .route("/desktop/session", get(dashboard::desktop_session_consume))
         .route("/admin/dashboard/models", get(list_models_handler).post(method_not_allowed))
         .route("/admin/admission/state", get(admission_state_handler))
+        .route("/admin/admission/metrics", get(admission_metrics_handler))
         .route(
             "/admin/hermes-bridge/enrollment",
             post(enrollment_issue_handler),
@@ -19061,6 +19220,158 @@ mod tests {
         metrics_task.abort();
         let _ = fs::remove_file(store_path).await;
         let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
+    async fn the_metrics_endpoint_publishes_what_the_plan_alerts_on() {
+        // The plan asks for named metrics so an operator can alert on them, and
+        // for `524 > 0` and a high `grace.denied_by_cap` specifically. A JSON
+        // blob only a human reads cannot be scraped, and a percentile computed
+        // from a permanent maximum would never recover after one outlier.
+        let store_path = temporary_path("metrics-exposition-accounts");
+        let jobs_path = temporary_path("metrics-exposition-jobs");
+        fs::write(&store_path, b"{}").await.unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.admin_token = "dashboard-secret".to_owned();
+        config.admission_policy_enabled = true;
+        let state = EdgeState::new(config).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(state.clone())).await;
+        let client = reqwest::Client::new();
+
+        // Load-bearing: these counters describe one tenant's load.
+        assert_eq!(
+            client
+                .get(format!("{edge_url}/admin/admission/metrics"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+
+        // Nothing has been decided or waited on, so the latency percentiles must
+        // be absent rather than a confident zero that hides a silent pipeline.
+        let empty = client
+            .get(format!("{edge_url}/admin/admission/metrics"))
+            .bearer_auth("dashboard-secret")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(empty.status(), StatusCode::OK);
+        assert_eq!(
+            empty
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("text/plain; version=0.0.4; charset=utf-8")
+        );
+        let empty_body = empty.text().await.unwrap();
+        assert!(!empty_body.contains("admission_inline_wait_p99_ms"));
+        assert!(!empty_body.contains("queue_wait_p99_ms"));
+        assert!(empty_body.contains("# TYPE admission_decision_total counter"));
+
+        // Now record one decision of each interesting kind.
+        let accounts = [share_account("acct", 8)];
+        state.admission_metrics.record_reason("share_exhausted");
+        state.admission_metrics.record_reason("share_exhausted");
+        state.admission_metrics.record_reason("account_saturated");
+        state.admission_metrics.record_queue_wait(4_000);
+        state.admission_metrics.record_queue_wait(250);
+        let _ = &accounts;
+
+        let body = client
+            .get(format!("{edge_url}/admin/admission/metrics"))
+            .bearer_auth("dashboard-secret")
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(
+            body.contains("admission_decision_total{reason=\"share_exhausted\"} 2"),
+            "{body}"
+        );
+        assert!(
+            body.contains("admission_decision_total{reason=\"account_saturated\"} 1"),
+            "{body}"
+        );
+        // Sorted, so two scrapes of an unchanged edge are byte-identical.
+        let exhausted = body.find("share_exhausted").expect("present");
+        let saturated = body.find("account_saturated").expect("present");
+        assert!(saturated < exhausted, "reasons are emitted in sorted order");
+        assert!(body.contains("queue_wait_p99_ms 4000"), "{body}");
+        assert!(body.contains("# TYPE grace_active gauge"));
+
+        edge_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[test]
+    fn every_admission_reason_is_labeled_from_the_report_itself() {
+        // `admission.decision{reason}` is only useful if the label names the
+        // layer that refused the request. A generic "queue" would not tell an
+        // operator whether to raise the share or add capacity.
+        let share = hermes_share(0.25, 0);
+        let admit = AdmissionReport {
+            decision: admission::AdmissionDecision::Admit,
+            capacity: 8,
+            share_limit: 2,
+            application_active: 1,
+            ..AdmissionReport::default()
+        };
+        assert_eq!(admission_reason(&admit), "share_available");
+
+        // Admitted exactly at the share boundary: only grace can explain it.
+        let graced = AdmissionReport {
+            decision: admission::AdmissionDecision::Admit,
+            capacity: 8,
+            share_limit: 2,
+            application_active: 2,
+            session_grace: admission::GraceState::Granted,
+            ..AdmissionReport::default()
+        };
+        assert_eq!(admission_reason(&graced), "grace");
+
+        // Physical ceiling reached: adding share would not help.
+        let saturated = AdmissionReport {
+            decision: admission::AdmissionDecision::Queue,
+            capacity: 8,
+            account_active: 8,
+            share_limit: 2,
+            application_active: 1,
+            ..AdmissionReport::default()
+        };
+        assert_eq!(admission_reason(&saturated), "account_saturated");
+
+        // Grace pool full while the account still has room: the 25 % grace
+        // share, not the TTL, is binding — the plan alerts on this.
+        let grace_full = AdmissionReport {
+            decision: admission::AdmissionDecision::Queue,
+            capacity: 8,
+            account_active: 4,
+            share_limit: 2,
+            application_active: 2,
+            grace_slots: 2,
+            grace_active: 2,
+            ..AdmissionReport::default()
+        };
+        assert_eq!(admission_reason(&grace_full), "grace_pool_full");
+
+        // Below its share: ordinary fair-share admission.
+        let available = AdmissionReport {
+            decision: admission::AdmissionDecision::Queue,
+            capacity: 8,
+            account_active: 2,
+            share_limit: 4,
+            application_active: 4,
+            ..AdmissionReport::default()
+        };
+        assert_eq!(admission_reason(&available), "share_exhausted");
+        assert_eq!(share.max_concurrent_share, 0.25);
     }
 
     #[tokio::test]

@@ -449,6 +449,68 @@ pub fn estimated_wait_ms(pressure: AccountPressure, share_limit: u32, average_tu
     (queued_waves as u64).saturating_mul(average_turn_ms.max(1_000))
 }
 
+/// A bounded sliding window of latency samples, enough to report a real p99.
+///
+/// `inline_wait_ms_max` alone cannot answer "is the tail getting worse?": one
+/// outlier sets it forever. A mean cannot answer it either. The plan asks for
+/// `admission.inline_wait_p99`, so the edge keeps the recent samples and
+/// computes the percentile honestly rather than approximating it with the max.
+///
+/// Bounded on purpose: an unbounded `Vec` would grow with traffic and turn an
+/// observability feature into a memory leak.
+#[derive(Debug)]
+pub struct LatencyWindow {
+    samples: std::collections::VecDeque<u64>,
+    capacity: usize,
+}
+
+/// How many samples each window retains. Large enough for a stable p99 (the
+/// 99th percentile of 1024 samples is the 11th worst), small enough that two
+/// windows cost a few kilobytes.
+pub const LATENCY_WINDOW_SAMPLES: usize = 1_024;
+
+impl Default for LatencyWindow {
+    fn default() -> Self {
+        Self::new(LATENCY_WINDOW_SAMPLES)
+    }
+}
+
+impl LatencyWindow {
+    #[must_use]
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            samples: std::collections::VecDeque::with_capacity(capacity.max(1)),
+            capacity: capacity.max(1),
+        }
+    }
+
+    pub fn record(&mut self, value: u64) {
+        if self.samples.len() == self.capacity {
+            self.samples.pop_front();
+        }
+        self.samples.push_back(value);
+    }
+
+
+    /// Nearest-rank percentile, the same definition Prometheus' `histogram_quantile`
+    /// converges to for a fine histogram: the smallest sample at or above rank
+    /// `ceil(p * n)`. Returns `None` when nothing has been recorded, so a caller
+    /// can omit the metric instead of reporting a confident zero.
+    #[must_use]
+    pub fn percentile(&self, quantile: f64) -> Option<u64> {
+        if self.samples.is_empty() {
+            return None;
+        }
+        let mut sorted: Vec<u64> = self.samples.iter().copied().collect();
+        sorted.sort_unstable();
+        let clamped = quantile.clamp(0.0, 1.0);
+        // `ceil` on rank 0 would index before the start; a percentile of 0 is
+        // still a real sample, so floor it at 1.
+        let rank = (clamped * sorted.len() as f64).ceil().max(1.0) as usize;
+        sorted.get(rank.min(sorted.len()) - 1).copied()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -665,5 +727,43 @@ mod tests {
         registry.observe("app", "", "acct", 9_999, 1_000);
         assert_eq!(registry.len(), 0);
         assert!(!registry.qualifies("app", "", 1_000));
+    }
+
+    #[test]
+    fn a_latency_window_reports_p99_not_the_maximum() {
+        let mut window = LatencyWindow::new(200);
+        // 199 samples at 100 ms and one 9-second outlier. The mean would be
+        // ~145 ms and the max 9000 ms; the honest p99 is still 100 ms.
+        for _ in 0..199 {
+            window.record(100);
+        }
+        window.record(9_000);
+        assert_eq!(window.percentile(0.99), Some(100));
+        assert_eq!(window.percentile(1.0), Some(9_000));
+        assert_eq!(window.percentile(0.5), Some(100));
+    }
+
+    #[test]
+    fn a_latency_window_evicts_old_samples_so_the_tail_recovers() {
+        let mut window = LatencyWindow::new(4);
+        for _ in 0..4 {
+            window.record(10_000);
+        }
+        assert_eq!(window.percentile(0.99), Some(10_000));
+        // A spike that ended is not a permanent report of a spike.
+        for _ in 0..4 {
+            window.record(5);
+        }
+        // Eviction is what makes this 5 rather than 10_000: with an unbounded
+        // window the four outliers would still dominate the 99th percentile, so
+        // this single assertion also pins the bound.
+        assert_eq!(window.percentile(0.99), Some(5));
+    }
+
+    #[test]
+    fn an_empty_latency_window_reports_nothing_rather_than_zero() {
+        let window = LatencyWindow::default();
+        assert_eq!(window.percentile(0.99), None);
+        assert_eq!(window.percentile(0.0), None);
     }
 }

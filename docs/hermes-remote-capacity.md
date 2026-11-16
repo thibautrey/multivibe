@@ -177,22 +177,33 @@ Routing rules, in priority order:
 | --- | --- | --- |
 | 0. Shadow | `ADMISSION_SHADOW=true`: every decision is computed and counted, nothing is enforced | The counters match what you expect before any request is refused |
 | 1. Fair share + leases | `ADMISSION_POLICY_ENABLED=true`, no grace | No starvation between tenants |
-| 2. Grace | Grace enabled for one pilot client | `grace.deniedByCap` low |
-| 3. Bridge | General availability | `http.524.count` stays zero |
+| 2. Grace | Grace enabled for one pilot client | `grace_denied_by_cap` low |
+| 3. Bridge | General availability | `counters.http524` stays zero on every enrolled machine |
 
-| Signal | Where | What it tells you |
+`GET /admin/admission/metrics` serves the same counters in Prometheus text
+format, so an operator can alert on them instead of reading JSON by eye. It
+requires the admin token: these numbers describe one tenant's load.
+
+| Metric | Where | What it tells you |
 | --- | --- | --- |
-| `decision{admit,queue,switch}` | `/admin/admission/state` | How often work is refused at the door |
-| `queued`, `inlineWaitMsMax` | same | The wait *tail*; a mean hides a single 50 s admission |
-| `switchRecommended` | same | Turns the edge could not serve and told the client to avoid |
-| `grace.active`, `deniedByCap` | same | Whether the 25 % grace pool is binding |
-| `blockedNoMapping` | bridge `/health` | A client asked for a model the fallback cannot serve |
-| `refusedCredential` | bridge `/health` | The edge rejected this machine — a config fault |
-| `fallbackUnavailable` | bridge `/health` | The edge failed **and** no fallback was possible |
+| `admission_decision_total{reason}` | edge `/admin/admission/metrics` | How often work is refused, **and by which layer**: `share_available`, `grace`, `share_exhausted`, `account_saturated`, `grace_pool_full`, `switch_requested` |
+| `admission_inline_wait_p99_ms` | same | The wait tail over recent samples, not a permanent record of the worst one. Absent, never `0`, until something has been sampled |
+| `queue_wait_p99_ms` | same | Real time spent blocked for a slot, which is what the caller felt — the estimate can be wrong, the wait cannot |
+| `grace_active` | same | Sessions currently holding grace |
+| `grace_denied_by_cap` | same | Eligible sessions the 25 % grace pool turned away |
+| `counters.switched` | bridge `/health` (JSON) | Turns served by Nous because the edge could not serve them, including inline fallbacks |
+| `counters.blockedNoMapping` | bridge `/health` (JSON) | A client asked for a model the fallback cannot serve |
+| `counters.http524` | bridge `/health` (JSON) | Cloudflare cut a request off. Only the bridge can see this: Cloudflare answers `524` itself and the edge never sees it |
+| `counters.turns` | bridge `/health` (JSON) | Total served turns, so the switch ratio is `switched / turns` |
 
-`deniedByCap` staying high means the grace pool is too small; `blockedNoMapping`
-above zero means the promise cannot be kept for that model and the mapping table
-needs a real equivalent.
+The bridge exposes JSON, not Prometheus: it is one process per customer machine,
+scraped by the operator only when diagnosing, so a text exposition format would
+be ceremony without a consumer.
+
+`grace_denied_by_cap` staying high means the grace pool is too small;
+`blockedNoMapping` above zero means the promise cannot be kept for that model and
+the mapping table needs a real equivalent; any non-zero `http524` means a request
+waited past Cloudflare's 100-second budget, which no amount of queueing fixes.
 
 ## Known constraints
 
