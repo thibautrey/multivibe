@@ -7991,6 +7991,10 @@ struct ChatResponseStreamState {
     /// Index of the refusal part, fixed when the part opens. Recomputing it
     /// per delta would move the part if later content shifted the count.
     refusal_content_index: usize,
+    /// Index of the text part, fixed when the part opens. It is 1 when a
+    /// refusal already occupies index 0, so the stream never announces two
+    /// parts on the same index.
+    content_content_index: usize,
     /// Set once the assistant message item is announced, so a refusal that
     /// streams before content cannot announce the same item twice.
     message_started: bool,
@@ -8022,6 +8026,21 @@ impl ChatResponseStreamState {
             "response.created",
             &json!({"type": "response.created", "response": {"id": self.response_id, "object": "response", "created_at": self.created, "model": self.model, "status": "in_progress"}}),
         )
+    }
+
+    /// Parts in content_index order. The client is told each part's index when
+    /// it opens, so the terminal snapshot has to match that order even when the
+    /// refusal streamed before the text.
+    fn ordered_parts(&self) -> Vec<Value> {
+        let mut parts = Vec::new();
+        if !self.content.is_empty() {
+            parts.push((self.content_content_index, json!({"type": "output_text", "text": self.content})));
+        }
+        if !self.refusal.is_empty() {
+            parts.push((self.refusal_content_index, json!({"type": "refusal", "refusal": self.refusal})));
+        }
+        parts.sort_by_key(|(index, _)| *index);
+        parts.into_iter().map(|(_, part)| part).collect()
     }
 
     /// Opens the assistant message item once, whichever part reaches the client
@@ -8069,14 +8088,7 @@ impl ChatResponseStreamState {
             output.push(json!({"id": self.reasoning_item_id, "type": "reasoning", "status": item_status, "summary": [], "encrypted_content": encode_reasoning_content(&self.reasoning)}));
         }
         if has_message {
-            let mut parts = Vec::new();
-            if !self.content.is_empty() {
-                parts.push(json!({"type": "output_text", "text": self.content}));
-            }
-            if !self.refusal.is_empty() {
-                parts.push(json!({"type": "refusal", "refusal": self.refusal}));
-            }
-            output.push(json!({"id": self.output_item_id, "type": "message", "status": item_status, "role": "assistant", "content": parts}));
+            output.push(json!({"id": self.output_item_id, "type": "message", "status": item_status, "role": "assistant", "content": self.ordered_parts()}));
         }
         for tool in &mut self.tool_calls {
             if let Err(message) = self.chat_tools.restore_item(tool) {
@@ -8120,8 +8132,9 @@ impl ChatResponseStreamState {
         }
         let msg_output_index = usize::from(!self.reasoning.is_empty());
         if self.content_started {
-            out.push_str(&sse_frame("response.output_text.done", &json!({"type": "response.output_text.done", "item_id": self.output_item_id, "output_index": msg_output_index, "content_index": 0, "text": self.content})));
-            out.push_str(&sse_frame("response.content_part.done", &json!({"type": "response.content_part.done", "item_id": self.output_item_id, "output_index": msg_output_index, "content_index": 0, "part": {"type": "output_text", "text": self.content}})));
+            let content_idx = self.content_content_index;
+            out.push_str(&sse_frame("response.output_text.done", &json!({"type": "response.output_text.done", "item_id": self.output_item_id, "output_index": msg_output_index, "content_index": content_idx, "text": self.content})));
+            out.push_str(&sse_frame("response.content_part.done", &json!({"type": "response.content_part.done", "item_id": self.output_item_id, "output_index": msg_output_index, "content_index": content_idx, "part": {"type": "output_text", "text": self.content}})));
         }
         if self.refusal_started {
             let content_idx = self.refusal_content_index;
@@ -8131,13 +8144,7 @@ impl ChatResponseStreamState {
         // The snapshot always carries a message item, the empty placeholder
         // included, so the client must see that item announced and closed too.
         if has_message || self.tool_calls.is_empty() {
-            let mut parts = Vec::new();
-            if !self.content.is_empty() {
-                parts.push(json!({"type": "output_text", "text": self.content}));
-            }
-            if !self.refusal.is_empty() {
-                parts.push(json!({"type": "refusal", "refusal": self.refusal}));
-            }
+            let mut parts = self.ordered_parts();
             if parts.is_empty() {
                 parts.push(json!({"type": "output_text", "text": ""}));
             }
@@ -8576,10 +8583,12 @@ impl SseStreamTransformer {
                     self.chat_response.content_started = true;
                     let item = self.chat_response.ensure_message_item(out_idx);
                     output.push_str(&item);
-                    output.push_str(&sse_frame("response.content_part.added", &json!({"type": "response.content_part.added", "item_id": self.chat_response.output_item_id, "output_index": out_idx, "content_index": 0, "part": {"type": "output_text", "text": ""}})));
+                    self.chat_response.content_content_index =
+                        usize::from(self.chat_response.refusal_started);
+                    output.push_str(&sse_frame("response.content_part.added", &json!({"type": "response.content_part.added", "item_id": self.chat_response.output_item_id, "output_index": out_idx, "content_index": self.chat_response.content_content_index, "part": {"type": "output_text", "text": ""}})));
                 }
                 self.chat_response.content.push_str(&content);
-                output.push_str(&sse_frame("response.output_text.delta", &json!({"type": "response.output_text.delta", "item_id": self.chat_response.output_item_id, "output_index": usize::from(!self.chat_response.reasoning.is_empty()), "content_index": 0, "delta": content})));
+                output.push_str(&sse_frame("response.output_text.delta", &json!({"type": "response.output_text.delta", "item_id": self.chat_response.output_item_id, "output_index": out_idx, "content_index": self.chat_response.content_content_index, "delta": content})));
             }
             if let Some(refusal) =
                 raw_string(delta.get("refusal")).filter(|refusal| !refusal.is_empty())
