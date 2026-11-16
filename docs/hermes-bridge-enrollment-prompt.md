@@ -72,6 +72,12 @@ It listens on `127.0.0.1:8787` only. Then read the key the harness must present:
 multivibe-hermes-bridge print-key
 ```
 
+The key is generated on the first start and kept in the system secret store. It
+is **stable across restarts**, so the value you write into `.env` keeps working
+after an update, a reboot, or a crash. Re-run `print-key` only if the store was
+cleared; if it ever prints a different value than `.env` holds, update `.env`
+rather than assuming the bridge is broken.
+
 ## 4. Point Hermes at the bridge
 
 In `~/.hermes/.env`, inside the MultiVibe-managed block, set:
