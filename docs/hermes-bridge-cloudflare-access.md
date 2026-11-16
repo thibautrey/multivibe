@@ -91,6 +91,24 @@ The Access policy is not the only gate. Add a WAF rate-limiting rule on
 mistake. Access decides *who*; the WAF bounds *how much* even for a legitimate
 identity.
 
+## Verifying whether it is fixed
+
+`doctor` answers the question directly. It posts a deliberately invalid code to
+the exchange path and reads the *redirect*:
+
+```
+multivibe-hermes-bridge doctor
+```
+
+| Result | Meaning |
+| --- | --- |
+| `enrollment surface: ok (HTTP 401)` | The path is reachable; the bad code was refused, which is correct |
+| `enrollment surface: Access intercepts enrollment...` | Still gated — apply the Bypass policy or the separate hostname |
+
+Verified on 2026-11-16 against the live hostname: the second line, with a redirect
+to `cloudflareaccess.com` carrying `service_token_status:false`. That is the
+current state, not a guess.
+
 ## Verifying
 
 From the client machine, with the token installed:
