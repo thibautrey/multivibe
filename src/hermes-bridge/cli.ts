@@ -193,16 +193,24 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   }
 
   if (args.command === "run") {
+    // Reuse the persisted key so a restart does not invalidate the harness's
+    // `.env`. Mint one only on the very first start.
     const bridge = createBridge({
       config,
       secrets,
       mappings: config.mappings,
+      ...(stored.localKey ? { localKey: stored.localKey } : {}),
       log: (event) => {
         // One JSON line per event, content-free by construction.
         process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), ...event })}\n`);
       },
     });
-    await backend.write("localKey", bridge.localKey);
+    if (!stored.localKey) {
+      await backend.write("localKey", bridge.localKey);
+      process.stdout.write(
+        "Generated a loopback key. Run `print-key` and put it in ~/.hermes/.env.\n",
+      );
+    }
     await new Promise<void>((resolve, reject) => {
       bridge.server.once("error", reject);
       bridge.server.listen(config.port, config.host, () => {

@@ -258,6 +258,36 @@ test("health never exposes a secret value", async () => {
   });
 });
 
+test("a persisted local key survives a restart", async () => {
+  // A restart that minted a fresh key would 401 a harness whose .env still holds
+  // the previous value -- the exact breakage the bridge exists to avoid.
+  const persisted = "persisted-loopback-key";
+  const first = createBridge({
+    config: config(),
+    secrets: SECRETS,
+    mappings: MAPPINGS,
+    localKey: persisted,
+  });
+  const second = createBridge({
+    config: config(),
+    secrets: SECRETS,
+    mappings: MAPPINGS,
+    localKey: persisted,
+  });
+  assert.equal(first.localKey, persisted);
+  assert.equal(second.localKey, persisted);
+
+  await withBridge(second, async (baseUrl) => {
+    const ok = await get(baseUrl, "/v1/models", persisted);
+    assert.equal(ok.status, 200, "the key issued before the restart still works");
+  });
+});
+
+test("a first start mints a key when none is supplied", () => {
+  const bridge = createBridge({ config: config(), secrets: SECRETS, mappings: MAPPINGS });
+  assert.match(bridge.localKey, /^[A-Za-z0-9_-]{40,}$/);
+});
+
 // --- saturation fallback ----------------------------------------------------
 
 test("an edge 429 falls back to Nous instead of surfacing to the harness", async () => {
