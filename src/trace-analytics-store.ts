@@ -17,7 +17,10 @@ import { MODEL_PRICING_VERSION, estimateCostUsd } from "./model-pricing.js";
 
 // Fixed release migration, deliberately independent of future catalog versions.
 export const MODELS_DEV_COST_BACKFILL = "models-dev-missing-costs-2026-10-25-v1";
+/** One release migration; entering a new key dimension needs its own buckets. */
+export const KEY_BUCKET_BACKFILL = "api-key-buckets-2026-11-16-v1";
 type PricingBackfill = { state: "running" | "complete"; cursor: number; upper: number; updated: number; unpriced: number };
+type KeyBucketBackfill = { state: "running" | "complete"; cursor: number; upper: number; scanned: number };
 
 const HOUR = 3_600_000;
 const MIN = -Number.MAX_SAFE_INTEGER;
@@ -52,6 +55,8 @@ export class TraceAnalyticsStore {
   private scanning?: Promise<void>;
   private pricingBackfillEnabled = false;
   private repricing = false;
+  private retyping = false;
+  private keyBucketBackfill?: KeyBucketBackfill;
   private generation = 0;
   private cache = new Map<string, { generation: number; expires: number; value: any }>();
   status: AnalyticsStatus = { ready: false, indexed: 0, pendingBytes: 0, invalidLines: 0 };
@@ -71,6 +76,7 @@ export class TraceAnalyticsStore {
       CREATE INDEX IF NOT EXISTS entries_project_at ON entries(project_id, at);
       CREATE INDEX IF NOT EXISTS entries_application_at ON entries(application, at);
       CREATE TABLE IF NOT EXISTS buckets (at INTEGER PRIMARY KEY, payload TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS buckets_by_key (at INTEGER NOT NULL, key TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(at, key));
       CREATE TABLE IF NOT EXISTS usage_buckets (at INTEGER NOT NULL, key TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(at, key));
       CREATE TABLE IF NOT EXISTS recent (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE, payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS cursors (identity TEXT PRIMARY KEY, offset INTEGER NOT NULL);
@@ -96,6 +102,11 @@ export class TraceAnalyticsStore {
     this.db.exec("CREATE INDEX IF NOT EXISTS entries_api_key_at ON entries(api_key, at)");
     this.status.indexed = Number((this.db.prepare("SELECT value FROM metadata WHERE key='count'").get() as any)?.value ?? 0);
     this.status.ready = !!this.db.prepare("SELECT 1 FROM metadata WHERE key='history_imported'").get();
+    const keyBackfillRow = this.db.prepare("SELECT value FROM metadata WHERE key=?").get(KEY_BUCKET_BACKFILL) as { value: string } | undefined;
+    this.keyBucketBackfill = keyBackfillRow
+      ? (JSON.parse(keyBackfillRow.value) as KeyBucketBackfill)
+      : { state: "running", cursor: 0, upper: Number((this.db.prepare("SELECT MAX(rowid) AS id FROM entries").get() as any).id ?? 0), scanned: 0 };
+    this.status.keyBucketBackfill = { version: KEY_BUCKET_BACKFILL, ...this.keyBucketBackfill };
   }
 
   static async open(config: ConstructorParameters<typeof TraceAnalyticsStore>[0], publish?: (status: AnalyticsStatus) => void) {
@@ -146,6 +157,16 @@ export class TraceAnalyticsStore {
     }
     this.db.prepare("INSERT OR REPLACE INTO buckets VALUES (?,?)").run(at, encode(bucket));
     this.db.prepare("DELETE FROM usage_buckets WHERE at=?").run(at);
+    this.db.prepare("DELETE FROM buckets_by_key WHERE at=?").run(at);
+    const perKey = new Map<string, TraceBucketAggregate>();
+    for (const t of this.range({ sinceMs: at, untilMs: at + HOUR - 1 })) {
+      const key = t.apiKeyId ?? "unattributed";
+      const value = perKey.get(key) ?? createEmptyBucket(at);
+      addTraceToBucket(value, t);
+      perKey.set(key, value);
+    }
+    const insertKey = this.db.prepare("INSERT OR REPLACE INTO buckets_by_key VALUES (?,?,?)");
+    for (const [key, value] of perKey) insertKey.run(at, key, encode(value));
     const insert = this.db.prepare("INSERT INTO usage_buckets VALUES (?,?,?)");
     for (const [key, rollup] of rollups) insert.run(at, key, JSON.stringify(rollup));
   }
@@ -230,9 +251,65 @@ export class TraceAnalyticsStore {
     } finally { this.repricing = false; }
   }
 
+  /**
+   * Backfill the per-key hourly buckets once for history indexed before
+   * MULTIVIBE-270. Keyset batches over `entries` make it resumable after a
+   * restart and idempotent; progress is durable in `metadata`.
+   */
+  private async backfillKeyBuckets() {
+    const progress = this.keyBucketBackfill;
+    if (!progress || progress.state === "complete") return;
+    // Reports must not mix pre- and post-backfill key aggregates in one window.
+    this.retyping = true;
+    this.status.ready = false;
+    this.emit();
+    const select = this.db.prepare("SELECT rowid AS cursor, at, payload FROM entries WHERE rowid>? AND rowid<=? ORDER BY rowid LIMIT ?");
+    const insertKey = this.db.prepare("INSERT OR REPLACE INTO buckets_by_key VALUES (?,?,?)");
+    const getKey = this.db.prepare("SELECT payload FROM buckets_by_key WHERE at=? AND key=?");
+    while (!this.stopped) {
+      const rows = select.all(progress.cursor, progress.upper, BATCH) as Array<{ cursor: number; at: number; payload: string }>;
+      if (!rows.length) break;
+      const next = { ...progress };
+      const pending = new Map<string, { at: number; key: string; value: TraceBucketAggregate }>();
+      this.db.transaction(() => {
+        for (const row of rows) {
+          const t = JSON.parse(row.payload) as TraceEntry;
+          const hour = Math.floor(t.at / HOUR) * HOUR;
+          const key = t.apiKeyId ?? "unattributed";
+          const combined = `${hour}:${key}`;
+          let bucket = pending.get(combined);
+          if (!bucket) {
+            const existing = getKey.get(hour, key) as any;
+            bucket = { at: hour, key, value: existing ? decode(existing.payload) : createEmptyBucket(hour) };
+            pending.set(combined, bucket);
+          }
+          addTraceToBucket(bucket.value, t);
+          next.cursor = row.cursor;
+          next.scanned++;
+        }
+        for (const entry of pending.values()) insertKey.run(entry.at, entry.key, encode(entry.value));
+        this.saveMeta(KEY_BUCKET_BACKFILL, JSON.stringify(next));
+      })();
+      Object.assign(progress, next);
+      this.status.keyBucketBackfill = { version: KEY_BUCKET_BACKFILL, ...progress };
+      this.emit();
+      await yieldToQueries();
+    }
+    if (this.stopped) return;
+    progress.state = "complete";
+    this.saveMeta(KEY_BUCKET_BACKFILL, JSON.stringify(progress));
+    this.status.keyBucketBackfill = { version: KEY_BUCKET_BACKFILL, ...progress };
+    this.generation++; this.cache.clear();
+    this.retyping = false;
+    this.status.ready = true;
+    this.emit();
+  }
+
   /** Entries, deduplication, aggregates and input cursor commit in one transaction. */
   append(entries: TraceEntry[], cursor?: { identity: string; offset: number }, journal = false) {
     const buckets = new Map<number, TraceBucketAggregate>();
+    const keyBuckets = new Map<string, { at: number; key: string; value: TraceBucketAggregate }>();
+    const getKeyBucket = this.db.prepare("SELECT payload FROM buckets_by_key WHERE at=? AND key=?");
     const rollups = new Map<string, { at: number; key: string; value: Rollup }>();
     const insert = this.db.prepare("INSERT OR IGNORE INTO entries VALUES (?,?,?,?,?,?,?,?,?,?)");
     const deleteRecent = this.db.prepare("DELETE FROM recent WHERE id=?");
@@ -270,6 +347,17 @@ export class TraceAnalyticsStore {
         let bucket = buckets.get(hour);
         if (!bucket) { const row = getBucket.get(hour) as any; bucket = row ? decode(row.payload) : createEmptyBucket(hour); buckets.set(hour, bucket!); }
         addTraceToBucket(bucket!, t);
+        // Per-key hourly buckets keep key-filtered stats bounded to the key's own
+        // hours instead of scanning raw entries for the whole range.
+        const keyId = t.apiKeyId ?? "unattributed";
+        const keyCombined = `${hour}:${keyId}`;
+        let keyBucket = keyBuckets.get(keyCombined);
+        if (!keyBucket) {
+          const row = getKeyBucket.get(hour, keyId) as any;
+          keyBucket = { at: hour, key: keyId, value: row ? decode(row.payload) : createEmptyBucket(hour) };
+          keyBuckets.set(keyCombined, keyBucket);
+        }
+        addTraceToBucket(keyBucket.value, t);
         if (!attempt(t)) continue;
         const key = JSON.stringify([t.accountId, t.route, t.application, t.apiKeyId, t.projectId, t.model]);
         const combined = `${hour}:${key}`;
@@ -284,6 +372,9 @@ export class TraceAnalyticsStore {
         addTrace(rollup.value.project, t);
       }
       for (const [at, bucket] of buckets) this.db.prepare("INSERT OR REPLACE INTO buckets VALUES (?,?)").run(at, encode(bucket));
+      // (at, key) is the primary key, so replacements are idempotent.
+      const insertKeyBucket = this.db.prepare("INSERT OR REPLACE INTO buckets_by_key VALUES (?,?,?)");
+      for (const entry of keyBuckets.values()) insertKeyBucket.run(entry.at, entry.key, encode(entry.value));
       for (const r of rollups.values()) this.db.prepare("INSERT OR REPLACE INTO usage_buckets VALUES (?,?,?)").run(r.at, r.key, JSON.stringify(r.value));
       if (journal) this.db.prepare("DELETE FROM recent WHERE seq < COALESCE((SELECT seq FROM recent ORDER BY seq DESC LIMIT 1 OFFSET ?),0)").run(Math.max(0, this.config.retentionMax - 1));
       if (cursor) this.db.prepare("INSERT OR REPLACE INTO cursors VALUES (?,?)").run(cursor.identity, cursor.offset);
@@ -358,6 +449,8 @@ export class TraceAnalyticsStore {
         if (await this.consume(previous, true) === true) await unlink(previous).catch((e) => { if (e.code !== "ENOENT") throw e; });
         await this.consume(this.config.filePath, true);
       }
+      await this.backfillKeyBuckets();
+      if (this.stopped) return;
       await this.backfillMissingCosts();
       if (this.stopped) return;
       this.status.ready = true;
@@ -397,8 +490,16 @@ export class TraceAnalyticsStore {
     const edges = new Map<number, TraceBucketAggregate>();
     for (const t of edge) { const hour=Math.floor(t.at/HOUR)*HOUR; const bucket=edges.get(hour)??createEmptyBucket(hour);addTraceToBucket(bucket,t);edges.set(hour,bucket); }
     const db=this.db;
+    // A key filter cannot use the global hourly buckets; its own durable
+    // per-key buckets keep the query bounded to that key's hours.
+    const keyFilter = args.apiKeyId;
     function* buckets(): Generator<TraceBucketAggregate> {
       const edgeHours=[...edges.values()].sort((a,b)=>a.at-b.at);
+      if (keyFilter) {
+        for(const bucket of edgeHours) yield bucket;
+        for(const row of db.prepare("SELECT payload FROM buckets_by_key WHERE key=? AND at>=? AND at<? ORDER BY at").iterate(keyFilter,firstFull,fullEnd) as Iterable<any>) yield decode(row.payload);
+        return;
+      }
       for(const bucket of edgeHours) if(bucket.at<firstFull)yield bucket;
       for(const row of db.prepare("SELECT payload FROM buckets WHERE at>=? AND at<? ORDER BY at").iterate(firstFull,fullEnd) as Iterable<any>) yield decode(row.payload);
       for(const bucket of edgeHours) if(bucket.at>=firstFull)yield bucket;
@@ -567,6 +668,7 @@ export class TraceAnalyticsStore {
     if (action === "append") { this.append(args.entries); return; }
     if (action === "status") return this.status;
     if (this.repricing) throw new Error("Analytics cost backfill is in progress");
+    if (this.retyping) throw new Error("Analytics API-key backfill is in progress");
     if (action === "recent") return (this.db.prepare("SELECT payload FROM recent ORDER BY seq").all() as any[]).map(r=>JSON.parse(r.payload));
     if (action === "trace") { const row=this.db.prepare("SELECT payload FROM recent WHERE id=?").get(args.id) as any; return row ? JSON.parse(row.payload) : null; }
     if (action === "range") return [...this.range(args)];
