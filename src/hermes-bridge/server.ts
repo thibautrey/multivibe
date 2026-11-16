@@ -33,6 +33,12 @@ export type BridgeDeps = {
   /** Injected for tests. */
   fetchImpl?: typeof fetch;
   now?: () => number;
+  /**
+   * The persisted loopback key. `run` loads it from the secret store; omitting
+   * it mints a fresh one, which is only correct for tests and for the very
+   * first start.
+   */
+  localKey?: string;
 };
 
 type StickyEntry = { until: number };
@@ -142,7 +148,11 @@ export function createBridge(deps: BridgeDeps) {
   // One entry per conversation. Bounded so a long-lived machine cannot grow it
   // without limit; entries are dropped on expiry and by age.
   const sticky = new Map<string, StickyEntry>();
-  const localKey = randomBytes(32).toString("base64url");
+  // The key the harness presents. Stable when the caller supplies the persisted
+  // one: rotating it on every start would invalidate the value already written
+  // to `.hermes/.env` and answer 401 to a harness that worked a moment ago,
+  // which is the opposite of the transparency this bridge promises.
+  const localKey = deps.localKey ?? randomBytes(32).toString("base64url");
   const base = config.edgeBaseUrl.replace(/\/+$/, "");
   const nous = config.nousBaseUrl.replace(/\/+$/, "");
 
