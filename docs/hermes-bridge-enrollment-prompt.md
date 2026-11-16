@@ -95,7 +95,14 @@ rather than assuming the bridge is broken.
 
 ## 4. Point Hermes at the bridge
 
-In `~/.hermes/.env`, inside the MultiVibe-managed block, set:
+In `~/.hermes/.env`, find the block delimited by these exact lines:
+
+```
+# >>> MultiVibe Host >>>
+# <<< MultiVibe Host <<<
+```
+
+Replace what is **between** them with:
 
 ```
 LLM_PROVIDER=openai
@@ -103,6 +110,13 @@ LLM_MODEL={{MODEL}}
 OPENAI_BASE_URL=http://127.0.0.1:8787/v1
 OPENAI_API_KEY=<the value printed by print-key>
 ```
+
+Keep the two marker lines themselves: MultiVibe uses them to find and rewrite its
+own block, and to remove it cleanly on rollback. Everything outside the block is
+yours and must stay untouched.
+
+If there is no marker block at all, append one rather than editing an existing
+setting — the markers are what make this change reversible.
 
 Back up the file first (`cp ~/.hermes/.env ~/.hermes/.env.before-bridge`) so
 returning to the previous configuration is one copy away.
