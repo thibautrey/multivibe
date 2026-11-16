@@ -245,6 +245,8 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   const [traceExportInProgress, setTraceExportInProgress] = useState(false);
   const tracePageRef = useRef(tracePagination.page);
   const traceRangeRef = useRef(traceRange);
+  // The 10s pollers keep their own closure; a ref keeps them on the selected key.
+  const traceApiKeyFilterRef = useRef(traceApiKeyFilter);
   const mobileNavigationRef = useRef<HTMLDialogElement>(null);
   const mobileNavigationTriggerRef = useRef<HTMLButtonElement>(null);
   const [invoiceData, setInvoiceData] = useState<InvoiceOverview>({ providers: [], cloudUnavailable: false });
@@ -601,7 +603,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
     const params = new URLSearchParams();
     if (typeof sinceMs === "number") params.set("sinceMs", String(sinceMs));
     if (typeof untilMs === "number") params.set("untilMs", String(untilMs));
-    if (traceApiKeyFilter) params.set("apiKeyId", traceApiKeyFilter);
+    if (traceApiKeyFilterRef.current) params.set("apiKeyId", traceApiKeyFilterRef.current);
     return params;
   };
 
@@ -736,6 +738,10 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   useEffect(() => {
     traceRangeRef.current = traceRange;
   }, [traceRange]);
+
+  useEffect(() => {
+    traceApiKeyFilterRef.current = traceApiKeyFilter;
+  }, [traceApiKeyFilter]);
 
   // A key filter narrows every tracing panel at once; reload the visible view.
   const apiKeyFilterReadyRef = useRef(false);
@@ -884,7 +890,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
       }
     }, 10_000);
     return () => window.clearInterval(timer);
-  }, [tab, tracePagination.page, traceRange, activityView]);
+  }, [tab, tracePagination.page, traceRange, activityView, traceApiKeyFilter]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
