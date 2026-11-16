@@ -1,0 +1,128 @@
+# Cloudflare Access for the Hermes bridge
+
+`host.example.invalid` sits behind Cloudflare Access. The bridge is a
+machine, not a person, so it authenticates with a **service token**, never a
+browser session. This document is the operator runbook; the code side is already
+complete and expects exactly these headers.
+
+## Why a per-client token
+
+One shared token would mean every client's traffic is indistinguishable, so a
+single leak would grant all of them access. A token per machine, bound to one
+Access policy and revoked independently, keeps blast radius at one host and makes
+`proxy_api_keys` attribution meaningful.
+
+## The enrollment problem, which must be solved first
+
+Enrollment happens **before** the machine has any credential. Today the whole
+hostname is behind Access, so an unauthenticated exchange gets a `302` to the
+login page and the bridge can never enroll:
+
+```
+/host.example.invalid/hermes-bridge/enrollment/exchange  -> 302
+```
+
+Two workable answers, in order of preference:
+
+1. **A separate, unprotected hostname for enrollment only.**
+   `enroll.host.example.invalid` → `POST /hermes-bridge/enrollment/exchange`,
+   with a WAF rate limit and **nothing else** routed there. The exchange is safe
+   to expose because the `mvenr_` code is single-use, bound to one application,
+   short-lived, and useless without it. This keeps the inference hostname fully
+   closed.
+2. **A bypass policy scoped to that one path.** An Access policy with action
+   *Bypass* on `host.example.invalid/hermes-bridge/enrollment/*` and no
+   other path. Less isolation, but one hostname.
+
+Do not open `/v1/*` to solve enrollment: that removes the gate from the surface
+that matters.
+
+Configure the enrollment URL on the client with `--edge` at enroll time, or by
+writing `edgeBaseUrl` into the bridge config.
+
+## Create the application
+
+1. Zero Trust → **Access → Applications → Add an application → Self-hosted**.
+2. Name: `MultiVibe inference (service)`.
+3. Public hostname: `multivibe`, domain `pleiades.solutions`, path **`v1`**.
+   Verified: today the whole hostname returns `302`, so this path-scoped
+   application is a **change** to make, not a description of the status quo.
+4. Session duration: irrelevant for service tokens; leave the default.
+5. **Do not** add an identity-provider rule that requires interactive login.
+   Instead, under **Policies**, add one policy:
+   - Name: `hermes-bridge-<client>`
+   - Action: **Service Auth**
+   - Include → **Service Token** → the token created below.
+
+The existing human policies stay attached to their own applications; this is
+additive. Until the path-scoped application exists, `doctor` will report a
+credential failure — which is the honest answer.
+
+## Create a service token per client
+
+Zero Trust → **Access → Service Auth → Create Service Token**, name
+`hermes-bridge-<client>`. The client id and secret are shown **once**.
+
+Deliver them through the enrollment exchange, never through the prompt text: the
+prompt carries only the `mvenr_` code, which is single-use and expires.
+
+The bridge sends them as:
+
+```
+CF-Access-Client-Id: <client id>.access
+CF-Access-Client-Secret: <client secret>
+```
+
+`doctor` treats a `302` to `cloudflareaccess.com` as a credential failure, so a
+missing policy fails loudly instead of appearing as ordinary latency.
+
+## Rotation and revocation
+
+| Event | Action |
+| --- | --- |
+| Routine | Rotate every 90 days: create the new token, deploy it, then delete the old one. Overlap is safe: a client uses exactly one pair. |
+| Offboarding | Delete the service token **and** the client's `proxy_api_keys` entry. Either alone leaves a usable path. |
+| Suspected leak | Delete the token first; the edge then refuses that identity immediately. Rotate the `proxy_api_keys` entry as well, because a leaked token alone cannot reach inference without a key. |
+
+## Defence in depth
+
+The Access policy is not the only gate. Add a WAF rate-limiting rule on
+`/v1/*` keyed by `CF-Access-Client-Id`, as a bound that survives a policy
+mistake. Access decides *who*; the WAF bounds *how much* even for a legitimate
+identity.
+
+## Verifying
+
+From the client machine, with the token installed:
+
+```sh
+multivibe-hermes-bridge doctor
+```
+
+Expected: `edge reachability: ok` with a model count, and every mapping `ok`.
+A `302`, `401`, or `403` means the token is not attached to the policy, or the
+policy does not cover the requested path.
+
+A quick manual check, which must return JSON rather than HTML:
+
+```sh
+curl -sS -H "CF-Access-Client-Id: $ID" -H "CF-Access-Client-Secret: $SECRET" \
+  -H "Authorization: Bearer $EDGE_API_KEY" \
+  https://host.example.invalid/v1/models | head -c 120
+```
+
+HTML means Access answered instead of the edge; JSON with `401` means Access let
+you through and the *API key* is wrong — a different fix.
+
+## What this does not cover
+
+The admin surfaces (`/admin/*`) are deliberately outside this application. They
+keep the existing interactive Access policy, because an operator is a person and
+a service token must never reach them.
+
+## Current verified state (2026-11-16)
+
+Every path on the hostname answers `302` to the Access login, including
+`/hermes-bridge/enrollment/exchange`. The code is complete; the Access
+configuration described above has **not** been applied. That is the remaining
+operator step, and it is the reason a client cannot enroll today.
