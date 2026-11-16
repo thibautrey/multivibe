@@ -487,6 +487,23 @@ test("a reachable enrollment surface is accepted even when it refuses the code",
   assert.match(check?.detail ?? "", /401/);
 });
 
+test("the probe asks without reserving a slot", async () => {
+  // A reservation left behind by a question holds a real slot for the lease TTL,
+  // so asking would consume the capacity the question is about.
+  const { fetchImpl, calls } = scriptedFetch([
+    jsonResponse({ decision: "admit" }),
+    jsonResponse({ choices: [] }),
+  ]);
+  const bridge = createBridge({ config: config(), secrets: SECRETS, mappings: MAPPINGS, fetchImpl });
+  await withBridge(bridge, async (baseUrl) => {
+    await post(baseUrl, "/v1/chat/completions", { model: "hermes-4-405b", messages: [] }, bridge.localKey);
+  });
+  const probe = calls.find((call) => call.url.endsWith("/admission"));
+  assert.ok(probe, "a probe happened");
+  const body = JSON.parse(String(probe!.init!.body)) as { reserve?: boolean };
+  assert.equal(body.reserve, false);
+});
+
 // --- capacity cache ---------------------------------------------------------
 
 test("a fresh capacity reading is reused instead of probed per turn", async () => {
