@@ -44,6 +44,18 @@ export function parseEnrollmentCode(raw: string): string | undefined {
  * Redirects are refused: an Access login page must never be accepted as a
  * credential response.
  */
+/**
+ * Build the exchange URL from an enrollment base.
+ *
+ * Strips a trailing `/v1` rather than appending to it: an operator who pastes
+ * the inference URL out of habit would otherwise get a 404 on a path that looks
+ * right, and the failure would read as a server bug.
+ */
+export function enrollmentExchangeUrl(base: string): string {
+  const trimmed = base.trim().replace(/\/+$/, "").replace(/\/v1$/i, "");
+  return `${trimmed}/hermes-bridge/enrollment/exchange`;
+}
+
 export async function exchangeEnrollment(options: {
   endpoint: string;
   code: string;
@@ -53,14 +65,18 @@ export async function exchangeEnrollment(options: {
   const fetchImpl = options.fetchImpl ?? fetch;
   let response: Response;
   try {
-    response = await fetchImpl(`${options.endpoint.replace(/\/+$/, "")}/hermes-bridge/enrollment/exchange`, {
+    response = await fetchImpl(enrollmentExchangeUrl(options.endpoint), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ code: options.code }),
       redirect: "error",
       signal: options.signal ?? AbortSignal.timeout(20_000),
     });
-  } catch {
+  } catch (error) {
+    // A refused redirect (an Access login page) lands here too. Say so, because
+    // "network" sends an operator looking for a firewall that is not the problem.
+    const message = String((error as Error).message ?? "");
+    if (/redirect/i.test(message)) return { ok: false, reason: "invalid" };
     return { ok: false, reason: "network" };
   }
   if (response.status === 404) return { ok: false, reason: "unsupported" };
