@@ -1,6 +1,42 @@
 use super::*;
 
 #[test]
+fn upstream_error_codes_map_to_fixed_client_messages() {
+    assert_eq!(
+        client_error_message("server_overloaded"),
+        "upstream is at capacity, retry later"
+    );
+    assert_eq!(
+        client_error_message("rate_limit_exceeded"),
+        "upstream rate limit reached, retry later"
+    );
+    assert_eq!(
+        client_error_message("content_filter"),
+        "upstream rejected the request under its content policy"
+    );
+    assert_eq!(
+        client_error_message("invalid_request"),
+        "upstream rejected the request"
+    );
+    // Anything unrecognized, including text an upstream put in the code field,
+    // falls back to the generic message instead of being relayed.
+    assert_eq!(
+        client_error_message("acct_123 leaked"),
+        "upstream stream reported an error"
+    );
+}
+
+#[test]
+fn log_text_cannot_forge_lines_or_inject_escapes() {
+    let hostile = "boom\nINFO upstream healthy\r\u{1b}[2J";
+    let safe = log_safe(hostile, 512);
+    assert!(!safe.contains('\n'), "{safe}");
+    assert!(!safe.contains('\r'), "{safe}");
+    assert!(!safe.chars().any(|c| c.is_control()), "{safe}");
+    assert_eq!(log_safe("abcdef", 3), "abc");
+}
+
+#[test]
 fn decoder_strips_only_initial_bom_across_all_chunk_boundaries() {
     for sep in ["\n", "\r\n", "\r"] {
         for prefix in ["", "\u{feff}"] {

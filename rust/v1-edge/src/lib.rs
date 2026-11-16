@@ -4704,7 +4704,7 @@ impl NativeStreamDiagnostics {
                     self.saw_meaningful_output = true;
                 }
             }
-            "response.completed" | "response.failed" | "response.incomplete" | "error" => {
+            "response.completed" | "response.failed" | "response.incomplete" | "response.error" | "error" => {
                 if self.terminal_event_type.is_none() {
                     self.terminal_event_type = Some(event_type.clone());
                 }
@@ -4893,7 +4893,7 @@ impl NativeStreamDiagnostics {
     }
 
     fn upstream_failure(&self) -> Option<String> {
-        let failed = ["response.failed", "response.incomplete", "error"]
+        let failed = ["response.failed", "response.error", "response.incomplete", "error"]
             .iter()
             .find(|event| {
                 self.event_types
@@ -5359,6 +5359,26 @@ fn transport_trace_outcome(status: StatusCode, error: String) -> TraceOutcome {
 
 fn trace_string(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
+}
+
+/// Fixed client-facing text for an upstream error code. Upstream messages
+/// routinely embed account ids, endpoint URLs and the request echo, so the
+/// client never receives them verbatim: it gets one message per known code and
+/// the full text stays in the trace.
+fn client_error_message(code: &str) -> &'static str {
+    match code {
+        "server_overloaded" => "upstream is at capacity, retry later",
+        "rate_limit_exceeded" => "upstream rate limit reached, retry later",
+        "content_filter" => "upstream rejected the request under its content policy",
+        "invalid_request" => "upstream rejected the request",
+        _ => "upstream stream reported an error",
+    }
+}
+
+/// Truncates and strips control characters so upstream text cannot forge log
+/// lines or inject terminal escapes into an operator console.
+fn log_safe(value: &str, max: usize) -> String {
+    value.chars().filter(|c| !c.is_control()).take(max).collect()
 }
 
 struct TraceSink {
@@ -8444,13 +8464,17 @@ impl SseStreamTransformer {
             return String::new();
         }
         self.terminal = true;
+        // The stored text keeps the real transport detail for the trace; the
+        // client gets the fixed message, because transport errors embed the
+        // upstream URL and provider ids.
+        let client_message = client_error_message("");
         match self.mode {
-            StreamTransform::ChatToResponse => self.chat_response.fail(message),
+            StreamTransform::ChatToResponse => self.chat_response.fail(client_message),
             StreamTransform::ResponseToChat => format!(
                 "data: {}\n\n",
                 json!({
                     "error": {
-                        "message": message,
+                        "message": client_message,
                         "type": "upstream_error",
                         "code": "stream_interrupted"
                     }
@@ -8460,7 +8484,7 @@ impl SseStreamTransformer {
                 self.anthropic.stopped = true;
                 sse_frame(
                     "error",
-                    &anthropic_error_value(StatusCode::BAD_GATEWAY, message),
+                    &anthropic_error_value(StatusCode::BAD_GATEWAY, client_message),
                 )
             }
             StreamTransform::None => sse_frame(
@@ -8468,7 +8492,7 @@ impl SseStreamTransformer {
                 &json!({
                     "type": "error",
                     "code": "upstream_error",
-                    "message": message,
+                    "message": client_message,
                     "param": Value::Null,
                     "sequence_number": 0
                 }),
@@ -8495,7 +8519,7 @@ impl SseStreamTransformer {
             .unwrap_or_default();
         if matches!(
             event_type,
-            "response.completed" | "response.failed" | "response.incomplete" | "error"
+            "response.completed" | "response.failed" | "response.incomplete" | "response.error" | "error"
         ) {
             self.terminal = true;
         }
@@ -8755,21 +8779,15 @@ impl SseStreamTransformer {
                 .unwrap_or(value);
             let upstream_code = value_string(detail.get("code")).unwrap_or_default();
             let upstream_message = value_string(detail.get("message")).unwrap_or_default();
-            // Upstream error text routinely embeds account ids, endpoint URLs and
-            // the request echo, so the full text stays in the trace and the client
-            // only receives a fixed message keyed by a known code.
+            // The full text goes to the trace journal, never to stderr verbatim:
+            // it can carry account ids and request echoes, and stderr is not
+            // covered by the journal's rotation or access rules.
             eprintln!(
-                "upstream stream error: code={} message={}",
-                trace_string(&upstream_code, 64),
-                trace_string(&upstream_message, 512)
+                "upstream stream error: code={} message_bytes={}",
+                log_safe(&upstream_code, 64),
+                upstream_message.len()
             );
-            let client_message = match upstream_code.as_str() {
-                "server_overloaded" => "upstream is at capacity, retry later",
-                "rate_limit_exceeded" => "upstream rate limit reached, retry later",
-                "content_filter" => "upstream rejected the request under its content policy",
-                "invalid_request" => "upstream rejected the request",
-                _ => "upstream stream reported an error",
-            };
+            let client_message = client_error_message(&upstream_code);
             let mut output = sse_frame(
                 "error",
                 &json!({
@@ -8899,8 +8917,17 @@ impl SseStreamTransformer {
             }
             "response.failed" | "response.error" | "error" => {
                 self.anthropic.stopped = true;
-                let message = value.pointer("/response/error/message").or_else(|| value.pointer("/error/message")).and_then(Value::as_str).unwrap_or("Upstream stream failed");
-                output.push_str(&sse_frame("error", &anthropic_error_value(StatusCode::BAD_GATEWAY, message)));
+                // Same redaction as the chat path: the client gets a fixed
+                // message keyed by the upstream code, never the upstream text.
+                let code = value
+                    .pointer("/response/error/code")
+                    .or_else(|| value.pointer("/error/code"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                output.push_str(&sse_frame(
+                    "error",
+                    &anthropic_error_value(StatusCode::BAD_GATEWAY, client_error_message(code)),
+                ));
             }
             _ => {}
         }
@@ -9126,8 +9153,13 @@ fn streaming_response(reply: StreamingReply) -> Response {
                     let message = stream_error
                         .clone()
                         .unwrap_or_else(|| "upstream stream ended before a terminal event".to_owned());
-                    stream_error = Some(message.clone());
-                    yield Ok::<Bytes, Infallible>(Bytes::from(state.failure_frame(&message)));
+                    // Transport errors embed the upstream URL, so they stay in the
+                    // log and the trace; the client gets the fixed message.
+                    eprintln!("upstream stream failure: {}", log_safe(&message, 512));
+                    stream_error = Some(message);
+                    yield Ok::<Bytes, Infallible>(Bytes::from(
+                        state.failure_frame(client_error_message("")),
+                    ));
                 }
             }
         } else {
@@ -17027,12 +17059,25 @@ mod tests {
                 .await
                 .unwrap();
             // The first body byte is a data-bearing keepalive so a proxied
-            // client receives headers before upstream prefill completes.
+            // client receives headers before upstream prefill completes. The
+            // terminal event must still arrive without waiting for the socket to
+            // close, so read until it shows up; the bound turns a never-delivered
+            // terminal into a failure instead of a hung test.
             let mut received = String::new();
-            while !received.contains(event) {
-                let chunk = response.chunk().await.unwrap().unwrap();
+            let mut last_name = String::new();
+            for _ in 0..64 {
+                let Some(chunk) = response.chunk().await.unwrap() else {
+                    break;
+                };
                 received.push_str(&String::from_utf8_lossy(&chunk));
+                if let Some((name, _)) = parse_sse_events(&received).pop() {
+                    last_name = name;
+                    if last_name == event {
+                        break;
+                    }
+                }
             }
+            assert_eq!(last_name, event, "{received}");
             drop(response);
 
             let traces = timeout(Duration::from_secs(2), async {
@@ -18297,8 +18342,12 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
     #[test]
     fn anthropic_stream_reports_failure_instead_of_successful_completion() {
         let mut converter = SseStreamTransformer::new(StreamTransform::ResponseToAnthropic,"model");
-        let output = converter.transform_anthropic_event(&json!({"type":"response.failed","response":{"error":{"message":"provider failed"}}}));
-        assert!(output.contains("event: error"));assert!(output.contains("provider failed"));assert!(!output.contains("event: message_stop"));assert!(converter.finish().is_empty());
+        let output = converter.transform_anthropic_event(&json!({"type":"response.failed","response":{"error":{"message":"provider failed for account acct_123 at https://upstream.example/v1"}}}));
+        assert!(output.contains("event: error"));assert!(!output.contains("event: message_stop"));assert!(converter.finish().is_empty());
+        // The client gets a fixed message; upstream text stays out of the frame.
+        assert!(!output.contains("provider failed"));
+        assert!(!output.contains("acct_123"));
+        assert!(output.contains("upstream stream reported an error"));
     }
 
     #[test]
