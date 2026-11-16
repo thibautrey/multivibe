@@ -173,7 +173,11 @@ export function createBridge(deps: BridgeDeps) {
     model: string,
     incoming: http.IncomingHttpHeaders,
     signal: AbortSignal,
-  ): Promise<{ reachable: boolean; admission?: EdgeAdmission; error?: "timeout" | "http" | "network" }> {
+  ): Promise<{
+    reachable: boolean;
+    admission?: EdgeAdmission;
+    error?: "timeout" | "http" | "network" | "credential";
+  }> {
     try {
       const response = await fetchImpl(`${base}/admission`, {
         method: "POST",
@@ -186,6 +190,12 @@ export function createBridge(deps: BridgeDeps) {
         // 404 on an edge that predates /v1/admission means "no admission
         // contract": treat it as reachable with no queue information.
         if (response.status === 404) return { reachable: true };
+        // A refused identity is not capacity pressure. Conflating the two would
+        // send every turn to Nous forever while the edge sits idle, and the
+        // operator would never learn that Access rejects the service token.
+        if (response.status === 401 || response.status === 403) {
+          return { reachable: false, error: "credential" };
+        }
         return { reachable: false, error: "http" };
       }
       const value = (await response.json()) as EdgeAdmission;
@@ -365,6 +375,17 @@ export function createBridge(deps: BridgeDeps) {
     if (conversation) {
       sticky.set(conversation, {
         until: upstream === "nous" ? at + config.nousStickinessMs : 0,
+      });
+    }
+    if (edge?.error === "credential") {
+      // Loud on purpose: this will not resolve itself and every turn is being
+      // paid for on the fallback until someone fixes the credential.
+      log({
+        kind: "error",
+        upstream,
+        reason: "edge_unavailable",
+        status: 401,
+        message: "the edge refused this machine's credentials; check the Access service token and API key",
       });
     }
     log({
