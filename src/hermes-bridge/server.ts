@@ -1,0 +1,388 @@
+/**
+ * The local OpenAI-compatible surface the harness talks to.
+ *
+ * Replaces nothing: the harness keeps its own tools, memory, skills and
+ * configuration. Only the base URL and key change, and they point at loopback.
+ */
+
+import http from "node:http";
+import { randomBytes, timingSafeEqual } from "node:crypto";
+
+import type { BridgeConfig, BridgeSecrets, ModelMapping } from "./config.js";
+import { isLoopbackHost, mapModel, redactSecrets } from "./config.js";
+import type { EdgeAdmission, Upstream } from "./upstream.js";
+import { routeTurn, type SwitchReason } from "./upstream.js";
+
+export type BridgeLogEvent = {
+  kind: "turn" | "switch" | "error" | "health";
+  /** Content-free: a model name and a reason, never a prompt or a token. */
+  upstream?: Upstream;
+  model?: string;
+  reason?: SwitchReason;
+  status?: number;
+  durationMs?: number;
+  message?: string;
+};
+
+export type BridgeDeps = {
+  config: BridgeConfig;
+  secrets: BridgeSecrets;
+  mappings: readonly ModelMapping[];
+  /** Reports one event. Implementations must never include prompt content. */
+  log?: (event: BridgeLogEvent) => void;
+  /** Injected for tests. */
+  fetchImpl?: typeof fetch;
+  now?: () => number;
+};
+
+type StickyEntry = { until: number };
+
+/** Reads the conversation key from the request without touching message bodies. */
+export function conversationKey(
+  headers: http.IncomingHttpHeaders,
+  body: Record<string, unknown>,
+): string | undefined {
+  const fromHeader = (name: string) => {
+    const value = headers[name];
+    return typeof value === "string" && value.trim() ? value.trim() : undefined;
+  };
+  const fromBody = body["prompt_cache_key"] ?? body["promptCacheKey"] ?? body["session_id"];
+  return (
+    fromHeader("session_id") ??
+    fromHeader("x-session-id") ??
+    fromHeader("thread-id") ??
+    (typeof fromBody === "string" && fromBody.trim() ? fromBody.trim() : undefined)
+  );
+}
+
+function constantTimeEqual(left: string, right: string): boolean {
+  const a = Buffer.from(left);
+  const b = Buffer.from(right);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+async function readBody(request: http.IncomingMessage, limit: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let length = 0;
+  for await (const chunk of request) {
+    const buffer = chunk as Buffer;
+    length += buffer.length;
+    if (length > limit) throw new Error("request body too large");
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
+function sendJson(response: http.ServerResponse, status: number, value: unknown): void {
+  const body = Buffer.from(JSON.stringify(value));
+  response.writeHead(status, {
+    "content-type": "application/json",
+    "content-length": String(body.length),
+    "cache-control": "no-store",
+  });
+  response.end(body);
+}
+
+/** Headers forwarded to the edge. Everything else is dropped. */
+const FORWARDED_HEADERS = [
+  "content-type",
+  "accept",
+  "session_id",
+  "x-session-id",
+  "thread-id",
+  "x-multivibe-priority",
+  "x-multivibe-execution",
+  "x-multivibe-max-wait-ms",
+  "x-multivibe-lease",
+] as const;
+
+export function edgeHeaders(secrets: BridgeSecrets, incoming: http.IncomingHttpHeaders): Record<string, string> {
+  const headers: Record<string, string> = {
+    authorization: `Bearer ${secrets.edgeApiKey}`,
+  };
+  if (secrets.accessClientId && secrets.accessClientSecret) {
+    headers["cf-access-client-id"] = secrets.accessClientId;
+    headers["cf-access-client-secret"] = secrets.accessClientSecret;
+  }
+  for (const name of FORWARDED_HEADERS) {
+    const value = incoming[name];
+    if (typeof value === "string" && value.length > 0) headers[name] = value;
+  }
+  return headers;
+}
+
+export function nousHeaders(secrets: BridgeSecrets, incoming: http.IncomingHttpHeaders): Record<string, string> {
+  const headers: Record<string, string> = {
+    authorization: `Bearer ${secrets.nousApiKey ?? ""}`,
+    "content-type": "application/json",
+  };
+  const accept = incoming["accept"];
+  if (typeof accept === "string" && accept.length > 0) headers.accept = accept;
+  return headers;
+}
+
+/**
+ * Create the bridge. The returned handle is `listen`-able and closable, and it
+ * exposes the sticky map so a restart starts clean rather than resurrecting an
+ * old routing decision.
+ */
+export function createBridge(deps: BridgeDeps) {
+  const { config, mappings, secrets } = deps;
+  if (!isLoopbackHost(config.host)) {
+    throw new Error("the bridge must bind to a loopback address");
+  }
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const now = deps.now ?? Date.now;
+  const log = deps.log ?? (() => undefined);
+  // One entry per conversation. Bounded so a long-lived machine cannot grow it
+  // without limit; entries are dropped on expiry and by age.
+  const sticky = new Map<string, StickyEntry>();
+  const localKey = randomBytes(32).toString("base64url");
+  const base = config.edgeBaseUrl.replace(/\/+$/, "");
+  const nous = config.nousBaseUrl.replace(/\/+$/, "");
+
+  function pruneSticky(at: number): void {
+    for (const [key, entry] of sticky) {
+      if (entry.until <= at) sticky.delete(key);
+    }
+    if (sticky.size > 4_096) {
+      const oldest = [...sticky.entries()]
+        .sort((left, right) => left[1].until - right[1].until)
+        .slice(0, sticky.size - 4_096);
+      for (const [key] of oldest) sticky.delete(key);
+    }
+  }
+
+  /** Ask the edge whether it has room, without blocking on a slot. */
+  async function probeEdge(
+    model: string,
+    incoming: http.IncomingHttpHeaders,
+    signal: AbortSignal,
+  ): Promise<{ reachable: boolean; admission?: EdgeAdmission; error?: "timeout" | "http" | "network" }> {
+    try {
+      const response = await fetchImpl(`${base}/admission`, {
+        method: "POST",
+        headers: { ...edgeHeaders(secrets, incoming), "content-type": "application/json" },
+        body: JSON.stringify({ model, switch_ok: true }),
+        signal,
+        redirect: "error",
+      });
+      if (!response.ok) {
+        // 404 on an edge that predates /v1/admission means "no admission
+        // contract": treat it as reachable with no queue information.
+        if (response.status === 404) return { reachable: true };
+        return { reachable: false, error: "http" };
+      }
+      const value = (await response.json()) as EdgeAdmission;
+      return { reachable: true, admission: value };
+    } catch (error) {
+      const name = (error as { name?: string }).name;
+      return { reachable: false, error: name === "AbortError" || name === "TimeoutError" ? "timeout" : "network" };
+    }
+  }
+
+  async function handle(
+    request: http.IncomingMessage,
+    response: http.ServerResponse,
+  ): Promise<void> {
+    const startedAt = now();
+    const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
+
+    if (url.pathname === "/health") {
+      sendJson(response, 200, {
+        ok: true,
+        mode: config.mode,
+        secrets: redactSecrets(secrets),
+        mappings: mappings.map((mapping) => mapping.from),
+      });
+      log({ kind: "health", status: 200 });
+      return;
+    }
+
+    // A local key means another process on this machine cannot spend the user's
+    // credentials by discovering port 8787.
+    const authorization = request.headers.authorization ?? "";
+    const presented = authorization.replace(/^Bearer\s+/i, "").trim();
+    if (!presented || !constantTimeEqual(presented, localKey)) {
+      sendJson(response, 401, {
+        error: { message: "invalid bridge key", type: "authentication_error", code: "invalid_api_key" },
+      });
+      return;
+    }
+
+    if (url.pathname === "/v1/models" || url.pathname === "/models") {
+      sendJson(response, 200, {
+        object: "list",
+        data: mappings.map((mapping) => ({ id: mapping.from, object: "model" })),
+      });
+      return;
+    }
+
+    const isChat = url.pathname.endsWith("/chat/completions");
+    const isResponses = url.pathname.endsWith("/responses");
+    if (!isChat && !isResponses) {
+      sendJson(response, 404, { error: { message: "not found", type: "invalid_request_error" } });
+      return;
+    }
+
+    let body: Record<string, unknown>;
+    try {
+      const raw = await readBody(request, 64 * 1024 * 1024);
+      body = JSON.parse(raw.toString("utf8")) as Record<string, unknown>;
+    } catch (error) {
+      sendJson(response, 400, {
+        error: { message: String((error as Error).message), type: "invalid_request_error" },
+      });
+      return;
+    }
+
+    const requestedModel = typeof body.model === "string" ? body.model : "";
+    if (!requestedModel) {
+      sendJson(response, 400, {
+        error: { message: "model is required", type: "invalid_request_error" },
+      });
+      return;
+    }
+    const conversation = conversationKey(request.headers, body);
+    const at = now();
+    pruneSticky(at);
+    const stickyUntilMs = conversation ? sticky.get(conversation)?.until : undefined;
+
+    // One bounded probe, then a single decision. Never a second decision after
+    // bytes have reached the harness.
+    const controller = AbortSignal.timeout(config.edgeAttemptTimeoutMs);
+    const edgeModel = mapModel(mappings, requestedModel, "edge");
+    const edge = edgeModel ? await probeEdge(edgeModel, request.headers, controller) : undefined;
+    const decision = routeTurn(config, mappings, {
+      requestedModel,
+      stickyUntilMs,
+      now: at,
+      edge,
+    });
+
+    if (decision.upstream === null) {
+      sendJson(response, 503, {
+        error: {
+          message: `No equivalent model is available for '${requestedModel}' on either upstream.`,
+          type: "invalid_request_error",
+          code: "no_equivalent_model",
+        },
+      });
+      log({ kind: "error", reason: decision.reason, status: 503 });
+      return;
+    }
+
+    const upstream = decision.upstream;
+    const target = upstream === "edge" ? `${base}${isChat ? "/chat/completions" : "/responses"}` : `${nous}${isChat ? "/chat/completions" : "/responses"}`;
+    const headers = upstream === "edge" ? edgeHeaders(secrets, request.headers) : nousHeaders(secrets, request.headers);
+    if (upstream === "edge" && edge?.admission?.lease) {
+      headers["x-multivibe-lease"] = edge.admission.lease;
+    }
+    const forwardBody = { ...body, model: decision.model };
+
+    let upstreamResponse: Response;
+    try {
+      upstreamResponse = await fetchImpl(target, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(forwardBody),
+        redirect: "error",
+      });
+    } catch (error) {
+      // The decision was taken before any byte was emitted, so a transport
+      // failure here may still fall back — this is the only legal retry.
+      if (upstream === "edge") {
+        const fallback = mapModel(mappings, requestedModel, "nous");
+        if (fallback && secrets.nousApiKey) {
+          try {
+            const retried = await fetchImpl(`${nous}${isChat ? "/chat/completions" : "/responses"}`, {
+              method: "POST",
+              headers: nousHeaders(secrets, request.headers),
+              body: JSON.stringify({ ...body, model: fallback }),
+              redirect: "error",
+            });
+            if (conversation) sticky.set(conversation, { until: at + config.nousStickinessMs });
+            log({ kind: "switch", upstream: "nous", reason: "edge_unavailable", status: retried.status });
+            await relay(retried, response, isChat);
+            return;
+          } catch {
+            /* fall through to the generic error below */
+          }
+        }
+      }
+      sendJson(response, 502, {
+        error: { message: String((error as Error).message), type: "upstream_error", code: "upstream_unavailable" },
+      });
+      log({ kind: "error", upstream, status: 502 });
+      return;
+    }
+
+    if (conversation) {
+      sticky.set(conversation, {
+        until: upstream === "nous" ? at + config.nousStickinessMs : 0,
+      });
+    }
+    log({
+      kind: "turn",
+      upstream,
+      model: decision.model,
+      reason: decision.reason,
+      status: upstreamResponse.status,
+      durationMs: now() - startedAt,
+    });
+    await relay(upstreamResponse, response, isChat);
+  }
+
+  return {
+    /** The key the harness must present. Printed once by `init`. */
+    localKey,
+    handler: handle,
+    server: http.createServer((request, response) => {
+      handle(request, response).catch((error: unknown) => {
+        if (!response.headersSent) {
+          sendJson(response, 500, { error: { message: String((error as Error).message) } });
+        } else {
+          response.destroy();
+        }
+        log({ kind: "error", status: 500, message: String((error as Error).message) });
+      });
+    }),
+    listening: config,
+    sticky,
+  };
+}
+
+/**
+ * Forward bytes as they arrive. Buffering a stream here would reintroduce the
+ * latency and idle-timeout problems the edge already solves.
+ */
+async function relay(
+  upstream: Response,
+  response: http.ServerResponse,
+  _isChat: boolean,
+): Promise<void> {
+  const headers: Record<string, string> = {};
+  // Only the headers a client needs; upstream auth and edge internals stay here.
+  for (const name of ["content-type", "x-multivibe-grace", "x-multivibe-admission"]) {
+    const value = upstream.headers.get(name);
+    if (value) headers[name] = value;
+  }
+  response.writeHead(upstream.status, { ...headers, "cache-control": "no-store" });
+  if (!upstream.body) {
+    response.end();
+    return;
+  }
+  const reader = upstream.body.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) response.write(Buffer.from(value));
+    }
+  } catch {
+    // The client went away or the upstream broke mid-stream. Either way there is
+    // nothing to recover: the turn is already counted as started.
+  } finally {
+    response.end();
+  }
+}

@@ -308,9 +308,25 @@ export type ApplicationWebhook = {
   createdAt: number;
 };
 
+export type ShareWindow = {
+  /** Inclusive local start hour, 0-23, in Europe/Paris. */
+  startHour: number;
+  /** Exclusive local end hour, 1-24. May wrap past midnight. */
+  endHour: number;
+  /** ISO weekdays, Monday = 1. Absent means every day. */
+  days?: number[];
+  multiplier: number;
+};
+
 export type ApplicationPolicy = {
   application: string;
   fairnessWeight: number;
+  /** Fraction of an account's slots this application may hold. */
+  maxConcurrentShare?: number;
+  /** Extra slots, only while no other application uses the account. */
+  burst?: number;
+  /** Periods that widen the share. Absent keeps the night/weekend default. */
+  shareWindows?: ShareWindow[];
   webhooks: ApplicationWebhook[];
 };
 

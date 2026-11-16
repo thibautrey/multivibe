@@ -550,6 +550,39 @@ export class AccountStore {
     const normalized: ApplicationPolicy = {
       application: policy.application,
       fairnessWeight: Math.max(0.1, Math.min(100, Number(policy.fairnessWeight) || 1)),
+      ...(policy.maxConcurrentShare === undefined
+        ? {}
+        : {
+            maxConcurrentShare: Math.max(
+              0,
+              Math.min(1, Number(policy.maxConcurrentShare) || 0),
+            ),
+          }),
+      ...(policy.burst === undefined
+        ? {}
+        : { burst: Math.max(0, Math.min(8, Math.trunc(Number(policy.burst) || 0))) }),
+      ...(policy.shareWindows === undefined
+        ? {}
+        : {
+            shareWindows: policy.shareWindows
+              .filter(
+                (window) =>
+                  Number.isInteger(window.startHour) &&
+                  Number.isInteger(window.endHour) &&
+                  window.startHour >= 0 &&
+                  window.startHour < 24 &&
+                  window.endHour > 0 &&
+                  window.endHour <= 24 &&
+                  window.startHour !== window.endHour &&
+                  Number.isFinite(window.multiplier),
+              )
+              .map((window) => ({
+                startHour: window.startHour,
+                endHour: window.endHour,
+                ...(window.days?.length ? { days: [...window.days] } : {}),
+                multiplier: Math.max(1, Math.min(8, window.multiplier)),
+              })),
+          }),
       webhooks: policy.webhooks.map((webhook) => ({ ...webhook })),
     };
     const index = this.inMemoryApplicationPolicies.findIndex(

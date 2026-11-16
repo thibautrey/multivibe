@@ -24,6 +24,7 @@ import type {
   CapacityProfile,
   ModelAlias,
   ApplicationWebhook,
+  ApplicationPolicy,
   UpstreamMode,
   StoreSettings,
 } from "../../types.js";
@@ -1104,9 +1105,46 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     if (!Number.isFinite(fairnessWeight) || fairnessWeight < 0.1 || fairnessWeight > 100) {
       return res.status(400).json({ error: "fairnessWeight must be between 0.1 and 100" });
     }
+    // Admission share fields are optional: omitting one preserves the stored
+    // value, while sending null explicitly clears it back to the default.
+    const share = <K extends "maxConcurrentShare" | "burst" | "shareWindows">(
+      key: K,
+    ): ApplicationPolicy[K] | null | undefined => {
+      if (!(key in (req.body ?? {}))) return current[key];
+      return req.body[key] === null ? null : req.body[key];
+    };
+    const maxConcurrentShare = share("maxConcurrentShare");
+    if (
+      maxConcurrentShare !== undefined &&
+      maxConcurrentShare !== null &&
+      (!Number.isFinite(Number(maxConcurrentShare)) ||
+        Number(maxConcurrentShare) < 0 ||
+        Number(maxConcurrentShare) > 1)
+    ) {
+      return res.status(400).json({ error: "maxConcurrentShare must be between 0 and 1" });
+    }
+    const burst = share("burst");
+    if (
+      burst !== undefined &&
+      burst !== null &&
+      (!Number.isInteger(Number(burst)) || Number(burst) < 0 || Number(burst) > 8)
+    ) {
+      return res.status(400).json({ error: "burst must be an integer between 0 and 8" });
+    }
+    const shareWindows = share("shareWindows");
+    if (shareWindows !== undefined && shareWindows !== null && !Array.isArray(shareWindows)) {
+      return res.status(400).json({ error: "shareWindows must be an array" });
+    }
     const policy = await store.upsertApplicationPolicy({
       ...current,
       fairnessWeight,
+      ...(maxConcurrentShare === undefined
+        ? {}
+        : { maxConcurrentShare: maxConcurrentShare ?? undefined }),
+      ...(burst === undefined ? {} : { burst: burst ?? undefined }),
+      ...(shareWindows === undefined
+        ? {}
+        : { shareWindows: shareWindows ?? undefined }),
     });
     res.json({
       ok: true,
