@@ -513,6 +513,9 @@ export class TraceAnalyticsStore {
     const dimensions = [new Map<string, UsageAggregate>(), new Map<string, UsageAggregate>(), new Map<string, UsageAggregate>(), new Map<string, UsageAggregate>()];
     const keyMeta = new Map<string, { application?: string; keyPreview?: string }>();
     const projects = new Map<string, { meta: TraceEntry; usage: MutableUsage; models: Map<string, MutableUsage>; firstAt?: number; lastAt?: number }>();
+    // API keys need the same money/percentile dimensions as projects, which the
+    // plain UsageAggregate does not carry.
+    const apiKeys = new Map<string, { usage: MutableUsage; firstAt?: number; lastAt?: number }>();
     const merge = (r: Rollup) => {
       if (!matches(r.meta, args)) return;
       mergeUsage(global, r.usage);
@@ -528,6 +531,10 @@ export class TraceAnalyticsStore {
       const model = r.meta.model || "unknown"; const m = p.models.get(model) ?? emptyUsage(); mergeProject(m, r.project); p.models.set(model, m);
       p.firstAt = Math.min(p.firstAt ?? MAX, r.usage.firstAt ?? MAX); p.lastAt = Math.max(p.lastAt ?? MIN, r.usage.lastAt ?? MIN);
       projects.set(key, p);
+      const k = apiKeys.get(keyId) ?? { usage: emptyUsage() };
+      mergeProject(k.usage, r.project);
+      k.firstAt = Math.min(k.firstAt ?? MAX, r.usage.firstAt ?? MAX); k.lastAt = Math.max(k.lastAt ?? MIN, r.usage.lastAt ?? MIN);
+      apiKeys.set(keyId, k);
     };
     for (const row of this.db.prepare("SELECT payload FROM usage_buckets WHERE at>=? AND at<? ORDER BY at,key").iterate(firstFull, fullEnd) as Iterable<any>) merge(JSON.parse(row.payload));
     for (const t of edge) if (attempt(t)) { const usage = createUsageAggregate(); addTraceToAggregate(usage, t); const project = emptyUsage(); addTrace(project, t); merge({ meta: t, usage, project, sessionAttempts: sessionKeyOf(t) ? 1 : 0 }); }
@@ -535,8 +542,12 @@ export class TraceAnalyticsStore {
     const byProject = [...projects].map(([projectId, p]) => ({ projectId, projectName: p.meta.projectName, projectRemote: p.meta.projectRemote, firstAt: p.firstAt, lastAt: p.lastAt, ...finalizeUsage(p.usage), models: [...p.models].map(([model, value]) => ({ model, ...finalizeUsage(value) })).sort((a,b) => b.costUsd-a.costUsd || b.requests-a.requests) })).sort((a,b) => b.costUsd-a.costUsd || b.requests-a.requests);
     const [since, until] = bounds(args);
     const tracesEvaluated = (this.db.prepare("SELECT count(*) AS n FROM entries WHERE at>=? AND at<=?").get(since, until) as any).n;
-    const byApiKey = ([...dimensions[3]].map(([apiKeyId, agg]) => ({ apiKeyId, ...(keyMeta.get(apiKeyId) ?? {}), ...finalizeAggregate(agg) })) as Array<Record<string, unknown>>)
-      .sort((a, b) => Number(b.requests) - Number(a.requests));
+    const byApiKey = [...apiKeys]
+      .map(([apiKeyId, k]) => {
+        const meta = apiKeyId === "unattributed" ? {} : (keyMeta.get(apiKeyId) ?? {});
+        return { apiKeyId, ...meta, firstAt: k.firstAt, lastAt: k.lastAt, ...finalizeUsage(k.usage) };
+      })
+      .sort((a, b) => b.costUsd - a.costUsd || b.requests - a.requests || a.apiKeyId.localeCompare(b.apiKeyId));
     return { totals: finalizeAggregate(global), byAccount: by(0, "accountId"), byRoute: by(1, "route"), byApplication: by(2, "application"), byApiKey, byProject, tracesEvaluated, tracesMatched: global.requests };
   }
 

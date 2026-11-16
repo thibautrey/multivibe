@@ -226,6 +226,15 @@ test("API key attribution: byApiKey, filters and legacy schema upgrade", async t
   assert.equal(byKey.get("11111111-2222-4333-8444-555555555555").requests, 1);
   assert.equal(byKey.get("11111111-2222-4333-8444-555555555555").application, "harness-opencode");
   assert.equal(byKey.get("unattributed").requests, 1, "keyless calls stay visible");
+  // Key rows must expose the project-grade money and percentile dimensions.
+  for (const field of ["costUsd", "requestsWithCost", "unpricedRequests", "avgLatencyMs", "latencyP50Ms", "latencyP95Ms", "firstAt", "lastAt"]) {
+    assert.ok(field in byKey.get("configured:codex"), `byApiKey exposes ${field}`);
+  }
+  assert.ok(Math.abs(byKey.get("configured:codex").costUsd - 0.3) < 1e-12);
+  assert.equal(byKey.get("unattributed").application, undefined, "unattributed is not an application");
+  const summedCost = (usage.byApiKey as any[]).reduce((sum, entry) => sum + entry.costUsd, 0);
+  const byProjectCost = (usage.byProject as any[]).reduce((sum, entry) => sum + entry.costUsd, 0);
+  assert.ok(Math.abs(summedCost - byProjectCost) < 1e-9, "per-key costs reconcile with the project range total");
 
   // Aggregated hourly rollups must honour the narrowing filter, not just raw edges.
   const filtered = f.store.usage({ apiKeyId: "configured:codex" });
