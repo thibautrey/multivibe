@@ -63,8 +63,16 @@ credential failure — which is the honest answer.
 Zero Trust → **Access → Service Auth → Create Service Token**, name
 `hermes-bridge-<client>`. The client id and secret are shown **once**.
 
-Deliver them through the enrollment exchange, never through the prompt text: the
-prompt carries only the `mvenr_` code, which is single-use and expires.
+Provision them **out of band**, before enrolment: create the token in the
+dashboard, then hand the client its id in the prompt and its secret in a `0600`
+file on that machine. The enrollment exchange does **not** mint them — it issues
+only the edge API key, because Access tokens are per-host infrastructure that must
+exist before the machine can reach a gated surface at all. Putting one in the
+exchange response would also mean storing a Cloudflare credential in the edge's
+store, where it does not belong.
+
+The prompt therefore carries only the `mvenr_` code plus the client id; the
+client passes the pair with `--access-id` / `--access-secret`.
 
 The bridge sends them as:
 
