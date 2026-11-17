@@ -15,13 +15,15 @@ import { routeTurn, type SwitchReason } from "./upstream.js";
 import { subscribeCapacityStream, type CapacityStream } from "./capacity-stream.js";
 
 export type BridgeLogEvent = {
-  kind: "turn" | "switch" | "error" | "health";
+  kind: "turn" | "switch" | "error" | "health" | "queue";
   /** Content-free: a model name and a reason, never a prompt or a token. */
   upstream?: Upstream;
   model?: string;
   reason?: SwitchReason;
   status?: number;
   durationMs?: number;
+  /** How far ahead the edge says the queue is. Content-free, like the rest. */
+  waitMs?: number;
   message?: string;
 };
 
@@ -85,12 +87,18 @@ async function readBody(request: http.IncomingMessage, limit: number): Promise<B
   return Buffer.concat(chunks);
 }
 
-function sendJson(response: http.ServerResponse, status: number, value: unknown): void {
+function sendJson(
+  response: http.ServerResponse,
+  status: number,
+  value: unknown,
+  extraHeaders?: Record<string, string>,
+): void {
   const body = Buffer.from(JSON.stringify(value));
   response.writeHead(status, {
     "content-type": "application/json",
     "content-length": String(body.length),
     "cache-control": "no-store",
+    ...extraHeaders,
   });
   response.end(body);
 }
@@ -361,12 +369,29 @@ export function createBridge(deps: BridgeDeps) {
     });
 
     if (decision.upstream === null) {
+      // `edge-first` inside its own budget asked to wait, not to fail. The model
+      // exists on both sides; answering "no equivalent model" would be a lie and
+      // would send the harness hunting a mapping problem that is not there.
+      if (decision.reason === "edge_queued") {
+        const waitMs = edge?.admission?.waitMs ?? 0;
+        sendJson(response, 503, {
+          error: {
+            message:
+              `The edge is busy; this turn was set to wait up to ${config.maxQueueWaitMs} ms ` +
+              `but the queue is ${waitMs} ms deep. Retry shortly, or use mode 'nous-first'.`,
+            type: "service_unavailable",
+            code: "edge_queued",
+          },
+        }, { "retry-after": String(Math.max(1, Math.ceil(waitMs / 1000))) });
+        log({ kind: "queue", reason: "edge_queued", status: 503, waitMs });
+        return;
+      }
       if (decision.reason === "no_equivalent_model") counters.blockedNoMapping += 1;
       sendJson(response, 503, {
         error: {
           message: `No equivalent model is available for '${requestedModel}' on either upstream.`,
           type: "invalid_request_error",
-          code: "no_equivalent_model",
+          code: decision.reason === "no_equivalent_model" ? "no_equivalent_model" : decision.reason,
         },
       });
       log({ kind: "error", reason: decision.reason, status: 503 });
