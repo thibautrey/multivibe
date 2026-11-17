@@ -81,6 +81,29 @@ export function stateDirectory(platform: NodeJS.Platform = process.platform): st
 
 const MODES = ["nous-first", "edge-first", "nous-only", "edge-only"] as const;
 
+/**
+ * Normalize an operator-supplied edge URL into the inference base.
+ *
+ * The prompt tells a client to pass `--edge https://host`, because that is the
+ * one URL a human reads off a screen; the code needs `https://host/v1`. Accept
+ * both so neither form can silently break routing. A trailing slash is
+ * tolerated for the same reason.
+ */
+export function inferenceBaseUrl(raw: string): string {
+  const trimmed = raw.trim().replace(/\/+$/, "");
+  return /\/v1$/i.test(trimmed) ? trimmed : `${trimmed}/v1`;
+}
+
+/**
+ * Derive the enrollment base from the same operator input.
+ *
+ * Enrollment lives **outside** `/v1`, so this is the inverse of
+ * `inferenceBaseUrl`: strip the suffix if the operator included it.
+ */
+export function enrollmentBaseUrl(raw: string): string {
+  return raw.trim().replace(/\/+$/, "").replace(/\/v1$/i, "");
+}
+
 export async function loadConfig(args: ParsedArgs): Promise<BridgeConfig> {
   const directory = stateDirectory();
   let stored: Partial<BridgeConfig> = {};
@@ -106,14 +129,23 @@ export async function loadConfig(args: ParsedArgs): Promise<BridgeConfig> {
     mode: mode as BridgeConfig["mode"],
     port,
     mappings: stored.mappings ?? [],
-    ...(edge ? { edgeBaseUrl: edge } : {}),
+    // `--edge` is documented as accepting the host or the full inference base,
+    // and the enrollment prompt passes the bare hostname. Storing it verbatim
+    // silently drops the `/v1` every edge route needs, so every probe 404s and
+    // `nous-first` concludes the edge is unreachable: the bridge would then
+    // answer every turn from Nous while the edge sat idle.
+    //
+    // Normalized on load as well as on input: a machine enrolled before this
+    // fix has `https://host` already persisted in `config.json`, and reading it
+    // back verbatim would keep every probe 404ing for the life of the install.
+    edgeBaseUrl: inferenceBaseUrl(edge ?? stored.edgeBaseUrl ?? DEFAULT_BRIDGE_CONFIG.edgeBaseUrl),
     // `--edge` is the only URL an operator normally supplies, so the enrollment
     // base follows it unless it is given explicitly. Without this the command
     // silently targets production while the operator pointed at a test edge.
     ...(enroll
       ? { enrollBaseUrl: enroll }
       : edge
-        ? { enrollBaseUrl: edge.replace(/\/+$/, "").replace(/\/v1$/i, "") }
+        ? { enrollBaseUrl: enrollmentBaseUrl(edge) }
         : {}),
     ...(nous ? { nousBaseUrl: nous } : {}),
   };
