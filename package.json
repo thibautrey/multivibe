@@ -33,6 +33,7 @@
     "start:injector": "node dist/managed/injector-main.js",
     "start:managed": "node dist/managed/main.js",
     "catalog:sdk:refresh": "node scripts/refresh-ai-sdk-catalog.mjs",
+    "hermes:enrollment-prompt": "node scripts/hermes-enrollment-prompt.mjs",
     "demo": "npm --prefix web run demo",
     "test:integration:cloud": "cargo build -p multivibe-v1-edge && node --import tsx --test test-integration/cloud-core.test.mjs",
     "start:hermes-bridge": "node dist/hermes-bridge/bin.js",
