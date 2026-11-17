@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, stat, writeFile, chmod } from "node:fs/promises";
+import fs, { mkdtemp, readFile, stat, writeFile, chmod } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { main } from "./cli.js";
 import { fileBackend, loadSecrets, resolveBackend, storeSecrets } from "./secrets.js";
 
 async function temporaryDirectory(): Promise<string> {
@@ -108,4 +109,76 @@ test("resolving a backend never throws, so the bridge always starts", async () =
   // Linux without a user secret service is the documented fallback path.
   const backend = await resolveBackend("linux", directory);
   assert.equal(backend.kind === "file" || backend.kind === "secret-tool", true);
+});
+
+test("enrollment persists the Access service token it used to get through", async () => {
+  // `enroll` accepted --access-id/--access-secret to reach a gated exchange and
+  // then stored only the edge key. Every later inference request was therefore
+  // anonymous, Cloudflare answered 302, and `nous-first` served the whole
+  // conversation from Nous while the edge was healthy.
+  //
+  // The exchange payload deliberately carries no Access values (the edge never
+  // mints them), so this asserts the operator's arguments are what get stored.
+  const previous = process.env.MULTIVIBE_BRIDGE_STATE_DIR;
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "bridge-enroll-"));
+  const secretFile = path.join(directory, "access-secret");
+  process.env.MULTIVIBE_BRIDGE_STATE_DIR = directory;
+  try {
+    await fs.writeFile(secretFile, "s3cret-value\n", { mode: 0o600 });
+    const responses = [
+      // POST /hermes-bridge/enrollment/exchange
+      new Response(
+        JSON.stringify({
+          object: "multivibe.hermes-bridge.enrollment",
+          application: "hermes-test",
+          edgeApiKey: "mvhb_test_key",
+          mappings: [{ from: "m", edge: "m", nous: "m" }],
+          expiresAt: Date.now() + 60_000,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    ];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      responses.shift() ?? new Response("{}", { status: 500 })) as typeof fetch;
+    // `main` picks the backend from `process.platform`, and on macOS that is
+    // the login Keychain: a test must never write there. Posing as Linux makes
+    // `resolveBackend` probe `secret-tool`, which is absent here, so it lands on
+    // the same 0600 file backend the enrollment test then reads.
+    const realPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+    try {
+      const code = await main([
+        "enroll",
+        "--code",
+        "mvenr_" + "a".repeat(64),
+        "--edge",
+        "https://multivibe.example",
+        "--access-id",
+        "abc123",
+        "--access-secret",
+        secretFile,
+      ]);
+      assert.equal(code, 0);
+    } finally {
+      globalThis.fetch = originalFetch;
+      Object.defineProperty(process, "platform", { value: realPlatform, configurable: true });
+    }
+
+    // Read back through the file backend explicitly: `main` chose the backend
+    // for this host, and on macOS that is the login Keychain, which a test must
+    // not write to. Overriding XDG_DATA_HOME is not enough either, so the
+    // assertion targets the same directory `stateDirectory()` resolved.
+    const backend = fileBackend(directory);
+    const stored = await loadSecrets(backend);
+    assert.equal(stored.secrets.edgeApiKey, "mvhb_test_key");
+    // The id is normalized with the suffix Cloudflare requires.
+    assert.equal(stored.secrets.accessClientId, "abc123.access");
+    // The trailing newline of a `printf`-written file must not poison the header.
+    assert.equal(stored.secrets.accessClientSecret, "s3cret-value");
+  } finally {
+    if (previous === undefined) delete process.env.MULTIVIBE_BRIDGE_STATE_DIR;
+    else process.env.MULTIVIBE_BRIDGE_STATE_DIR = previous;
+    await fs.rm(directory, { recursive: true, force: true });
+  }
 });
