@@ -196,3 +196,43 @@ test("native installer health probes reject stalled responses and wrong versions
     });
   }
 });
+
+test("Windows zip extraction avoids the Expand-Archive overload that is missing on .NET Framework", () => {
+  // Windows PowerShell 5.1's `Expand-Archive` calls
+  // `ZipFile.ExtractToDirectory(source, destination, overwrite)` — a three-argument
+  // overload that only exists on .NET Core. On .NET Framework it throws "Cannot
+  // find an overload for ExtractToDirectory and the argument count: 3", which
+  // failed the v0.2.147 release on the Windows runner. Both extractors must call
+  // the two-argument overload directly.
+  return Promise.all([
+    read("scripts/provider-host/package-provider-host.mjs"),
+    read("scripts/provider-host/verify-provider-host.mjs"),
+  ]).then(([packager, verifier]) => {
+    for (const [name, source] of [["packager", packager], ["verifier", verifier]]) {
+      // Only the *code* matters: the comments above each extractor name the
+      // cmdlet to explain why it is not used, and a naive scan would flag them.
+      const code = source
+        .split("\n")
+        .filter((line) => !line.trimStart().startsWith("//"))
+        .join("\n");
+      assert.doesNotMatch(code, /Expand-Archive|Compress-Archive/u, `${name} must not call Expand-Archive`);
+      assert.match(code, /\[System\.IO\.Compression\.ZipFile\]::ExtractToDirectory\(/u);
+      assert.match(code, /Add-Type -AssemblyName System\.IO\.Compression\.FileSystem/u);
+    }
+  });
+});
+
+test("the release workflow pins a Go toolchain without the stdlib vuln it scans for", async () => {
+  // `govulncheck` runs before packaging and fails on any *reachable* stdlib
+  // vulnerability, so the pinned version must be >= the fix for GO-2026-6859
+  // (fixed in 1.26.11). Pinning a vulnerable toolchain makes every release fail.
+  const workflow = await read(".github/workflows/provider-host-release.yml");
+  const match = /GO_VERSION:\s*"(\d+)\.(\d+)\.(\d+)"/u.exec(workflow);
+  assert.ok(match, "GO_VERSION must stay pinned");
+  const [, major, minor, patch] = match.map(Number);
+  const atLeastFix =
+    major > 1 ||
+    (major === 1 && minor > 26) ||
+    (major === 1 && minor === 26 && patch >= 11);
+  assert.ok(atLeastFix, `GO_VERSION ${major}.${minor}.${patch} is below the 1.26.11 fix for GO-2026-6859`);
+});

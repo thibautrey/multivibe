@@ -237,8 +237,14 @@ async function extractTar(archive, destination, format, profile, maximumFileByte
 }
 
 async function extractZip(archive, destination) {
+  // Same reason as the verifier's extractor: Windows PowerShell 5.1's
+  // `Expand-Archive` calls a three-argument `ExtractToDirectory` overload that
+  // does not exist on .NET Framework, so packaging a Windows archive failed
+  // outright. Use the two-argument overload, which every .NET Framework has.
   await runWindowsPowerShell(
-    "$ErrorActionPreference = 'Stop'; Expand-Archive -LiteralPath $env:MULTIVIBE_PACKAGE_ZIP_SOURCE -DestinationPath $env:MULTIVIBE_PACKAGE_ZIP_DESTINATION -Force",
+    "$ErrorActionPreference = 'Stop'; " +
+      "Add-Type -AssemblyName System.IO.Compression.FileSystem; " +
+      "[System.IO.Compression.ZipFile]::ExtractToDirectory($env:MULTIVIBE_PACKAGE_ZIP_SOURCE, $env:MULTIVIBE_PACKAGE_ZIP_DESTINATION)",
     {
       MULTIVIBE_PACKAGE_ZIP_SOURCE: archive,
       MULTIVIBE_PACKAGE_ZIP_DESTINATION: destination,
