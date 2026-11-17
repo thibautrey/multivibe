@@ -45,6 +45,9 @@ alternatives, but they are optional hardening, not a prerequisite. Do not open
 Configure the enrollment URL on the client with `--edge` at enroll time, or by
 writing `edgeBaseUrl` into the bridge config.
 
+The full operator flow — issue a code, render the prompt, offboard a machine — is
+in `docs/hermes-remote-capacity.md`, section "Onboarding a client".
+
 ## Create the application
 
 1. Zero Trust → **Access → Applications → Add an application → Self-hosted**.
