@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { DEFAULT_BRIDGE_CONFIG, mapModel, isLoopbackHost, type BridgeConfig, type ModelMapping } from "./config.js";
+import { DEFAULT_BRIDGE_CONFIG, deriveNousModel, mapModel, isLoopbackHost, type BridgeConfig, type ModelMapping } from "./config.js";
 import { canSwitchAfterFirstByte, routeTurn } from "./upstream.js";
 
 const MAPPINGS: ModelMapping[] = [
@@ -143,4 +143,23 @@ test("an explicit switch request is honoured in either mode", () => {
 
 test("a turn can never change upstream after its first byte", () => {
   assert.equal(canSwitchAfterFirstByte(), false);
+});
+
+test("the Nous identifier is derived from its own catalogue, never guessed", async () => {
+  // Nous qualifies hosted models as `vendor/name` while the edge often serves the
+  // bare `name`. Deriving the correspondence from `GET /v1/models` turns a human
+  // decision into a lookup, but only a *hit* counts: an invented mapping would
+  // silently change which model answers.
+  const catalogue = ["deepseek/deepseek-v4.1-flash", "openai/gpt-5.6", "z-ai/glm-5.3"];
+
+  assert.equal(deriveNousModel("deepseek-v4.1-flash", catalogue), "deepseek/deepseek-v4.1-flash");
+  assert.equal(deriveNousModel("deepseek-v4.1-flash", ["deepseek/deepseek-chat"]), undefined);
+  // Already-qualified names resolve to themselves when Nous lists them.
+  assert.equal(deriveNousModel("openai/gpt-5.6", catalogue), "openai/gpt-5.6");
+  assert.equal(deriveNousModel("z-ai/glm-5.3", catalogue), "z-ai/glm-5.3");
+  // A model Nous does not host must stay unmapped: the bridge waits instead.
+  assert.equal(deriveNousModel("gpt-5.6", []), undefined);
+  assert.equal(deriveNousModel("gpt-5.6", ["openai/gpt-5"]), undefined);
+  // An empty request is not a model.
+  assert.equal(deriveNousModel("", catalogue), undefined);
 });
