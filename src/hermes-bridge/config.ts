@@ -126,6 +126,52 @@ export function mapModel(
 }
 
 /**
+ * Which Nous identifiers are the same model as an edge identifier.
+ *
+ * Nous publishes its catalogue at `GET /v1/models` without authentication and
+ * names a model `vendor/name`, while the edge often exposes the bare `name`.
+ * That makes the correspondence mechanical rather than a judgement call:
+ * `deepseek-v4.1-flash` on the edge is `deepseek/deepseek-v4.1-flash` on Nous.
+ *
+ * This is still a lookup against a real catalogue, not a heuristic. A candidate
+ * that Nous does not list is never returned: an invented mapping would silently
+ * change which model answers, and a wrong answer is worse than a wait.
+ */
+export function nousCandidates(edgeModel: string): string[] {
+  const trimmed = edgeModel.trim();
+  if (!trimmed) return [];
+  const candidates = [trimmed];
+  if (trimmed.includes("/")) {
+    candidates.push(trimmed.slice(trimmed.indexOf("/") + 1));
+  } else {
+    // Nous qualifies every hosted model with its vendor. The prefix is not
+    // knowable from the bare name, so this widening is only a *candidate*: the
+    // catalogue decides.
+    for (const vendor of ["deepseek", "openai", "anthropic", "google", "meta-llama", "qwen", "mistralai", "moonshotai", "z-ai"]) {
+      candidates.push(`${vendor}/${trimmed}`);
+    }
+  }
+  return [...new Set(candidates)];
+}
+
+/**
+ * Pick the Nous identifier for an edge model from a live catalogue.
+ *
+ * Returns `undefined` when Nous does not list any candidate, which callers must
+ * treat as "wait" — never as an excuse to keep the edge name.
+ */
+export function deriveNousModel(
+  edgeModel: string,
+  nousModelIds: readonly string[],
+): string | undefined {
+  const available = new Set(nousModelIds);
+  for (const candidate of nousCandidates(edgeModel)) {
+    if (available.has(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+/**
  * Whether the loopback bind is safe. A bridge reachable from the LAN would let
  * any device spend the user's credentials, so only loopback is accepted.
  */
