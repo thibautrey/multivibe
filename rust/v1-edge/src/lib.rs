@@ -781,6 +781,74 @@ struct CachedStore {
     data: StoreFile,
 }
 
+/// Advisory cross-process lock on the account store.
+///
+/// `accounts.json` has two writers in the shipped container: this edge and the
+/// Node control plane (`start-multivibe.sh` starts both). Each rewrites the
+/// whole document from its own memory, so an unlocked read-modify-write in
+/// either one silently deletes the other's additions — which is exactly how an
+/// enrolled application's API key used to disappear seconds after being
+/// issued. The lock is a single `O_EXCL` file held across the read *and* the
+/// write; the name matches the Node implementation in `src/store.ts` so both
+/// processes contend on the same object.
+///
+/// A lock older than `STORE_LOCK_STALE` is broken so a crashed writer cannot
+/// wedge the store forever.
+const STORE_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
+const STORE_LOCK_STALE: Duration = Duration::from_secs(30);
+
+struct StoreFileLock {
+    path: PathBuf,
+    _file: std::fs::File,
+}
+
+impl StoreFileLock {
+    async fn acquire(store_path: &std::path::Path) -> Result<Self, String> {
+        let path = PathBuf::from(format!("{}.lock", store_path.display()));
+        let deadline = Instant::now() + STORE_LOCK_TIMEOUT;
+        loop {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&path)
+            {
+                Ok(file) => return Ok(Self { path, _file: file }),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let stale = std::fs::metadata(&path)
+                        .and_then(|meta| meta.modified())
+                        .ok()
+                        .and_then(|modified| modified.elapsed().ok())
+                        .is_some_and(|age| age > STORE_LOCK_STALE);
+                    if stale {
+                        let _ = std::fs::remove_file(&path);
+                        continue;
+                    }
+                    if Instant::now() > deadline {
+                        return Err(format!(
+                            "account store lock is held: {}",
+                            path.display()
+                        ));
+                    }
+                    tokio::time::sleep(Duration::from_millis(15)).await;
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "failed to take account store lock {}: {error}",
+                        path.display()
+                    ));
+                }
+            }
+        }
+    }
+}
+
+impl Drop for StoreFileLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 impl AccountStore {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self {
@@ -813,6 +881,30 @@ impl AccountStore {
         Ok(data)
     }
 
+    /// Read the store while holding the cross-process lock.
+    ///
+    /// `snapshot` trusts an unchanged mtime, which is correct for readers but
+    /// wrong for a writer that just waited on the lock: the other process may
+    /// have rewritten the file inside the same second on a coarse filesystem.
+    /// A writer always re-reads, so it can never base a write on a document it
+    /// has already been told is stale.
+    async fn reload_locked(&self) -> Result<StoreFile, String> {
+        let raw = fs::read(self.path.as_ref())
+            .await
+            .map_err(|error| format!("failed to read account store: {error}"))?;
+        let data = serde_json::from_slice::<StoreFile>(&raw)
+            .map_err(|error| format!("failed to parse account store: {error}"))?;
+        let modified = fs::metadata(self.path.as_ref())
+            .await
+            .ok()
+            .and_then(|meta| meta.modified().ok());
+        *self.cache.write().await = Some(CachedStore {
+            modified,
+            data: data.clone(),
+        });
+        Ok(data)
+    }
+
     /// Atomically add a proxy API key and its application policy.
     ///
     /// Enrollment must be exactly-once: the code is consumed and the credential
@@ -825,7 +917,8 @@ impl AccountStore {
         windows: Option<Vec<StoredShareWindow>>,
     ) -> Result<(), String> {
         let _guard = self.write_lock.lock().await;
-        let mut data = self.snapshot().await?;
+        let _file_lock = StoreFileLock::acquire(self.path.as_ref()).await?;
+        let mut data = self.reload_locked().await?;
         if data
             .proxy_api_keys
             .iter()
@@ -882,7 +975,8 @@ impl AccountStore {
         F: FnOnce(&mut Account),
     {
         let _guard = self.write_lock.lock().await;
-        let mut data = self.snapshot().await?;
+        let _file_lock = StoreFileLock::acquire(self.path.as_ref()).await?;
+        let mut data = self.reload_locked().await?;
         let account = data
             .accounts
             .iter_mut()
