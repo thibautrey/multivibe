@@ -48,6 +48,61 @@ async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
   await fs.chmod(filePath, 0o600);
 }
 
+/**
+ * Advisory cross-process lock on the account store.
+ *
+ * `accounts.json` has two writers in the shipped container: this Node process
+ * and the Rust edge (`start-multivibe.sh` starts both). Each rewrites the whole
+ * document from its own memory, so an unlocked read-modify-write in either
+ * one silently deletes the other's additions. A single O_EXCL lock file, taken
+ * for the read *and* the write, is what makes "last writer wins" impossible.
+ *
+ * The file is not `fs.open`-locked because Node has no portable advisory lock;
+ * `wx` creation is atomic on every filesystem this ships on. A lock older than
+ * `STORE_LOCK_STALE_MS` is broken so a crashed writer cannot wedge the store.
+ */
+const STORE_LOCK_TIMEOUT_MS = 10_000;
+const STORE_LOCK_STALE_MS = 30_000;
+
+export function storeLockPath(filePath: string): string {
+  return `${filePath}.lock`;
+}
+
+export async function withStoreLock<T>(
+  filePath: string,
+  work: () => Promise<T>,
+): Promise<T> {
+  const lockPath = storeLockPath(filePath);
+  const deadline = Date.now() + STORE_LOCK_TIMEOUT_MS;
+  let handle: Awaited<ReturnType<typeof fs.open>> | null = null;
+  while (handle === null) {
+    try {
+      handle = await fs.open(lockPath, "wx", 0o600);
+    } catch (error: any) {
+      if (error?.code !== "EEXIST") throw error;
+      const age = await fs
+        .stat(lockPath)
+        .then((stat) => Date.now() - stat.mtimeMs)
+        .catch(() => Number.POSITIVE_INFINITY);
+      if (age > STORE_LOCK_STALE_MS) {
+        await fs.unlink(lockPath).catch(() => undefined);
+        continue;
+      }
+      if (Date.now() > deadline) {
+        throw new Error(`account store lock is held: ${lockPath}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 15));
+    }
+  }
+  const held = handle;
+  try {
+    return await work();
+  } finally {
+    await held.close().catch(() => undefined);
+    await fs.unlink(lockPath).catch(() => undefined);
+  }
+}
+
 export async function cleanupOrphanedTmpFiles(dataDir: string): Promise<void> {
   await fs.mkdir(dataDir, { recursive: true });
   const entries = await fs.readdir(dataDir);
@@ -63,6 +118,11 @@ export class AccountStore {
   private inMemoryModelAliases: ModelAlias[] = [];
   private inMemoryProxyApiKeys: StoredProxyApiKey[] = [];
   private inMemoryApplicationPolicies: ApplicationPolicy[] = [];
+  // Tombstones for entries this process removed on purpose. Without them the
+  // read-before-write merge would re-adopt a key the operator just revoked,
+  // because the Rust edge may still hold the pre-deletion document.
+  private removedProxyApiKeys = new Set<string>();
+  private removedApplicationPolicies = new Set<string>();
   private inMemorySettings: StoreSettings = {};
   private dirty = false;
   private flushTimer: NodeJS.Timeout | null = null;
@@ -169,6 +229,74 @@ export class AccountStore {
     }
   }
 
+  /**
+   * Re-read the file and adopt `proxyApiKeys` / `applicationPolicies` entries
+   * this process has never seen.
+   *
+   * Node owns accounts, aliases and settings; the Rust edge owns the enrollment
+   * and token writes. Both rewrite the whole document from their own memory, so
+   * without this merge whichever writes second silently erases the other's
+   * additions. Collections are keyed rather than positional: an entry present
+   * on disk with the same identity is kept as-is, so a concurrent edit is not
+   * reverted by a stale in-memory copy.
+   *
+   * Deletions stay authoritative on the Node side. An entry this process
+   * deliberately removed is remembered in `removedProxyApiKeys` /
+   * `removedApplicationPolicies`, so a merge cannot resurrect it from a stale
+   * file.
+   */
+  private async mergeUnmanagedCollections(): Promise<{
+    proxyApiKeys: StoredProxyApiKey[];
+    applicationPolicies: ApplicationPolicy[];
+  }> {
+    let onDisk: StoreFile;
+    try {
+      onDisk = JSON.parse(await fs.readFile(this.filePath, "utf8")) as StoreFile;
+    } catch {
+      return {
+        proxyApiKeys: this.inMemoryProxyApiKeys,
+        applicationPolicies: this.inMemoryApplicationPolicies,
+      };
+    }
+
+    const diskKeys = Array.isArray(onDisk.proxyApiKeys) ? onDisk.proxyApiKeys : [];
+    const byKeyId = new Map(
+      this.inMemoryProxyApiKeys.map((entry) => [entry.id, entry] as const),
+    );
+    const byApplication = new Set(
+      this.inMemoryProxyApiKeys.map((entry) => entry.application),
+    );
+    const mergedKeys = [...this.inMemoryProxyApiKeys];
+    for (const entry of diskKeys) {
+      if (this.removedProxyApiKeys.has(entry.id)) continue;
+      if (byKeyId.has(entry.id) || byApplication.has(entry.application)) continue;
+      mergedKeys.push(entry);
+      byKeyId.set(entry.id, entry);
+      byApplication.add(entry.application);
+    }
+
+    const diskPolicies = Array.isArray(onDisk.applicationPolicies)
+      ? onDisk.applicationPolicies
+      : [];
+    const byPolicyApp = new Map(
+      this.inMemoryApplicationPolicies.map(
+        (policy) => [policy.application, policy] as const,
+      ),
+    );
+    const mergedPolicies = [...this.inMemoryApplicationPolicies];
+    for (const policy of diskPolicies) {
+      if (this.removedApplicationPolicies.has(policy.application)) continue;
+      if (byPolicyApp.has(policy.application)) continue;
+      mergedPolicies.push(policy);
+      byPolicyApp.set(policy.application, policy);
+    }
+
+    // Adopt what was merged so later flushes and readers see the same view.
+    this.inMemoryProxyApiKeys = mergedKeys;
+    this.inMemoryApplicationPolicies = mergedPolicies;
+    return { proxyApiKeys: mergedKeys, applicationPolicies: mergedPolicies };
+  }
+
   async flushIfDirty() {
     if (this.flushPromise) return this.flushPromise;
     if (!this.dirty) return;
@@ -177,12 +305,19 @@ export class AccountStore {
       while (this.dirty) {
         const revision = this.revision;
         try {
-          await writeJsonAtomic(this.filePath, {
-            accounts: this.inMemoryAccounts,
-            modelAliases: this.inMemoryModelAliases,
-            proxyApiKeys: this.inMemoryProxyApiKeys,
-            applicationPolicies: this.inMemoryApplicationPolicies,
-            settings: this.inMemorySettings,
+          // The account store file has a second writer: the Rust edge rewrites
+          // it wholesale for enrollment and token persistence. Reading before
+          // every write keeps entries that this process did not author, so a
+          // flush cannot silently delete an enrolled application's API key.
+          await withStoreLock(this.filePath, async () => {
+            const merged = await this.mergeUnmanagedCollections();
+            await writeJsonAtomic(this.filePath, {
+              accounts: this.inMemoryAccounts,
+              modelAliases: this.inMemoryModelAliases,
+              proxyApiKeys: merged.proxyApiKeys,
+              applicationPolicies: merged.applicationPolicies,
+              settings: this.inMemorySettings,
+            });
           });
           this.lastFlushError = undefined;
           if (this.revision === revision) this.dirty = false;
@@ -514,6 +649,10 @@ export class AccountStore {
   }
 
   async addProxyApiKey(entry: StoredProxyApiKey): Promise<StoredProxyApiKey> {
+    // A re-created application owns its identity again; clear any tombstone so
+    // the merge path does not filter it back out.
+    this.removedProxyApiKeys.delete(entry.id);
+    this.removedApplicationPolicies.delete(entry.application);
     this.inMemoryProxyApiKeys.push({ ...entry });
     this.dirty = true;
     this.revision += 1;
@@ -527,6 +666,7 @@ export class AccountStore {
       (entry) => entry.id !== id,
     );
     if (this.inMemoryProxyApiKeys.length === before) return false;
+    this.removedProxyApiKeys.add(id);
     this.dirty = true;
     this.revision += 1;
     await this.flushIfDirty();
