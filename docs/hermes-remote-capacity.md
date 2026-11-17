@@ -144,6 +144,69 @@ Operator-only. Issues a single-use `mvenr_...` code bound to an application name
 a fair-share policy, and the model mapping table. The code is returned once; it
 cannot be read back.
 
+## Onboarding a client
+
+Three operator steps, in this order.
+
+**1. Issue the code.** One application per client machine, so revocation and
+usage attribution are per-machine:
+
+```
+curl -sS -X POST "$EDGE/admin/hermes-bridge/enrollment" \
+  -H "authorization: Bearer $ADMIN_TOKEN" -H 'content-type: application/json' \
+  -d '{"application":"hermes-<client>","mappings":[
+        {"from":"<their LLM_MODEL>","edge":"<model we serve>","nous":"<same as from>"}]}'
+```
+
+The response carries `code` once. Put it nowhere but the prompt: it is spent on
+first use and useless afterwards.
+
+**2. Render the prompt.** Never fill the placeholders by hand — a single-use code
+is easy to paste into the wrong slot, and the Access secret must never travel in
+the document:
+
+```
+npm run hermes:enrollment-prompt -- \
+  --code mvenr_... --edge https://host.example.invalid \
+  --model <their LLM_MODEL> --access-id <client id> \
+  --access-secret-path /home/<client>/.mv-access-secret \
+  --out prompt-<client>.md
+```
+
+The script refuses to emit a document that still contains a placeholder, refuses
+a half-supplied Access pair, and accepts only a **path** for the secret. `--out`
+writes `0600` because the file holds a live code.
+
+The Nous side of the mapping is derived at enrollment from Nous's public
+catalogue, so `"nous"` above may repeat `"from"`; only a name Nous actually lists
+is stored, otherwise no fallback is recorded and `doctor` says so.
+
+**3. Send the prompt** to whoever runs that machine. They run `enroll`, then
+`install-hermes-bridge.sh`, then point Hermes at `http://127.0.0.1:8787/v1`.
+
+### Offboarding
+
+Deleting the key alone is not enough: the application policy holds a share
+reservation. Remove both.
+
+```
+curl -sS -X DELETE "$EDGE/admin/proxy-api-keys/<id>"        -H "authorization: Bearer $ADMIN_TOKEN"
+curl -sS -X DELETE "$EDGE/admin/application-policies/<app>" -H "authorization: Bearer $ADMIN_TOKEN"
+```
+
+Then revoke that machine's Cloudflare Access service token in the dashboard.
+Until the token is revoked, the machine still passes the gate — it just has no
+key to present to the edge.
+
+### What must be true before a client can enrol
+
+- A published Host release containing `bin/multivibe-hermes-bridge`: releases
+  before `v0.2.147` predate the bridge, and an archive without it cannot be made
+  to work by configuration.
+- One Access **service token per machine**, with a *Service Auth* policy on the
+  hostname. A `302` to `<team>.cloudflareaccess.com` means Access saw no
+  credential; it does not mean tokens are impossible there.
+
 ### `POST /hermes-bridge/enrollment/exchange`
 
 Unauthenticated — the code *is* the credential, which is why it is single-use,
