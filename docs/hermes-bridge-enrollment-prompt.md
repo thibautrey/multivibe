@@ -1,23 +1,29 @@
 # Prompt to hand to a client's Hermes
 
 Paste the block below into the client's Hermes (or give it to whoever runs that
-machine). It contains a **one-time enrollment code**, never a long-lived secret:
-once the machine enrols, the code is spent. Replace the three placeholders
-before sending.
+machine).
 
-> `{{ENROLLMENT_CODE}}` — a `mvenr_...` code, valid once and for at most 24 hours.
-> `{{ENROLL_URL}}` — the enrollment base URL (not the inference URL).
-> `{{MODEL}}` — the model name the Hermes already uses (see `LLM_MODEL` in
-> `~/.hermes/.env`).
-> `{{ACCESS_CLIENT_ID}}` / `{{ACCESS_CLIENT_SECRET_PATH}}` — only when the
-> enrollment hostname is gated by Cloudflare Access. The **id** is not secret and
-> can sit in this text; the **secret** must be a path to a file on the machine
-> (or `-` for stdin), never a value pasted here.
->
-> The enrollment code carries the mapping between `{{MODEL}}`, the equivalent
-> model on MultiVibe, and the equivalent model on Nous Research. If Nous does not
-> list that model, `doctor` fails and the bridge waits instead of substituting a
-> different model: a silent downgrade would be worse than a delay.
+> **This text carries a one-time enrollment code, never a long-lived secret.**
+> Once the machine enrols, the code is spent and the rest of this page is inert.
+> The Access *secret* is deliberately absent: only the path where it lives on
+> that machine appears below, so this document can be forwarded without handing
+> out a credential.
+
+### Values for this enrollment
+
+| Item | Value |
+|---|---|
+| Enrollment code (single use, **≤ 24 h**) | `{{ENROLLMENT_CODE}}` |
+| Enrollment base URL (not the inference URL) | `{{ENROLL_URL}}` |
+| Model this Hermes already uses (`LLM_MODEL` in `~/.hermes/.env`) | `{{MODEL}}` |
+| Cloudflare Access client id (not secret) | `{{ACCESS_CLIENT_ID}}` |
+| Path to the Access client secret on this machine | `{{ACCESS_CLIENT_SECRET_PATH}}` |
+
+The enrollment code carries the mapping between `{{MODEL}}`, the equivalent
+model on MultiVibe, and the equivalent model on Nous Research. The Nous side is
+looked up in Nous's published catalogue at enrollment time; if that model is not
+listed, no fallback is recorded and `doctor` says so, rather than the bridge
+silently answering with a different model.
 
 ---
 
