@@ -195,31 +195,43 @@ rather than assuming the bridge is broken.
 
 ## 4. Point Hermes at the bridge
 
-In `~/.hermes/.env`, find the block delimited by these exact lines:
+Back up the file first, so going back is one copy away:
+
+```
+cp ~/.hermes/.env ~/.hermes/.env.before-bridge
+```
+
+Then let the bridge write its own block:
+
+```
+multivibe-hermes-bridge configure --env "$HOME/.hermes/.env"
+```
+
+That replaces only the region between
 
 ```
 # >>> MultiVibe Host >>>
 # <<< MultiVibe Host <<<
 ```
 
-Replace what is **between** them with:
+and leaves every other line untouched — tokens, model overrides, dashboard
+credentials, anything you have added. It is idempotent: running it twice produces
+one block, not two. The file is written atomically at mode `0600`, so an
+interrupted run cannot leave a truncated `.env` that reads as "no API key".
 
-```
-LLM_PROVIDER=openai
-LLM_MODEL={{MODEL}}
-OPENAI_BASE_URL=http://127.0.0.1:8787/v1
-OPENAI_API_KEY=<the value printed by print-key>
-```
+**Do not edit this block by hand.** `configure` is the same code path the Host
+uses for its own integrations, and a hand edit is the one step in this whole flow
+that cannot be verified — a stray newline or a duplicated block breaks the
+harness silently, and the symptom later looks like "the model behaves oddly"
+rather than "the config is wrong".
 
-Keep the two marker lines themselves: MultiVibe uses them to find and rewrite its
-own block, and to remove it cleanly on rollback. Everything outside the block is
-yours and must stay untouched.
+If the file already contains an opening marker with no closing one, `configure`
+refuses rather than guessing which region to delete. Inspect the file and fix the
+block by hand in that case; do not delete regions you cannot delimit.
 
-If there is no marker block at all, append one rather than editing an existing
-setting — the markers are what make this change reversible.
-
-Back up the file first (`cp ~/.hermes/.env ~/.hermes/.env.before-bridge`) so
-returning to the previous configuration is one copy away.
+The model written is the first mapping stored at enrollment. Everything else in
+the block is the loopback endpoint and the key from the secret store; neither
+needs your attention.
 
 ## 5. Verify
 
@@ -249,9 +261,9 @@ run three smoke tests:
 
 ## Going back
 
-Restore `~/.hermes/.env.before-bridge`, stop the bridge service, and point
-OpenAI back at your previous endpoint. Nothing else was modified, so nothing else
-needs undoing.
+Restore `~/.hermes/.env.before-bridge`, then stop the bridge service with
+`./install-hermes-bridge.sh --uninstall`. Nothing else was modified: the managed
+block is the only change to that file, so the copy is a complete rollback.
 
 ## If something fails
 
