@@ -12,30 +12,35 @@ single leak would grant all of them access. A token per machine, bound to one
 Access policy and revoked independently, keeps blast radius at one host and makes
 `proxy_api_keys` attribution meaningful.
 
-## The enrollment problem, which must be solved first
+## Service tokens are the answer, for enrollment too
 
-Enrollment happens **before** the machine has any credential. Today the whole
-hostname is behind Access, so an unauthenticated exchange gets a `302` to the
-login page and the bridge can never enroll:
+A `302` to `<team>.cloudflareaccess.com` means only one thing: Access received no
+credential to inspect. It does **not** mean service tokens cannot work. Verified
+on the live deployment:
 
-```
-/host.example.invalid/hermes-bridge/enrollment/exchange  -> 302
-```
+| Request to `/health` | Result |
+|---|---|
+| no token | `302` |
+| fabricated token | `302` (`service_token_status: false`) |
+| real service token | `200` |
 
-Two workable answers, in order of preference:
+The `302` cannot distinguish "no token" from "wrong token", because in both cases
+Access examined nothing — which is exactly why it must not be read as "tokens are
+impossible here".
 
-1. **A separate, unprotected hostname for enrollment only.**
-   `enroll.host.example.invalid` → `POST /hermes-bridge/enrollment/exchange`,
-   with a WAF rate limit and **nothing else** routed there. The exchange is safe
-   to expose because the `mvenr_` code is single-use, bound to one application,
-   short-lived, and useless without it. This keeps the inference hostname fully
-   closed.
-2. **A bypass policy scoped to that one path.** An Access policy with action
-   *Bypass* on `host.example.invalid/hermes-bridge/enrollment/*` and no
-   other path. Less isolation, but one hostname.
+Enrollment therefore uses a service token like every other call. The bridge sends
+the same pair for the exchange and for inference, and persists it at enrollment
+so later turns are not anonymous. No bypass policy and no second hostname are
+required.
 
-Do not open `/v1/*` to solve enrollment: that removes the gate from the surface
-that matters.
+What *is* required is one Access application policy with action **Service Auth**
+covering the hostname, plus one service token per client machine. If that policy
+is missing, the hostname demands interactive login and no machine can pass:
+`service_token_status` stays `false` no matter what the client sends.
+
+A bypass policy or a dedicated unprotected enrollment hostname remain valid
+alternatives, but they are optional hardening, not a prerequisite. Do not open
+`/v1/*` under any of them: that removes the gate from the surface that matters.
 
 Configure the enrollment URL on the client with `--edge` at enroll time, or by
 writing `edgeBaseUrl` into the bridge config.
