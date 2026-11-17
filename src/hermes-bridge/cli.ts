@@ -7,6 +7,7 @@
  *   multivibe-hermes-bridge print-key
  */
 
+import { randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -16,6 +17,7 @@ import type { BridgeConfig, BridgeSecrets, ModelMapping } from "./config.js";
 import { DEFAULT_BRIDGE_CONFIG, deriveNousModel } from "./config.js";
 import { runDoctor } from "./doctor.js";
 import { exchangeEnrollment, parseEnrollmentCode } from "./enroll.js";
+import { configureHermesEnv } from "./configure.js";
 import { createBridge } from "./server.js";
 import { loadSecrets, resolveBackend, storeSecrets } from "./secrets.js";
 
@@ -26,6 +28,8 @@ Commands:
   run                         Start the local bridge
   doctor                      Verify connectivity and configuration
   print-key                   Print the key the harness must present
+  configure --env <path>      Write the managed block in a harness .env, using
+                              the stored key (creates the key if none exists)
 
 Options:
   --mode nous-first|edge-first|nous-only|edge-only   (default: nous-first)
@@ -316,6 +320,48 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       return 1;
     }
     process.stdout.write(`${stored.localKey}\n`);
+    return 0;
+  }
+
+  if (args.command === "configure") {
+    const rawEnv = args.values.get("env");
+    if (typeof rawEnv !== "string" || !rawEnv.trim()) {
+      process.stderr.write("--env <path-to-.hermes/.env> is required.\n");
+      return 2;
+    }
+    // Absolute only: a relative path here would be resolved against whatever
+    // working directory the service happened to inherit, which is not the home
+    // of the person running it.
+    const envPath = path.resolve(rawEnv.trim());
+    if (!path.isAbsolute(rawEnv.trim())) {
+      process.stderr.write("--env must be an absolute path.\n");
+      return 2;
+    }
+    if (!config.mappings.length) {
+      process.stderr.write("No model mapping is stored. Run `enroll` first.\n");
+      return 1;
+    }
+    const model = config.mappings[0]!.from;
+    // The harness key is minted by `run` on first start. Mint it here instead
+    // when absent, so `configure` can be run right after `enroll` without the
+    // operator having to start the service first and read a value off a log.
+    let localKey = stored.localKey;
+    if (!localKey) {
+      localKey = randomBytes(32).toString("base64url");
+      await backend.write("localKey", localKey);
+    }
+    const result = await configureHermesEnv({
+      envPath,
+      model,
+      apiKey: localKey,
+      bridgeBaseUrl: `http://${config.host}:${config.port}`,
+    });
+    process.stdout.write(
+      json
+        ? `${JSON.stringify({ ok: true, ...result, model })}\n`
+        : `${result.action === "created" ? "Wrote" : "Updated"} ${result.path}\n` +
+          `LLM_MODEL=${model} OPENAI_BASE_URL=http://${config.host}:${config.port}/v1\n`,
+    );
     return 0;
   }
 
