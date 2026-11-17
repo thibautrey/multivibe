@@ -13,7 +13,7 @@ import path from "node:path";
 import process from "node:process";
 
 import type { BridgeConfig, BridgeSecrets, ModelMapping } from "./config.js";
-import { DEFAULT_BRIDGE_CONFIG } from "./config.js";
+import { DEFAULT_BRIDGE_CONFIG, deriveNousModel } from "./config.js";
 import { runDoctor } from "./doctor.js";
 import { exchangeEnrollment, parseEnrollmentCode } from "./enroll.js";
 import { createBridge } from "./server.js";
@@ -161,6 +161,52 @@ export async function readSecretInput(source: string): Promise<string> {
   return (await fs.readFile(source, "utf8")).trim();
 }
 
+/**
+ * Fill in the Nous side of each mapping from Nous's own catalogue.
+ *
+ * The enrollment code names the edge model, and the operator should not have to
+ * know Nous's naming scheme. Nous publishes `GET /v1/models` anonymously, so the
+ * correspondence can be *derived* instead of guessed: the catalogue either lists
+ * the model or it does not.
+ *
+ * A failure here is not an enrollment failure. An unreachable catalogue leaves
+ * the mapping as the operator supplied it, and `doctor` reports the gap; a
+ * fabricated fallback model would be far worse than an explicit warning.
+ */
+async function completeNousMappings(
+  mappings: readonly ModelMapping[],
+  nousBaseUrl: string,
+): Promise<ModelMapping[]> {
+  if (!mappings.length) return [...mappings];
+  if (mappings.every((mapping) => mapping.nous && mapping.nous !== mapping.from)) {
+    return [...mappings];
+  }
+  let ids: string[] = [];
+  try {
+    const response = await fetch(`${nousBaseUrl.replace(/\/+$/, "")}/models`, {
+      headers: { accept: "application/json" },
+      redirect: "error",
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (response.ok) {
+      const body = (await response.json()) as { data?: Array<{ id?: unknown }> };
+      ids = (body.data ?? [])
+        .map((entry) => (typeof entry?.id === "string" ? entry.id : undefined))
+        .filter((id): id is string => Boolean(id));
+    }
+  } catch {
+    ids = [];
+  }
+  if (!ids.length) return [...mappings];
+  return mappings.map((mapping) => ({
+    ...mapping,
+    nous:
+      mapping.nous && mapping.nous !== mapping.from
+        ? mapping.nous
+        : (deriveNousModel(mapping.edge, ids) ?? mapping.nous),
+  }));
+}
+
 export async function main(argv: readonly string[] = process.argv.slice(2)): Promise<number> {
   const args = parseArgs(argv);
   if (!args.command || args.flags.has("help") || args.command === "help") {
@@ -240,7 +286,10 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       if (nousKey) await storeSecrets(backend, { nousApiKey: nousKey });
     }
     await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-    const mappings: ModelMapping[] = result.payload.mappings ?? config.mappings;
+    const mappings = await completeNousMappings(
+      result.payload.mappings ?? config.mappings,
+      config.nousBaseUrl,
+    );
     await fs.writeFile(
       path.join(directory, "config.json"),
       JSON.stringify({ ...config, mappings }, null, 2),
