@@ -450,3 +450,29 @@ test("a deleted key is not resurrected by the read-before-write merge", async (t
     ["keep-me"],
   );
 });
+
+test("a key enrolled by the other process can be revoked", async (t) => {
+  // Enrollment writes the key from the Rust edge, after this process loaded the
+  // store. Deleting from memory alone reported 404 for a credential that was
+  // still valid, so offboarding silently failed and the key kept authenticating.
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-store-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const filePath = path.join(directory, "accounts.json");
+  const store = new AccountStore(filePath);
+  await store.init();
+
+  // The edge enrolls a machine: the document changes, this process does not know.
+  const onDisk = JSON.parse(await fs.readFile(filePath, "utf8"));
+  onDisk.proxyApiKeys = [
+    { id: "enrolled-id", application: "hermes-client", key: "mvhb_x", createdAt: 1 },
+  ];
+  await fs.writeFile(filePath, JSON.stringify(onDisk, null, 2));
+
+  // Revocation must find it, not claim it does not exist.
+  assert.equal(await store.deleteProxyApiKey("enrolled-id"), true);
+
+  const persisted = JSON.parse(await fs.readFile(filePath, "utf8"));
+  assert.deepEqual(persisted.proxyApiKeys, []);
+  // And a second delete is honestly a 404, not a silent success.
+  assert.equal(await store.deleteProxyApiKey("enrolled-id"), false);
+});

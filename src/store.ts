@@ -661,6 +661,14 @@ export class AccountStore {
   }
 
   async deleteProxyApiKey(id: string): Promise<boolean> {
+    // A key enrolled through the Rust edge lives in the file this process has
+    // not necessarily read since it started. Deleting from memory alone would
+    // report 404 for a credential that is still valid, which makes offboarding
+    // impossible: the operator is told the key does not exist while it keeps
+    // authenticating. Adopt whatever is on disk first, then delete.
+    await withStoreLock(this.filePath, async () => {
+      await this.mergeUnmanagedCollections();
+    });
     const before = this.inMemoryProxyApiKeys.length;
     this.inMemoryProxyApiKeys = this.inMemoryProxyApiKeys.filter(
       (entry) => entry.id !== id,
