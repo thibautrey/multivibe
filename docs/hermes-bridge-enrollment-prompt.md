@@ -105,6 +105,51 @@ used only for direct requests to `inference-api.nousresearch.com`.
 
 ## 3. Install and start the bridge
 
+### Get the binary
+
+The bridge ships inside the MultiVibe Host archive for your platform. There is no
+separate download and no installer to compile: pick the asset that matches this
+machine from
+
+```
+https://github.com/thibautrey/multivibe/releases/latest
+```
+
+| This machine | Asset | Contains |
+|---|---|---|
+| macOS (Apple silicon) | `multivibe-host_<version>_darwin_arm64.dmg` | app bundle |
+| macOS (Intel) | `multivibe-host_<version>_darwin_amd64.dmg` | app bundle |
+| Linux x86_64 | `multivibe-host_<version>_linux_amd64.tar.gz` | archive |
+| Windows | not yet supported; stop and ask | — |
+
+Do **not** install the whole Host if you only need the bridge: the Host runs its
+own services and is not required for routing. Extract just what the bridge needs
+from the archive you downloaded, and keep it somewhere stable such as
+`~/.local/opt/multivibe-host/` — the path is referenced by the login service, so
+moving or deleting it later breaks the bridge.
+
+On macOS the app bundle is the archive:
+`MultiVibe Host.app/Contents/Resources/app/bin/multivibe-hermes-bridge`.
+On Linux the same file is `bin/multivibe-hermes-bridge` at the archive root, and
+the installer travels beside it as `install-hermes-bridge.sh`.
+
+Verify the archive before using it, so a truncated download is not mistaken for a
+broken bridge:
+
+```
+gh attestation verify <archive> --repo thibautrey/multivibe
+```
+
+If `gh` is unavailable, at minimum check the file size and that `tar tzf` (Linux)
+or `hdiutil verify` (macOS) succeeds.
+
+If `multivibe-hermes-bridge` does not exist in the archive you downloaded, **stop
+and report it**: the archive predates the bridge and no amount of configuration
+will create the binary. Do not substitute a different tool, and do not build from
+source unless you were explicitly asked to.
+
+### Start it at login
+
 For a service that starts at login and restarts on failure, run the installer
 **as yourself — never with `sudo`**:
 
