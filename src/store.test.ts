@@ -476,3 +476,35 @@ test("a key enrolled by the other process can be revoked", async (t) => {
   // And a second delete is honestly a 404, not a silent success.
   assert.equal(await store.deleteProxyApiKey("enrolled-id"), false);
 });
+
+test("an application policy can be deleted, and stays deleted", async (t) => {
+  // Revoking a key used to leave its policy behind with no way to remove it, so
+  // an offboarded client kept a share reservation in every admission decision.
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-store-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const filePath = path.join(directory, "accounts.json");
+  const store = new AccountStore(filePath);
+  await store.init();
+
+  // Enrollment writes the policy from the Rust edge, after this process started.
+  const onDisk = JSON.parse(await fs.readFile(filePath, "utf8"));
+  onDisk.applicationPolicies = [
+    { application: "offboarded", fairnessWeight: 1, maxConcurrentShare: 0.25, webhooks: [] },
+    { application: "keep", fairnessWeight: 1, webhooks: [] },
+  ];
+  await fs.writeFile(filePath, JSON.stringify(onDisk, null, 2));
+
+  assert.equal(await store.deleteApplicationPolicy("offboarded"), true);
+  assert.deepEqual(
+    store.getCachedApplicationPolicies().map((policy) => policy.application),
+    ["keep"],
+  );
+  // A second delete is an honest 404, and the merge must not resurrect it.
+  assert.equal(await store.deleteApplicationPolicy("offboarded"), false);
+  await store.addProxyApiKey({ id: "x", application: "other", key: "mv_x", createdAt: 1 });
+  const persisted = JSON.parse(await fs.readFile(filePath, "utf8"));
+  assert.deepEqual(
+    persisted.applicationPolicies.map((policy: { application: string }) => policy.application),
+    ["keep"],
+  );
+});

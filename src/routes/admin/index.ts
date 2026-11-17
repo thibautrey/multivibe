@@ -1191,6 +1191,15 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     res.status(204).end();
   });
 
+  router.delete("/application-policies/:application", async (req, res) => {
+    const application = normalizeApplicationName(req.params.application);
+    if (!application) return res.status(400).json({ error: "invalid application" });
+    // Revoking a key does not revoke its share reservation; this does.
+    const deleted = await store.deleteApplicationPolicy(application);
+    if (!deleted) return res.status(404).json({ error: "policy not found" });
+    res.json({ ok: true });
+  });
+
   router.get("/config", (_req, res) => {
     res.json({
       ok: true,
