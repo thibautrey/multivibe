@@ -694,6 +694,34 @@ export class AccountStore {
       : { application, fairnessWeight: 1, webhooks: [] };
   }
 
+  /**
+   * Remove an application's admission policy.
+   *
+   * Revoking a key leaves its policy behind, and until now nothing could delete
+   * one: an offboarded client kept a share reservation in every admission
+   * decision. Deleting the key alone is therefore not offboarding.
+   *
+   * The on-disk entries are adopted first, for the same reason as key deletion:
+   * enrollment writes policies from the other process.
+   */
+  async deleteApplicationPolicy(application: string): Promise<boolean> {
+    await withStoreLock(this.filePath, async () => {
+      await this.mergeUnmanagedCollections();
+    });
+    const before = this.inMemoryApplicationPolicies.length;
+    this.inMemoryApplicationPolicies = this.inMemoryApplicationPolicies.filter(
+      (policy) => policy.application !== application,
+    );
+    if (this.inMemoryApplicationPolicies.length === before) return false;
+    // Without a tombstone the merge would re-adopt it from a document the other
+    // process still holds.
+    this.removedApplicationPolicies.add(application);
+    this.dirty = true;
+    this.revision += 1;
+    await this.flushIfDirty();
+    return true;
+  }
+
   async upsertApplicationPolicy(policy: ApplicationPolicy): Promise<ApplicationPolicy> {
     const normalized: ApplicationPolicy = {
       application: policy.application,
