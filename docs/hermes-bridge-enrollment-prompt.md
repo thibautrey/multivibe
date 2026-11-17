@@ -49,20 +49,17 @@ fresh one.
 
 ### If enrollment is behind Cloudflare Access
 
-`multivibe.pleiades.solutions` sits behind Cloudflare Access, which is a gate for
-*browsers*; this machine is not one. If `doctor` or this command reports
-`invalid` while a browser can reach the same hostname, the gate is the reason:
-an anonymous exchange is answered with a `302` to a login page, and the bridge
-cannot log in because it has no credential yet.
+`multivibe.pleiades.solutions` sits behind Cloudflare Access. A *service token*
+is what lets a machine through — not the absence of a gate. The **same token**
+covers enrollment and inference, because both live on that hostname.
 
-Two deployments answer this. Check which one you are on **before** running the
-command above:
+Check which situation you are in **before** running the command above:
 
-- **Enrollment bypassed or on its own hostname** — nothing more to do, run the
-  command as written. Do not add Access arguments "just in case": a stray header
-  on an ungated surface is noise, not safety.
-- **Enrollment gated by Access** — you were given an Access **service token**
-  for this machine: a client id and a client secret. Add both:
+- **No service token supplied** — the exchange is answered with a `302` to
+  `<your-team>.cloudflareaccess.com`, because Access has no credential to
+  inspect. This is not an invalid code and not a broken edge. Ask for a service
+  token and stop; do not try to work around the gate.
+- **Service token supplied** — add both values:
 
 ```
 multivibe-hermes-bridge enroll --code {{ENROLLMENT_CODE}} --edge {{ENROLL_URL}} \
@@ -76,9 +73,13 @@ this conversation, a shell history, or a chat message: it is a credential for
 this machine and it is revocable independently of every other client.
 
 Once enrolled, the same token is stored in the secret store and sent on every
-inference request, so the gate needs no further attention from you. If you were
-given neither a bypassed hostname nor a service token, stop and ask. Enrolment
-cannot succeed without one of them, and guessing wastes a single-use code.
+inference request, so the gate needs no further attention from you. That is the
+whole point of passing it once: an enrolled machine that did not keep the token
+would reach the edge anonymously and every call would be redirected to a login
+page.
+
+If you were given no service token, stop and ask. Enrollment cannot succeed
+without one, and guessing wastes a single-use code.
 
 ## 2. Supply your Nous key locally
 
