@@ -358,6 +358,9 @@ fn refusal_streamed_before_content_keeps_distinct_content_indexes() {
         .unwrap_or_else(|| panic!("no response.output_item.done: {output}"));
     let parts = done["item"]["content"].as_array().unwrap();
     assert_eq!(parts[refusal_index as usize]["type"], "refusal", "{output}");
-    assert_eq!(parts[text_index as usize]["type"], "output_text", "{output}");
+    assert_eq!(
+        parts[text_index as usize]["type"], "output_text",
+        "{output}"
+    );
     assert_eq!(parts[text_index as usize]["text"], "hello", "{output}");
 }
