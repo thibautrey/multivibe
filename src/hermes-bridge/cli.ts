@@ -214,12 +214,24 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       process.stderr.write(`Enrollment failed: ${result.reason}.\n`);
       return 1;
     }
+    // The Access pair the operator supplied is what let this exchange through,
+    // and it is the same pair every later inference request needs: the
+    // enrollment hostname and the inference hostname sit behind the same Access
+    // application, so an anonymous `/v1/chat/completions` gets a 302 to the
+    // login page. Persisting only the API key left the bridge enrolled but
+    // unable to reach the edge, and `nous-first` then served every turn from
+    // Nous — the exact opposite of the transparent fallback this promises.
+    //
+    // The exchanged payload never carries these values (the edge deliberately
+    // does not mint Access credentials), so they must come from the operator's
+    // arguments. Either source is accepted, with the argument winning because
+    // it describes the hostname this machine is enrolling against.
+    const storeAccessClientId = accessClientId ?? result.payload.accessClientId;
+    const storeAccessClientSecret = accessClientSecret ?? result.payload.accessClientSecret;
     await storeSecrets(backend, {
       edgeApiKey: result.payload.edgeApiKey,
-      ...(result.payload.accessClientId ? { accessClientId: result.payload.accessClientId } : {}),
-      ...(result.payload.accessClientSecret
-        ? { accessClientSecret: result.payload.accessClientSecret }
-        : {}),
+      ...(storeAccessClientId ? { accessClientId: storeAccessClientId } : {}),
+      ...(storeAccessClientSecret ? { accessClientSecret: storeAccessClientSecret } : {}),
     });
     // The Nous key is the client's own: read locally, never uploaded.
     const nousSource = args.values.get("nous-key");
