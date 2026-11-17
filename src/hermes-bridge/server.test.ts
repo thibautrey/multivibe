@@ -1059,3 +1059,52 @@ test("an --edge host without /v1 is normalized before it is stored", async () =>
     await fs.rm(directory, { recursive: true, force: true });
   }
 });
+
+test("edge-first inside its budget says the edge is busy, not that the model is missing", async () => {
+  // A queued turn is not a missing mapping. Answering `no_equivalent_model` would
+  // send the operator hunting a mapping bug that does not exist, and would hide
+  // the one fact that helps them: how deep the queue is.
+  const { fetchImpl } = scriptedFetch([
+    jsonResponse({ decision: "queue", waitMs: 10_000 }),
+  ]);
+  const bridge = createBridge({
+    config: config({ mode: "edge-first" }),
+    secrets: SECRETS,
+    mappings: MAPPINGS,
+    fetchImpl,
+  });
+  await withBridge(bridge, async (baseUrl) => {
+    const response = await post(baseUrl, "/v1/chat/completions", {
+      model: "hermes-4-405b",
+      messages: [{ role: "user", content: "hello" }],
+    }, bridge.localKey);
+    assert.equal(response.status, 503);
+    // The queue depth, rounded up to whole seconds, so a client backs off for a
+    // sensible time instead of retrying into a still-full edge.
+    assert.equal(response.headers.get("retry-after"), "10");
+    const body = (await response.json()) as { error: { code: string; message: string } };
+    assert.equal(body.error.code, "edge_queued");
+    assert.match(body.error.message, /busy/u);
+    assert.match(body.error.message, /10000 ms deep/u);
+    // The wording a missing mapping would produce must never appear here.
+    assert.doesNotMatch(body.error.message, /no equivalent model/iu);
+  });
+});
+
+test("a genuinely absent mapping still reports no_equivalent_model", async () => {
+  // Guard against over-correcting: the distinct failure must stay distinct.
+  const { fetchImpl } = scriptedFetch([]);
+  const bridge = createBridge({
+    config: config({ mode: "edge-first" }),
+    secrets: SECRETS,
+    mappings: [{ from: "only-on-edge", edge: "only-on-edge", nous: "" }],
+    fetchImpl,
+  });
+  await withBridge(bridge, async (baseUrl) => {
+    const response = await post(baseUrl, "/v1/chat/completions", {
+      model: "only-on-edge",
+      messages: [{ role: "user", content: "hello" }],
+    }, bridge.localKey);
+    assert.equal(response.status, 503);
+  });
+});
