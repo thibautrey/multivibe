@@ -107,7 +107,10 @@ multivibe-hermes-bridge enroll --code {{ENROLLMENT_CODE}} --nous-key -
 
 Do not invent a path: if you cannot locate the key, run the enrollment without
 `--nous-key` first — inference through MultiVibe still works, and `doctor` will
-say plainly that the fallback is unavailable. The key stays on this machine and is
+say plainly that the fallback is unavailable. **Choose deliberately:** without
+that key there is no fallback, so a MultiVibe outage ends the turn instead of
+being served by Nous. The whole point of this setup is the transparent switch;
+enrolling without the key gives you MultiVibe access only. The key stays on this machine and is
 used only for direct requests to `inference-api.nousresearch.com`.
 
 ## 3. Install and start the bridge
@@ -244,9 +247,12 @@ run three smoke tests:
 
 1. **Nominal turn.** Ask something simple. The answer must arrive normally and
    the bridge log must show `"upstream":"edge"`.
-2. **Forced switch.** Stop the bridge's connection to the edge (or temporarily
-   set `--mode nous-only`) and repeat the question. It must still answer, served
-   by Nous, with no visible difference to you.
+2. **Forced switch — only if you supplied a Nous key.** Temporarily set
+   `--mode nous-only` and repeat the question. It must answer from Nous with no
+   visible difference to you. If you enrolled *without* a Nous key (section 2
+   allows that), there is no fallback to test: the turn will fail with a `401`
+   from Nous, which is correct and expected — stop the bridge with `--mode
+   nous-first` again and carry on. Do not treat that `401` as a broken install.
 3. **Resume.** Restart the bridge and confirm the conversation continues where it
    left off.
 
