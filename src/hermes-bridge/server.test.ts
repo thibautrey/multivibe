@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+
+import { loadConfig, parseArgs } from "./cli.js";
 
 import { enrollmentExchangeUrl, exchangeEnrollment, isEnrollmentCode, parseEnrollmentCode } from "./enroll.js";
 import { runDoctor } from "./doctor.js";
@@ -1019,4 +1024,38 @@ test("a half-supplied Access pair is refused before any request", async () => {
   // outright. Either way an anonymous request never carries one header alone.
   await fake({ accessClientId: "only-id.access" });
   await fake({ accessClientSecret: "only-secret" });
+});
+
+test("an --edge host without /v1 is normalized before it is stored", async () => {
+  // The enrollment prompt tells an operator to pass the bare hostname. Storing
+  // it verbatim dropped the `/v1` prefix, so every admission probe returned 404
+  // and `nous-first` served the whole conversation from Nous while the edge was
+  // healthy. Both documented forms must land on the same inference base.
+  const previous = process.env.MULTIVIBE_BRIDGE_STATE_DIR;
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "bridge-cli-"));
+  process.env.MULTIVIBE_BRIDGE_STATE_DIR = directory;
+  try {
+    const bare = await loadConfig(parseArgs(["run", "--edge", "https://multivibe.example"]));
+    const full = await loadConfig(parseArgs(["run", "--edge", "https://multivibe.example/v1"]));
+    const slashed = await loadConfig(parseArgs(["run", "--edge", "https://multivibe.example/v1/"]));
+    assert.equal(bare.edgeBaseUrl, "https://multivibe.example/v1");
+    assert.equal(full.edgeBaseUrl, "https://multivibe.example/v1");
+    assert.equal(slashed.edgeBaseUrl, "https://multivibe.example/v1");
+    // The enrollment surface is the inverse: never `/v1`.
+    assert.equal(bare.enrollBaseUrl, "https://multivibe.example");
+    assert.equal(full.enrollBaseUrl, "https://multivibe.example");
+
+    // A config persisted before the fix must be repaired on load, not only on
+    // the next explicit --edge.
+    await fs.writeFile(
+      path.join(directory, "config.json"),
+      JSON.stringify({ edgeBaseUrl: "https://multivibe.example", mappings: [] }),
+    );
+    const stored = await loadConfig(parseArgs(["run"]));
+    assert.equal(stored.edgeBaseUrl, "https://multivibe.example/v1");
+  } finally {
+    if (previous === undefined) delete process.env.MULTIVIBE_BRIDGE_STATE_DIR;
+    else process.env.MULTIVIBE_BRIDGE_STATE_DIR = previous;
+    await fs.rm(directory, { recursive: true, force: true });
+  }
 });
