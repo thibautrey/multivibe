@@ -21,6 +21,10 @@ docker-compose.override.yml
 assets/brand/.DS_Store
 native/ios/.DS_Store
 artifacts/local-macos/*.dmg
+# Locally built installers are hundreds of megabytes and belong on a release, not
+# in the tree. `git add -A` silently swept one in and GitHub rejected the push.
+release/*.dmg
+release/*.tar.gz
 artifacts/.DS_Store
 
 # Swift package build and local workspace data
