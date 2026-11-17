@@ -354,3 +354,99 @@ test("account configuration, membership, and aliases advance the catalog revisio
   await store.deleteModelAlias(alias.id);
   assert.equal(store.getCatalogRevision(), 12);
 });
+
+test("a flush keeps an enrollment key written by the other process", async (t) => {
+  // The shipped container runs Node and the Rust edge on the same store file.
+  // Rust writes an enrolled application's key directly; Node must not erase it
+  // on its next flush. Before the merge, this sequence lost the key in
+  // production within seconds, which made enrollment impossible to complete.
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-store-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const filePath = path.join(directory, "accounts.json");
+  const store = new AccountStore(filePath);
+  await store.init();
+
+  // Simulate the Rust writer: mutate the document on disk, as
+  // `AccountStore::add_enrolled_application` does.
+  const onDisk = JSON.parse(await fs.readFile(filePath, "utf8"));
+  onDisk.proxyApiKeys = [
+    {
+      id: "rust-key-id",
+      application: "hermes-pilot",
+      key: "mvhb_from_rust",
+      createdAt: 1,
+    },
+  ];
+  onDisk.applicationPolicies = [
+    {
+      application: "hermes-pilot",
+      fairnessWeight: 1,
+      maxConcurrentShare: 0.25,
+      burst: 1,
+      webhooks: [],
+    },
+  ];
+  await fs.writeFile(filePath, JSON.stringify(onDisk, null, 2));
+
+  // A Node-side mutation triggers a flush that would previously rewrite the
+  // document from stale memory and drop the Rust entries.
+  await store.addProxyApiKey({
+    id: "node-key-id",
+    application: "codex-remote",
+    key: "mv_node",
+    createdAt: 2,
+  });
+
+  const persisted = JSON.parse(await fs.readFile(filePath, "utf8"));
+  assert.deepEqual(
+    persisted.proxyApiKeys.map((entry: { application: string }) => entry.application).sort(),
+    ["codex-remote", "hermes-pilot"],
+  );
+  assert.deepEqual(
+    persisted.applicationPolicies.map((policy: { application: string }) => policy.application),
+    ["hermes-pilot"],
+  );
+  // The merged view is adopted, so later readers in this process see it too.
+  assert.deepEqual(
+    store.getCachedProxyApiKeys().map((entry) => entry.application).sort(),
+    ["codex-remote", "hermes-pilot"],
+  );
+});
+
+test("a deleted key is not resurrected by the read-before-write merge", async (t) => {
+  // Revocation must stay durable: the merge adopts entries it has never seen,
+  // which would otherwise re-adopt a key the operator just deleted from a
+  // document the other process still holds.
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-store-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const filePath = path.join(directory, "accounts.json");
+  const store = new AccountStore(filePath);
+  await store.init();
+  await store.addProxyApiKey({
+    id: "revoke-me",
+    application: "revoke-me",
+    key: "mv_revoke",
+    createdAt: 1,
+  });
+  assert.equal(await store.deleteProxyApiKey("revoke-me"), true);
+
+  // The other process rewrites the document with its older copy still present.
+  const onDisk = JSON.parse(await fs.readFile(filePath, "utf8"));
+  onDisk.proxyApiKeys = [
+    { id: "revoke-me", application: "revoke-me", key: "mv_revoke", createdAt: 1 },
+  ];
+  await fs.writeFile(filePath, JSON.stringify(onDisk, null, 2));
+
+  await store.addProxyApiKey({
+    id: "keep-me",
+    application: "keep-me",
+    key: "mv_keep",
+    createdAt: 3,
+  });
+
+  const persisted = JSON.parse(await fs.readFile(filePath, "utf8"));
+  assert.deepEqual(
+    persisted.proxyApiKeys.map((entry: { application: string }) => entry.application),
+    ["keep-me"],
+  );
+});
