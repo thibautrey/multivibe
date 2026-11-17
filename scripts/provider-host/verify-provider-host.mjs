@@ -105,10 +105,20 @@ async function extractZipArchive(archive, destination) {
     MULTIVIBE_VERIFY_ZIP_SOURCE: archive,
     MULTIVIBE_VERIFY_ZIP_DESTINATION: destination,
   };
+  // `Expand-Archive` is not usable here. On Windows PowerShell 5.1 (.NET
+  // Framework) the cmdlet shipped with newer `Microsoft.PowerShell.Archive`
+  // builds calls `ZipFile.ExtractToDirectory` with three arguments, an overload
+  // that only exists on .NET Core, so it fails with "Cannot find an overload for
+  // ExtractToDirectory and the argument count: 3" — which is what broke the
+  // v0.2.147 release on the Windows runner. Call the two-argument overload
+  // directly instead; it is present on every .NET Framework, and it accepts an
+  // existing (empty) destination directory.
   await command(windowsPowerShellPath(), [
     "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand",
     encodedPowerShellCommand(
-      "$ErrorActionPreference = 'Stop'; Expand-Archive -LiteralPath $env:MULTIVIBE_VERIFY_ZIP_SOURCE -DestinationPath $env:MULTIVIBE_VERIFY_ZIP_DESTINATION -Force",
+      "$ErrorActionPreference = 'Stop'; " +
+        "Add-Type -AssemblyName System.IO.Compression.FileSystem; " +
+        "[System.IO.Compression.ZipFile]::ExtractToDirectory($env:MULTIVIBE_VERIFY_ZIP_SOURCE, $env:MULTIVIBE_VERIFY_ZIP_DESTINATION)",
     ),
   ], { env: environment });
 }
