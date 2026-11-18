@@ -26,7 +26,17 @@ function config(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
   // The capacity stream opens a long-lived connection; the routing tests drive
   // `fetchImpl` with a scripted queue and must not have a subscription consume
   // its entries or keep the process alive. Tests that exercise the stream opt in.
-  return { ...DEFAULT_BRIDGE_CONFIG, mappings: MAPPINGS, capacityStream: false, ...overrides };
+  // No endpoint is baked into the product, so the fixture supplies one: these
+  // tests are about routing over the wire, and a relative URL would prove
+  // nothing about where a request actually goes.
+  return {
+    ...DEFAULT_BRIDGE_CONFIG,
+    edgeBaseUrl: "https://edge.example.invalid/v1",
+    enrollBaseUrl: "https://edge.example.invalid",
+    mappings: MAPPINGS,
+    capacityStream: false,
+    ...overrides,
+  };
 }
 
 function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
@@ -79,8 +89,8 @@ test("the exchange URL never inherits the inference /v1 suffix", () => {
   );
   // A dedicated enrollment hostname is passed through untouched.
   assert.equal(
-    enrollmentExchangeUrl("https://enroll.host.example.invalid"),
-    "https://enroll.host.example.invalid/hermes-bridge/enrollment/exchange",
+    enrollmentExchangeUrl("https://enroll.example.invalid"),
+    "https://enroll.example.invalid/hermes-bridge/enrollment/exchange",
   );
 });
 
@@ -190,7 +200,7 @@ test("an edge admission is consumed and forwarded as a lease", async () => {
     assert.equal(response.status, 200);
   });
   assert.match(calls[0]!.url, /\/admission$/);
-  assert.match(calls[1]!.url, /^https:\/\/multivibe\.pleiades\.solutions\/v1\/chat\/completions$/);
+  assert.match(calls[1]!.url, /^https:\/\/edge\.example\.invalid\/v1\/chat\/completions$/);
   const headers = calls[1]!.init!.headers as Record<string, string>;
   assert.equal(headers["x-multivibe-lease"], "adml_abc");
   // The model is rewritten to the edge's identifier, not the harness's.
@@ -271,7 +281,7 @@ test("stickiness expires so the conversation returns to the edge", async () => {
     });
   });
   assert.match(calls[2]!.url, /\/admission$/);
-  assert.match(calls[3]!.url, /^https:\/\/multivibe\.pleiades\.solutions/);
+  assert.match(calls[3]!.url, /^https:\/\/edge\.example\.invalid/);
 });
 
 test("an unmapped model fails explicitly instead of being downgraded", async () => {
@@ -462,7 +472,7 @@ test("doctor names a gated enrollment surface as the blocker it is", async () =>
       status: 302,
       headers: {
         location:
-          "https://team.cloudflareaccess.com/cdn-cgi/access/login/host.example.invalid?kid=x",
+          "https://<team>.cloudflareaccess.com/cdn-cgi/access/login/host.example.invalid?kid=x",
       },
     }),
   ]);
@@ -601,7 +611,7 @@ test("/v1/responses reaches the edge and is passed through unchanged", async () 
     const body = (await response.json()) as { object?: string };
     assert.equal(body.object, "response");
   });
-  assert.match(calls[1]!.url, /^https:\/\/multivibe\.pleiades\.solutions\/v1\/responses$/);
+  assert.match(calls[1]!.url, /^https:\/\/edge\.example\.invalid\/v1\/responses$/);
   assert.equal(JSON.parse(String(calls[1]!.init!.body)).model, "nousresearch/hermes-4-405b");
 });
 

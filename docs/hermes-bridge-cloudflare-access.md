@@ -52,7 +52,7 @@ in `docs/hermes-remote-capacity.md`, section "Onboarding a client".
 
 1. Zero Trust → **Access → Applications → Add an application → Self-hosted**.
 2. Name: `MultiVibe inference (service)`.
-3. Public hostname: `multivibe`, domain `pleiades.solutions`, path **`v1`**.
+3. Public hostname: `multivibe`  (example), domain `example.invalid`, path **`v1`**.
    Verified: today the whole hostname returns `302`, so this path-scoped
    application is a **change** to make, not a description of the status quo.
 4. Session duration: irrelevant for service tokens; leave the default.

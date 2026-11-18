@@ -69,8 +69,13 @@ export const DEFAULT_BRIDGE_CONFIG: Omit<BridgeConfig, "mappings"> = {
   host: "127.0.0.1",
   port: 8787,
   mode: "nous-first",
-  edgeBaseUrl: "https://host.example.invalid/v1",
-  enrollBaseUrl: "https://host.example.invalid",
+  // No vendor endpoint is baked in. The bridge is a client-side router that a
+  // specific operator points at a specific deployment; hardcoding ours would
+  // publish a private hostname in a public repository and would also make every
+  // build of this binary silently call our infrastructure. `enroll --edge` (or
+  // `--edge` / `--enroll`) supplies the base, and it is persisted from there.
+  edgeBaseUrl: "",
+  enrollBaseUrl: "",
   nousBaseUrl: "https://inference-api.nousresearch.com/v1",
   nousStickinessMs: 10 * 60_000,
   edgeAttemptTimeoutMs: 45_000,

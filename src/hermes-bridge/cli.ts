@@ -95,6 +95,10 @@ const MODES = ["nous-first", "edge-first", "nous-only", "edge-only"] as const;
  */
 export function inferenceBaseUrl(raw: string): string {
   const trimmed = raw.trim().replace(/\/+$/, "");
+  // An empty value stays empty: callers distinguish "operator supplied nothing"
+  // from "operator supplied a host", and inventing `/v1` from "" would create a
+  // relative URL that resolves to the local bridge itself.
+  if (!trimmed) return "";
   return /\/v1$/i.test(trimmed) ? trimmed : `${trimmed}/v1`;
 }
 
@@ -127,6 +131,19 @@ export async function loadConfig(args: ParsedArgs): Promise<BridgeConfig> {
   const edge = args.values.get("edge");
   const enroll = args.values.get("enroll");
   const nous = args.values.get("nous");
+  // There is no default deployment. A bridge with no base URL cannot serve a
+  // turn, and silently falling back to one vendor's hostname would (a) publish
+  // that hostname in this public repository and (b) make every build call it.
+  // `enroll` supplies the base and persists it; after that, `run`/`doctor`
+  // read it back from `config.json`.
+  const resolvedEdge = inferenceBaseUrl(
+    edge ?? stored.edgeBaseUrl ?? DEFAULT_BRIDGE_CONFIG.edgeBaseUrl,
+  );
+  if (!edge && !stored.edgeBaseUrl && args.command !== "enroll") {
+    throw new Error(
+      "no MultiVibe endpoint configured; pass `--edge <url>` once (or run `enroll --edge <url>`)",
+    );
+  }
   return {
     ...DEFAULT_BRIDGE_CONFIG,
     ...stored,
@@ -142,7 +159,7 @@ export async function loadConfig(args: ParsedArgs): Promise<BridgeConfig> {
     // Normalized on load as well as on input: a machine enrolled before this
     // fix has `https://host` already persisted in `config.json`, and reading it
     // back verbatim would keep every probe 404ing for the life of the install.
-    edgeBaseUrl: inferenceBaseUrl(edge ?? stored.edgeBaseUrl ?? DEFAULT_BRIDGE_CONFIG.edgeBaseUrl),
+    ...(resolvedEdge ? { edgeBaseUrl: resolvedEdge } : { edgeBaseUrl: "" }),
     // `--edge` is the only URL an operator normally supplies, so the enrollment
     // base follows it unless it is given explicitly. Without this the command
     // silently targets production while the operator pointed at a test edge.
