@@ -1,0 +1,72 @@
+name: Rust workspace
+
+# The edge and proxy-core crates are built into the shipped images, but no
+# workflow compiled them. Four consecutive pushes to #44 went out without a
+# compiler seeing them; three of those heads did not build.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-workspace-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      # Same toolchain as the Dockerfile that ships the edge binary, so the
+      # gate validates what is actually released rather than a newer local rust.
+      - name: Install the shipping Rust toolchain
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --no-self-update
+          rustup component add rustfmt clippy --toolchain 1.88.0
+          rustup default 1.88.0
+          rustc --version
+          cargo --version
+      - name: Build the workspace
+        run: cargo build --locked --workspace --all-targets
+      - name: Test the workspace
+        run: cargo test --locked --workspace
+      # Informational until the crate is formatted and lint-clean: main carries
+      # 194 formatting hunks and 80 clippy warnings today, so a blocking gate
+      # would be red on arrival and teach people to ignore it. These steps still
+      # fail hard when the component is missing, so a skipped check cannot pass
+      # for a clean one.
+      - name: Formatting drift
+        run: |
+          status=0
+          cargo fmt --all --check > fmt.log 2>&1 || status=$?
+          if grep -q "not installed" fmt.log; then
+            echo "::error::rustfmt is not available in this toolchain"
+            cat fmt.log
+            exit 1
+          fi
+          hunks=$(grep -c '^Diff in' fmt.log || true)
+          echo "::warning::rustfmt reports ${hunks} hunk(s) of formatting drift; not blocking yet"
+          head -60 fmt.log
+      - name: Clippy warnings
+        run: |
+          status=0
+          cargo clippy --locked --workspace --all-targets > clippy.log 2>&1 || status=$?
+          if grep -q "no such command\|not installed" clippy.log; then
+            echo "::error::clippy is not available in this toolchain"
+            cat clippy.log
+            exit 1
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "::error::clippy failed to build the workspace"
+            tail -80 clippy.log
+            exit 1
+          fi
+          warnings=$(grep -c '^warning:' clippy.log || true)
+          echo "::warning::clippy reports ${warnings} warning(s); not blocking yet"
