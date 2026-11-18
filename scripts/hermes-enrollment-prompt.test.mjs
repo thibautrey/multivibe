@@ -44,7 +44,7 @@ test("an edge URL ending in /v1 is reduced to the enrollment base", () => {
     "--edge", "https://host.example.invalid/v1",
     "--model", "m",
   ]);
-  assert.match(rendered, /--edge https:\/\/multivibe\.pleiades\.solutions\b/u);
+  assert.match(rendered, /--edge https:\/\/host\.example\.invalid\b/u);
   assert.doesNotMatch(rendered, /--edge https:\/\/[^\s]*\/v1\b/u);
 });
 
