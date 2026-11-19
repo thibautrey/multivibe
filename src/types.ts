@@ -234,7 +234,33 @@ export type ModelAlias = {
   defaults?: {
     priority?: PriorityClass;
     executionMode?: ExecutionMode;
+    /**
+     * Capability facts the alias publishes when its routing target does not.
+     * A deployment may serve a model whose own catalog entry carries only an
+     * id and a window; clients still need the window, modalities and reasoning
+     * options to size compaction and build the effort selector. Declarations
+     * only fill what the target left empty.
+     */
+    capabilities?: AliasCapabilities;
   };
+};
+
+/** Capability facts an alias may declare for a target that publishes none. */
+export type AliasCapabilities = {
+  context_window?: number;
+  max_output_tokens?: number;
+  supports_reasoning?: boolean;
+  supports_tools?: boolean;
+  supports_structured_output?: boolean;
+  supports_temperature?: boolean;
+  reasoning_options?: Array<Record<string, unknown>>;
+  default_reasoning_level?: string;
+  supported_reasoning_levels?: Array<{ effort: string; description?: string }>;
+  input_modalities?: string[];
+  output_modalities?: string[];
+  supported_tool_types?: string[];
+  display_name?: string;
+  description?: string;
 };
 
 export type LegacyModelAlias = {

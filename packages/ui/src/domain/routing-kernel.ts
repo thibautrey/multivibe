@@ -103,6 +103,7 @@ export type ModelAlias = {
   defaults?: {
     priority?: PriorityClass | undefined;
     executionMode?: ExecutionMode | undefined;
+    capabilities?: Record<string, unknown> | undefined;
   };
 };
 
@@ -248,6 +249,66 @@ export function parseRoutingHeaders(
   };
 }
 
+const ALIAS_MODALITIES = ["text", "image", "audio", "video"];
+const ALIAS_REASONING_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/**
+ * Validate operator-declared alias capabilities.
+ *
+ * These values are published to every client as if the provider had reported
+ * them, so a malformed declaration would mislead a client about a model's
+ * window or reasoning support. Reject anything that is not a positive size, a
+ * known modality or a known effort instead of passing it through.
+ */
+function validateAliasCapabilities(capabilities: unknown): string[] {
+  if (capabilities === undefined || capabilities === null) return [];
+  if (typeof capabilities !== "object" || Array.isArray(capabilities))
+    return ["alias capabilities must be an object"];
+  const errors: string[] = [];
+  const record = capabilities as Record<string, unknown>;
+  for (const key of ["context_window", "max_output_tokens"]) {
+    const value = record[key];
+    if (value !== undefined && (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0))
+      errors.push(`alias capability ${key} must be a positive integer`);
+  }
+  for (const key of ["supports_reasoning", "supports_tools", "supports_structured_output", "supports_temperature"]) {
+    const value = record[key];
+    if (value !== undefined && typeof value !== "boolean")
+      errors.push(`alias capability ${key} must be a boolean`);
+  }
+  for (const key of ["input_modalities", "output_modalities"]) {
+    const value = record[key];
+    if (value === undefined) continue;
+    if (!Array.isArray(value) || !value.length) {
+      errors.push(`alias capability ${key} must be a non-empty array`);
+      continue;
+    }
+    if (value.some((entry) => typeof entry !== "string" || !ALIAS_MODALITIES.includes(entry)))
+      errors.push(`alias capability ${key} has an unsupported modality`);
+  }
+  const options = record.reasoning_options;
+  if (options !== undefined) {
+    if (!Array.isArray(options) || !options.length) errors.push("alias capability reasoning_options must be a non-empty array");
+    else if (options.some((entry) => !entry || typeof entry !== "object" || Array.isArray(entry) || !["effort", "toggle", "budget_tokens"].includes(String((entry as Record<string, unknown>).type))))
+      errors.push("alias capability reasoning_options has an unsupported option");
+    else if (options.some((entry) => {
+      const option = entry as Record<string, unknown>;
+      return option.type === "effort" && (!Array.isArray(option.values) || !option.values.length || option.values.some((value) => typeof value !== "string" || !ALIAS_REASONING_LEVELS.includes(value)));
+    })) errors.push("alias capability reasoning_options has an unsupported effort");
+  }
+  if (record.default_reasoning_level !== undefined) {
+    const value = record.default_reasoning_level;
+    if (typeof value !== "string" || !ALIAS_REASONING_LEVELS.includes(value))
+      errors.push("alias capability default_reasoning_level is not a known effort");
+  }
+  for (const key of ["display_name", "description", "default_reasoning_level"]) {
+    const value = record[key];
+    if (value !== undefined && (typeof value !== "string" || !value.trim() || value.length > 200))
+      errors.push(`alias capability ${key} must be a non-empty string`);
+  }
+  return errors;
+}
+
 export function validateSmartAlias(alias: ModelAlias): string[] {
   const errors: string[] = [];
   if (alias.schemaVersion !== 2) errors.push("schemaVersion must be 2");
@@ -261,6 +322,7 @@ export function validateSmartAlias(alias: ModelAlias): string[] {
     alias.defaults?.executionMode &&
     !["sync", "auto", "defer"].includes(alias.defaults.executionMode)
   ) errors.push("invalid default execution mode");
+  errors.push(...validateAliasCapabilities(alias.defaults?.capabilities));
   const ids = new Set<string>();
   for (const rule of alias.rules) {
     if (!rule.id.trim()) errors.push("routing rule id required");

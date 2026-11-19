@@ -12834,6 +12834,64 @@ fn inherit_alias_metadata(alias: &mut Value, target: &Value) {
 /// `cached_exposed_models`: running it earlier silently dropped every alias
 /// pointing at an account model, leaving only aliases over proxy models and
 /// local runtimes in `/v1/models`.
+/// Apply operator-declared capability facts from an alias's `defaults`.
+///
+/// A deployment can serve a model whose own `/v1/models` carries only an id and
+/// a window — a control-steered variant of a base model, for example — so there
+/// is nothing to inherit. The alias may then declare what it does support in
+/// `defaults.capabilities`. Declarations only fill fields the resolved catalog
+/// left empty; they never overwrite values the target published.
+fn apply_alias_capabilities(entry: &mut Value, defaults: Option<&Value>) {
+    let Some(capabilities) = defaults
+        .and_then(|defaults| defaults.get("capabilities"))
+        .and_then(Value::as_object)
+    else {
+        return;
+    };
+    let Some(metadata) = entry.get_mut("metadata").and_then(Value::as_object_mut) else {
+        return;
+    };
+    for key in [
+        "context_window",
+        "max_output_tokens",
+        "supports_reasoning",
+        "reasoning_options",
+        "default_reasoning_level",
+        "supported_reasoning_levels",
+        "supports_structured_output",
+        "supports_temperature",
+        "input_modalities",
+        "output_modalities",
+        "supports_tools",
+        "supported_tool_types",
+        "display_name",
+        "description",
+    ] {
+        let Some(value) = capabilities.get(key).filter(|value| !value.is_null()) else {
+            continue;
+        };
+        let empty = metadata.get(key).is_none_or(Value::is_null);
+        if key == "supports_reasoning" || key == "supports_tools" {
+            if !value.is_boolean() {
+                continue;
+            }
+        }
+        if empty {
+            metadata.insert(key.to_owned(), value.clone());
+        }
+    }
+    let declared_name = metadata
+        .get("display_name")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    drop(metadata);
+    if let Some(display_name) = declared_name
+        && entry.get("name").is_none()
+    {
+        entry["name"] = Value::String(display_name);
+    }
+}
+
 fn push_alias_models(store: &StoreFile, models: &mut Vec<Value>) {
     for alias in store.model_aliases.iter().filter(|alias| alias.enabled) {
         let targets = alias
@@ -12856,6 +12914,7 @@ fn push_alias_models(store: &StoreFile, models: &mut Vec<Value>) {
         if let Some(target_entry) = target_entry.as_ref() {
             inherit_alias_metadata(&mut entry, target_entry);
         }
+        apply_alias_capabilities(&mut entry, alias.defaults.as_ref());
         upsert_model(models, entry);
     }
 }
@@ -17956,6 +18015,92 @@ mod tests {
         assert!(metadata["context_window"].is_null(), "{metadata}");
         assert!(metadata.get("reasoning_options").is_none(), "{metadata}");
         assert!(entry.get("name").is_none(), "{entry}");
+    }
+
+    #[test]
+    fn alias_capabilities_fill_what_a_sparse_target_does_not_publish() {
+        let upstream = account("spark");
+        let mut store = store_with_accounts(vec![upstream.clone()]);
+        let mut cyber = alias("bigmama-cyber", "deepseek-v4.1-flash-weightless");
+        cyber.defaults = Some(json!({
+            "capabilities": {
+                "context_window": 1048576,
+                "max_output_tokens": 32768,
+                "supports_reasoning": true,
+                "reasoning_options": [{"type": "effort", "values": ["low", "high", "max"]}],
+                "default_reasoning_level": "high",
+                "input_modalities": ["text", "image"],
+                "output_modalities": ["text"],
+                "display_name": "DeepSeek V4.1 Flash (control-steered)",
+                "description": "DeepSeek V4.1 Flash with the GLP-39 control vector",
+            }
+        }));
+        store.model_aliases.push(cyber);
+        let mut cache = ModelCatalogCache::default();
+        cache.accounts.insert(
+            upstream.id.clone(),
+            AccountModelCatalogCache {
+                models: vec![model_entry_from_upstream(
+                    "deepseek-v4.1-flash-weightless",
+                    "openai-compatible",
+                    &upstream.id,
+                    &json!({"max_model_len": 1048576}),
+                )],
+                ..Default::default()
+            },
+        );
+        let models = cached_exposed_models(&cache, &store, &EdgeConfig::default(), &[upstream]);
+        let entry = models
+            .iter()
+            .find(|entry| entry.get("id").and_then(Value::as_str) == Some("bigmama-cyber"))
+            .expect("alias entry");
+        let metadata = &entry["metadata"];
+        assert_eq!(metadata["context_window"], json!(1048576), "{metadata}");
+        assert_eq!(metadata["max_output_tokens"], json!(32768), "{metadata}");
+        assert_eq!(metadata["supports_reasoning"], json!(true), "{metadata}");
+        assert_eq!(
+            metadata["reasoning_options"],
+            json!([{"type": "effort", "values": ["low", "high", "max"]}]),
+            "{metadata}"
+        );
+        assert_eq!(metadata["default_reasoning_level"], json!("high"), "{metadata}");
+        assert_eq!(metadata["input_modalities"], json!(["text", "image"]), "{metadata}");
+        assert_eq!(metadata["display_name"], json!("DeepSeek V4.1 Flash (control-steered)"));
+        assert_eq!(entry["name"], json!("DeepSeek V4.1 Flash (control-steered)"));
+        // Identity is still the alias's.
+        assert_eq!(metadata["is_alias"], json!(true));
+        assert_eq!(metadata["alias_targets"], json!(["deepseek-v4.1-flash-weightless"]));
+    }
+
+    #[test]
+    fn alias_capabilities_never_overwrite_what_the_target_publishes() {
+        let upstream = account("spark");
+        let mut store = store_with_accounts(vec![upstream.clone()]);
+        let mut alias = alias("bigmama", "deepseek-v4.1-flash");
+        alias.defaults = Some(json!({
+            "capabilities": {"context_window": 4096, "default_reasoning_level": "low"}
+        }));
+        store.model_aliases.push(alias);
+        let mut cache = ModelCatalogCache::default();
+        cache.accounts.insert(
+            upstream.id.clone(),
+            AccountModelCatalogCache {
+                models: vec![model_entry_from_upstream(
+                    "deepseek-v4.1-flash",
+                    "openai-compatible",
+                    &upstream.id,
+                    &json!({"context_window": 1048576, "default_reasoning_level": "high"}),
+                )],
+                ..Default::default()
+            },
+        );
+        let models = cached_exposed_models(&cache, &store, &EdgeConfig::default(), &[upstream]);
+        let metadata = &models
+            .iter()
+            .find(|entry| entry.get("id").and_then(Value::as_str) == Some("bigmama"))
+            .expect("alias entry")["metadata"];
+        assert_eq!(metadata["context_window"], json!(1048576), "{metadata}");
+        assert_eq!(metadata["default_reasoning_level"], json!("high"), "{metadata}");
     }
 
     #[test]
