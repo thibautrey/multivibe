@@ -12786,6 +12786,45 @@ fn upsert_model(models: &mut Vec<Value>, next: Value) {
     }
 }
 
+/// Copy the capability metadata an alias must present from the model it
+/// resolves to. An alias advertised with a null `context_window` and no
+/// `reasoning_options` makes clients treat it as an unknown model: Codex cannot
+/// size auto-compaction and hides the effort selector. Only values the target
+/// actually carries are copied, and identity fields (`provider`,
+/// `account_ids`, `is_alias`, `alias_targets`) stay the alias's own.
+fn inherit_alias_metadata(alias: &mut Value, target: &Value) {
+    const INHERITED_METADATA: [&str; 15] = [
+        "context_window",
+        "max_output_tokens",
+        "supports_reasoning",
+        "reasoning_options",
+        "default_reasoning_level",
+        "supported_reasoning_levels",
+        "supports_structured_output",
+        "supports_temperature",
+        "model_knowledge",
+        "input_modalities",
+        "output_modalities",
+        "supports_tools",
+        "supported_tool_types",
+        "display_name",
+        "pricing",
+    ];
+    let Some(target_metadata) = target.get("metadata").and_then(Value::as_object) else {
+        return;
+    };
+    let Some(alias_metadata) = alias.get_mut("metadata").and_then(Value::as_object_mut) else {
+        return;
+    };
+    for key in INHERITED_METADATA {
+        if let Some(value) = target_metadata.get(key)
+            && !value.is_null()
+        {
+            alias_metadata.insert(key.to_owned(), value.clone());
+        }
+    }
+}
+
 /// Publish every enabled alias whose first routing target the catalog can
 /// already serve.
 ///
@@ -12812,10 +12851,12 @@ fn push_alias_models(store: &StoreFile, models: &mut Vec<Value>) {
         let Some(provider) = providers_for_model(&targets[0], models).into_iter().next() else {
             continue;
         };
-        upsert_model(
-            models,
-            model_entry(&alias.id, &provider, Vec::new(), true, targets),
-        );
+        let target_entry = catalog_model(models, &targets[0]).cloned();
+        let mut entry = model_entry(&alias.id, &provider, Vec::new(), true, targets);
+        if let Some(target_entry) = target_entry.as_ref() {
+            inherit_alias_metadata(&mut entry, target_entry);
+        }
+        upsert_model(models, entry);
     }
 }
 
@@ -17828,6 +17869,93 @@ mod tests {
             ids.contains(&"fast-gpt".to_owned()),
             "a static alias must keep being published: {ids:?}"
         );
+    }
+
+    #[test]
+    fn alias_inherits_target_capability_metadata() {
+        let upstream = account("spark");
+        let mut store = store_with_accounts(vec![upstream.clone()]);
+        store.model_aliases.push(alias("bigmama", "deepseek-v4.1-flash"));
+        let mut cache = ModelCatalogCache::default();
+        cache.accounts.insert(
+            upstream.id.clone(),
+            AccountModelCatalogCache {
+                models: vec![model_entry_from_upstream(
+                    "deepseek-v4.1-flash",
+                    "openai-compatible",
+                    &upstream.id,
+                    &json!({
+                        "name": "DeepSeek V4.1 Flash",
+                        "context_window": 1048576,
+                        "max_output_tokens": 65536,
+                        "supports_reasoning": true,
+                        "reasoning_options": [{"type": "effort", "values": ["low", "high"]}],
+                        "default_reasoning_level": "high",
+                        "input_modalities": ["text", "image"],
+                        "output_modalities": ["text"],
+                        "supports_tools": true,
+                    }),
+                )],
+                ..Default::default()
+            },
+        );
+        let models = cached_exposed_models(&cache, &store, &EdgeConfig::default(), &[upstream]);
+        let entry = models
+            .iter()
+            .find(|entry| entry.get("id").and_then(Value::as_str) == Some("bigmama"))
+            .expect("alias entry");
+        let metadata = &entry["metadata"];
+        // A client sizes context compaction and the effort selector from these.
+        assert_eq!(metadata["context_window"], json!(1048576), "{metadata}");
+        assert_eq!(metadata["max_output_tokens"], json!(65536), "{metadata}");
+        assert_eq!(metadata["supports_reasoning"], json!(true), "{metadata}");
+        assert_eq!(
+            metadata["reasoning_options"],
+            json!([{"type": "effort", "values": ["low", "high"]}]),
+            "{metadata}"
+        );
+        assert_eq!(metadata["default_reasoning_level"], json!("high"), "{metadata}");
+        assert_eq!(metadata["input_modalities"], json!(["text", "image"]), "{metadata}");
+        assert_eq!(metadata["output_modalities"], json!(["text"]), "{metadata}");
+        assert_eq!(metadata["display_name"], json!("DeepSeek V4.1 Flash"), "{metadata}");
+        // Identity stays the alias's own: it is not the account-backed target.
+        assert_eq!(metadata["is_alias"], json!(true), "{metadata}");
+        assert_eq!(
+            metadata["alias_targets"],
+            json!(["deepseek-v4.1-flash"]),
+            "{metadata}"
+        );
+        assert_eq!(metadata["account_ids"], json!([]), "{metadata}");
+        assert_eq!(entry["owned_by"], json!("openai-compatible"));
+    }
+
+    #[test]
+    fn alias_inheritance_leaves_metadata_the_target_lacks_null() {
+        let upstream = account("spark");
+        let mut store = store_with_accounts(vec![upstream.clone()]);
+        store.model_aliases.push(alias("minimal", "sparse-model"));
+        let mut cache = ModelCatalogCache::default();
+        cache.accounts.insert(
+            upstream.id.clone(),
+            AccountModelCatalogCache {
+                models: vec![model_entry_from_upstream(
+                    "sparse-model",
+                    "openai-compatible",
+                    &upstream.id,
+                    &json!({}),
+                )],
+                ..Default::default()
+            },
+        );
+        let models = cached_exposed_models(&cache, &store, &EdgeConfig::default(), &[upstream]);
+        let entry = models
+            .iter()
+            .find(|entry| entry.get("id").and_then(Value::as_str) == Some("minimal"))
+            .expect("alias entry");
+        let metadata = &entry["metadata"];
+        assert!(metadata["context_window"].is_null(), "{metadata}");
+        assert!(metadata.get("reasoning_options").is_none(), "{metadata}");
+        assert!(entry.get("name").is_none(), "{entry}");
     }
 
     #[test]
