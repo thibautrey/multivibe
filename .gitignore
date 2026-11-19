@@ -35,3 +35,6 @@ artifacts/.DS_Store
 .dsh-plugin-dev/
 plugins/dsh-multivibe/*.tgz
 .DS_Store
+
+# Incremental TypeScript build state
+*.tsbuildinfo
