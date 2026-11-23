@@ -33,8 +33,11 @@
     "start:injector": "node dist/managed/injector-main.js",
     "start:managed": "node dist/managed/main.js",
     "catalog:sdk:refresh": "node scripts/refresh-ai-sdk-catalog.mjs",
+    "hermes:enrollment-prompt": "node scripts/hermes-enrollment-prompt.mjs",
     "demo": "npm --prefix web run demo",
-    "test:integration:cloud": "cargo build -p multivibe-v1-edge && node --import tsx --test test-integration/cloud-core.test.mjs"
+    "test:integration:cloud": "cargo build -p multivibe-v1-edge && node --import tsx --test test-integration/cloud-core.test.mjs",
+    "start:hermes-bridge": "node dist/hermes-bridge/bin.js",
+    "test:hermes-bridge": "tsx --test \"src/hermes-bridge/*.test.ts\""
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.310",
@@ -50,5 +53,8 @@
     "esbuild": "0.28.2",
     "tsx": "^4.23.13",
     "typescript": "^5.7.3"
+  },
+  "bin": {
+    "multivibe-hermes-bridge": "dist/hermes-bridge/bin.js"
   }
 }

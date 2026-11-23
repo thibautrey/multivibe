@@ -48,6 +48,10 @@ export type TraceEntry = {
   /** A failed provider attempt was recovered before responding to the client. */
   recoveredRetry?: boolean;
   application?: string;
+  /** Durable identity of the client API key (`configured:<app>` or key UUID). */
+  apiKeyId?: string;
+  /** Masked key form shown in the dashboard; never the secret itself. */
+  apiKeyPreview?: string;
   codexSessionId?: string;
   /** Privacy-preserving session fingerprint retained in long-term stats. */
   sessionKey?: string;
@@ -593,11 +597,26 @@ export function normalizeTrace(raw: any): TraceEntry | null {
       : undefined;
   const costUsd = preservedCostUsd ?? estimatedCostUsd;
 
+  // The fallback id must be unique per trace. `${at}-${route}-${status}` is not:
+  // two concurrent requests that finish in the same millisecond on the same
+  // route collapse into one entry, because history deduplicates by id. The
+  // client request id distinguishes them; the attempt index separates retries of
+  // one request. Both are absent only when the caller supplied neither, in which
+  // case the old shape is the best available.
+  const fallbackClientId =
+    typeof raw.clientRequestId === "string" && raw.clientRequestId.trim()
+      ? raw.clientRequestId.trim()
+      : undefined;
+  const fallbackAttempt = safeNumber(raw.upstreamAttempt);
+  const fallbackId = [at, route, status, fallbackClientId, fallbackAttempt]
+    .filter((part) => part !== undefined && part !== "")
+    .join("-");
+
   return {
     id:
       typeof raw.id === "string" && raw.id
         ? raw.id
-        : `${at}-${route}-${status}`,
+        : fallbackId,
     at,
     route,
     clientRequestId:
@@ -629,6 +648,14 @@ export function normalizeTrace(raw: any): TraceEntry | null {
     application:
       typeof raw.application === "string" && raw.application.trim()
         ? raw.application.trim()
+        : undefined,
+    apiKeyId:
+      typeof raw.apiKeyId === "string" && raw.apiKeyId.trim()
+        ? raw.apiKeyId.trim().slice(0, 200)
+        : undefined,
+    apiKeyPreview:
+      typeof raw.apiKeyPreview === "string" && raw.apiKeyPreview.trim()
+        ? raw.apiKeyPreview.trim().slice(0, 120)
         : undefined,
     codexSessionId:
       typeof raw.codexSessionId === "string" && raw.codexSessionId.trim()
@@ -2158,9 +2185,12 @@ export function createTraceManager(config: TraceManagerConfig) {
   async function getTraceStats(
     sinceMs?: number,
     untilMs?: number,
+    filters: { application?: string; projectId?: string; apiKeyId?: string } = {},
   ): Promise<{ totalStored: number; matched: number; stats: TraceStats }> {
     await syncExternalTraces();
-    if (analytics) return analytics.call("stats", { sinceMs, untilMs });
+    // Only narrow through the durable index: legacy in-memory buckets carry no
+    // per-key attribution, so an unfiltered fallback would misstate the range.
+    if (analytics) return analytics.call("stats", { sinceMs, untilMs, ...filters });
     return buildBucketTraceStats([...statsBuckets.values()].sort((a, b) => a.at - b.at), totalStored, sinceMs, untilMs);
   }
 
@@ -2342,7 +2372,16 @@ export function createTraceManager(config: TraceManagerConfig) {
   }
 
   async function flushPendingWrites(): Promise<void> {
-    await Promise.all([traceWriteQueue, historyWriteQueue]);
+    // A queued write joins its queue only after its first `await`, so reading
+    // the two promises once can capture a queue that is about to be extended and
+    // return while writes are still pending. Drain until neither queue changes
+    // across a full round; the bound keeps a steady writer from spinning here.
+    for (let round = 0; round < 100; round += 1) {
+      const trace = traceWriteQueue;
+      const history = historyWriteQueue;
+      await Promise.all([trace, history]);
+      if (trace === traceWriteQueue && history === historyWriteQueue) break;
+    }
     await Promise.all([...observers]);
     if (lastWriteError) {
       throw new Error(`trace persistence failed: ${lastWriteError.message}`);

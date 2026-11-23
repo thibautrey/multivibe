@@ -59,7 +59,7 @@ struct HostPopoverLayoutHarness {
             "id": "zai",
             "displayName": "z.ai",
             "accounts": [{
-              "displayName": "z.ai · contact@pleiades.solutions",
+              "displayName": "z.ai · accounts@example.invalid",
               "enabled": true,
               "status": "ready",
               "usageStatus": "unsupported"

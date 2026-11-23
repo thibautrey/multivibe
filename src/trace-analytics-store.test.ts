@@ -6,6 +6,7 @@ import path from "node:path";
 import { TraceAnalyticsStore } from "./trace-analytics-store.js";
 import { createTraceManager, normalizeTrace, toStatsHistoryEntry, buildTraceStats, createUsageAggregate, addTraceToAggregate, finalizeAggregate, type TraceEntry } from "./traces.js";
 import { aggregateSessionUsage, sessionTurnsFor } from "./session-usage.js";
+import { sessionKeyOf } from "./session-identity.js";
 import { aggregateProjectUsage } from "./project-usage.js";
 import { installModelsDevPricing } from "./model-pricing.js";
 
@@ -205,4 +206,104 @@ test("large session turn state updates incrementally, including late retries aft
   assert.equal(report.summary.inputTokens,expected.summary.inputTokens);
   assert.ok(Math.abs(report.summary.costUsd-expected.summary.costUsd)<1e-8);
   assert.deepEqual(report.summary.initialInputTokenBuckets,expected.summary.initialInputTokenBuckets);
+});
+
+test("API key attribution: byApiKey, filters and legacy schema upgrade", async t => {
+  const f = await fixture(t);
+  f.config.retentionMax = 20;
+  const at = BASE + 3_600_000;
+  const a = { ...trace("key-a", at), apiKeyId: "configured:codex", apiKeyPreview: "mv_first••••abcd" };
+  const b = { ...trace("key-b", at), apiKeyId: "configured:codex", apiKeyPreview: "mv_first••••abcd", tokensOutput: 9, tokensTotal: 29, costUsd: 0.2 };
+  const c = { ...trace("key-c", at), apiKeyId: "11111111-2222-4333-8444-555555555555", apiKeyPreview: "mv_second••••wxyz", application: "harness-opencode" };
+  const keyless = { ...trace("key-none", at), apiKeyId: undefined };
+  f.store.append([a, b, c, keyless], undefined, true);
+
+  const usage = f.store.usage({});
+  const byKey = new Map(usage.byApiKey.map((entry: any) => [entry.apiKeyId, entry]));
+  assert.equal(byKey.get("configured:codex").requests, 2, "attempts from one key aggregate together");
+  assert.equal(byKey.get("configured:codex").keyPreview, "mv_first••••abcd");
+  assert.equal(byKey.get("configured:codex").application, "codex");
+  assert.equal(byKey.get("11111111-2222-4333-8444-555555555555").requests, 1);
+  assert.equal(byKey.get("11111111-2222-4333-8444-555555555555").application, "harness-opencode");
+  assert.equal(byKey.get("unattributed").requests, 1, "keyless calls stay visible");
+  // Key rows must expose the project-grade money and percentile dimensions.
+  for (const field of ["costUsd", "requestsWithCost", "unpricedRequests", "avgLatencyMs", "latencyP50Ms", "latencyP95Ms", "firstAt", "lastAt"]) {
+    assert.ok(field in byKey.get("configured:codex"), `byApiKey exposes ${field}`);
+  }
+  assert.ok(Math.abs(byKey.get("configured:codex").costUsd - 0.3) < 1e-12);
+  assert.equal(byKey.get("unattributed").application, undefined, "unattributed is not an application");
+  const summedCost = (usage.byApiKey as any[]).reduce((sum, entry) => sum + entry.costUsd, 0);
+  const byProjectCost = (usage.byProject as any[]).reduce((sum, entry) => sum + entry.costUsd, 0);
+  assert.ok(Math.abs(summedCost - byProjectCost) < 1e-9, "per-key costs reconcile with the project range total");
+
+  // Aggregated hourly rollups must honour the narrowing filter, not just raw edges.
+  const filtered = f.store.usage({ apiKeyId: "configured:codex" });
+  assert.equal(filtered.totals.requests, 2);
+  assert.equal((filtered as any).byApiKey.length, 1);
+  const exactHour = f.store.usage({ sinceMs: at, untilMs: at + 60_000, apiKeyId: "11111111-2222-4333-8444-555555555555" });
+  assert.equal(exactHour.totals.requests, 1);
+  assert.equal(f.store.sessions({ apiKeyId: "configured:codex" }).sessions.length, 1);
+  assert.equal(f.store.sessions({ apiKeyId: "11111111-2222-4333-8444-555555555555" }).sessions.length, 1);
+
+  // Reopening an older database shape must add the column without losing rows.
+  await f.reopen();
+  assert.equal((f.store.usage({}).byApiKey as any[]).length, 3);
+  assert.equal(f.store.usage({ apiKeyId: "configured:codex" }).totals.requests, 2);
+});
+
+test("key-filtered trace stats stay bounded to the key and exclude other keys", async t => {
+  const f = await fixture(t);
+  f.config.retentionMax = 20;
+  // Complete hours (not edge hours): these only resolve through hourly rollups.
+  const hour = Math.floor(BASE / 3_600_000) * 3_600_000 + 3_600_000;
+  const keyed = { ...trace("hour-a", hour + 1_000), apiKeyId: "configured:codex", apiKeyPreview: "mv_a••••1111" };
+  const other = { ...trace("hour-b", hour + 2_000), apiKeyId: "configured:other", apiKeyPreview: "mv_b••••2222" };
+  const keyless = { ...trace("hour-c", hour + 3_000), apiKeyId: undefined };
+  f.store.append([keyed, other, keyless], undefined, true);
+
+  const narrow = { sinceMs: hour, untilMs: hour + 3_600_000 - 1 };
+  assert.equal(f.store.stats({ ...narrow, apiKeyId: "configured:codex" }).stats.totals.requests, 1);
+  assert.equal(f.store.stats(narrow).stats.totals.requests, 3);
+  assert.equal(f.store.stats({ ...narrow, apiKeyId: "configured:other" }).stats.totals.requests, 1);
+  // The key filter must not leak another key's cost or tokens.
+  const filtered = f.store.usage({ ...narrow, apiKeyId: "configured:codex" });
+  assert.equal(filtered.totals.requests, 1);
+  assert.equal((filtered as any).byApiKey.length, 1);
+
+  // Session turns must honour the same narrowing, including their total count.
+  const sessionKey = sessionKeyOf(keyed)!;
+  const allTurns = f.store.query("turns", { ...narrow, sessionKey, limit: 50 }) as { total: number; turns: any[] };
+  const ownTurns = f.store.query("turns", { ...narrow, sessionKey, apiKeyId: "configured:codex", limit: 50 }) as { total: number; turns: any[] };
+  const otherTurns = f.store.query("turns", { ...narrow, sessionKey, apiKeyId: "configured:ghost", limit: 50 }) as { total: number; turns: any[] };
+  // The fixture shares one Codex session across keys, so the unfiltered session
+  // has one turn per key while each key sees only its own.
+  assert.equal(allTurns.total, 3);
+  assert.equal(ownTurns.total, 1);
+  assert.equal(ownTurns.turns.length, 1);
+  assert.equal(ownTurns.turns[0].clientRequestId, "hour-a", "only the selected key's turn is returned");
+  assert.equal(otherTurns.total, 0, "a foreign key reports no turns");
+  assert.equal(otherTurns.turns.length, 0);
+});
+
+test("legacy history without per-key buckets is rebuilt once by the backfill", async t => {
+  const f = await fixture(t);
+  f.config.retentionMax = 20;
+  const hour = Math.floor(BASE / 3_600_000) * 3_600_000 + 7_200_000;
+  f.store.append([
+    { ...trace("bf-a", hour + 1_000), apiKeyId: "configured:legacy", apiKeyPreview: "mv_l••••9999" },
+    { ...trace("bf-b", hour + 2_000), apiKeyId: "configured:legacy", apiKeyPreview: "mv_l••••9999" },
+  ], undefined, true);
+  // Simulate a database produced before the per-key buckets existed.
+  (f.store as any).db.prepare("DELETE FROM buckets_by_key").run();
+  (f.store as any).db.prepare("DELETE FROM metadata WHERE key=?").run("api-key-buckets-2026-11-16-v1");
+  await f.reopen();
+  assert.equal(f.store.status.keyBucketBackfill?.state, "running");
+  await f.store.sync();
+  assert.equal(f.store.status.keyBucketBackfill?.state, "complete");
+  const narrow = { sinceMs: hour, untilMs: hour + 3_600_000 - 1, apiKeyId: "configured:legacy" };
+  assert.equal(f.store.stats(narrow).stats.totals.requests, 2);
+  // A second sync is a no-op, not a re-scan.
+  const scanned = f.store.status.keyBucketBackfill?.scanned;
+  await f.store.sync();
+  assert.equal(f.store.status.keyBucketBackfill?.scanned, scanned);
 });
