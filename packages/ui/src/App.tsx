@@ -202,7 +202,9 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   const [traceStats, setTraceStats] = useState<TraceStats>(EMPTY_TRACE_STATS);
   const [projectUsageStats, setProjectUsageStats] = useState<ProjectUsageStats>({
     byProject: [],
+    byApiKey: [],
   });
+  const [traceApiKeyFilter, setTraceApiKeyFilter] = useState<string>("");
   const [sessionStats, setSessionStats] = useState<SessionsResponse>(EMPTY_SESSIONS_RESPONSE);
   const [sessionStatsLoading, setSessionStatsLoading] = useState(false);
   const sessionStatsLoadedRef = useRef<string | null>(null);
@@ -243,6 +245,8 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   const [traceExportInProgress, setTraceExportInProgress] = useState(false);
   const tracePageRef = useRef(tracePagination.page);
   const traceRangeRef = useRef(traceRange);
+  // The 10s pollers keep their own closure; a ref keeps them on the selected key.
+  const traceApiKeyFilterRef = useRef(traceApiKeyFilter);
   const mobileNavigationRef = useRef<HTMLDialogElement>(null);
   const mobileNavigationTriggerRef = useRef<HTMLButtonElement>(null);
   const [invoiceData, setInvoiceData] = useState<InvoiceOverview>({ providers: [], cloudUnavailable: false });
@@ -599,6 +603,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
     const params = new URLSearchParams();
     if (typeof sinceMs === "number") params.set("sinceMs", String(sinceMs));
     if (typeof untilMs === "number") params.set("untilMs", String(untilMs));
+    if (traceApiKeyFilterRef.current) params.set("apiKeyId", traceApiKeyFilterRef.current);
     return params;
   };
 
@@ -617,7 +622,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
       if (epoch !== traceRequestEpochRef.current) return;
       setTraceStats((statsRes.stats ?? EMPTY_TRACE_STATS) as TraceStats);
       setTraceStatsLoaded(true);
-      setProjectUsageStats({ byProject: usageRes.byProject ?? [] });
+      setProjectUsageStats({ byProject: usageRes.byProject ?? [], byApiKey: usageRes.byApiKey ?? [] });
     } finally {
       traceStatsInFlightRef.current = false;
       traceStatsPendingRef.current -= 1;
@@ -710,7 +715,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
       setTraces((tr.traces ?? []) as Trace[]);
       setTraceStats((statsRes.stats ?? tr.stats ?? EMPTY_TRACE_STATS) as TraceStats);
       setTraceStatsLoaded(true);
-      setProjectUsageStats({ byProject: usageRes.byProject ?? [] });
+      setProjectUsageStats({ byProject: usageRes.byProject ?? [], byApiKey: usageRes.byApiKey ?? [] });
       setTracePagination((tr.pagination ?? { ...EMPTY_TRACE_PAGINATION, page: safePage }) as TracePagination);
       if (!background) {
         setExpandedTraceId(null);
@@ -733,6 +738,25 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   useEffect(() => {
     traceRangeRef.current = traceRange;
   }, [traceRange]);
+
+  useEffect(() => {
+    traceApiKeyFilterRef.current = traceApiKeyFilter;
+  }, [traceApiKeyFilter]);
+
+  // A key filter narrows every tracing panel at once; reload the visible view.
+  const apiKeyFilterReadyRef = useRef(false);
+  useEffect(() => {
+    if (!apiKeyFilterReadyRef.current) { apiKeyFilterReadyRef.current = true; return; }
+    if (tab !== "tracing") return;
+    if (activityView === "sessions") {
+      sessionStatsLoadedRef.current = null;
+      void loadSessionStats(traceRangeRef.current).catch(handleError);
+    } else if (activityView === "usage") {
+      void loadTraceStats(traceRangeRef.current).catch(handleError);
+    } else {
+      void loadTracing(tracePagination.page, traceRangeRef.current, true).catch(handleError);
+    }
+  }, [traceApiKeyFilter]);
 
   const login = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -866,7 +890,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
       }
     }, 10_000);
     return () => window.clearInterval(timer);
-  }, [tab, tracePagination.page, traceRange, activityView]);
+  }, [tab, tracePagination.page, traceRange, activityView, traceApiKeyFilter]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -1614,6 +1638,13 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
             traceExportInProgress={traceExportInProgress}
             traces={traces}
             projectUsageStats={projectUsageStats}
+            apiKeys={proxyApiKeys}
+            apiKeyFilter={traceApiKeyFilter}
+            setApiKeyFilter={(value) => {
+              setTraceApiKeyFilter(value);
+              traceRequestEpochRef.current += 1;
+              sessionStatsLoadedRef.current = null;
+            }}
             sessionStats={sessionStats}
             sessionStatsLoading={sessionStatsLoading}
             expandedSessionKey={expandedSessionKey}

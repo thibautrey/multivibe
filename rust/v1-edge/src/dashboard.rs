@@ -1,6 +1,6 @@
 use super::{
     EdgeConfig, EdgeState, admin_session_value, constant_time_equal, cookie_value, header_value,
-    json_response, now_ms, trim_slashes,
+    json_response, now_ms, proxy_api_key_preview, trim_slashes,
 };
 use axum::{
     body::{Body, to_bytes},
@@ -312,18 +312,6 @@ pub(super) async fn desktop_session_consume(
     response
 }
 
-fn proxy_api_key_preview(key: &str) -> String {
-    let chars = key.chars().collect::<Vec<_>>();
-    if chars.len() <= 12 {
-        return format!("{}••••", chars.iter().take(4).collect::<String>());
-    }
-    format!(
-        "{}••••{}",
-        chars.iter().take(8).collect::<String>(),
-        chars.iter().skip(chars.len() - 4).collect::<String>()
-    )
-}
-
 pub(super) async fn proxy_api_keys(state: &EdgeState) -> Response {
     let store = match state.store.snapshot().await {
         Ok(store) => store,
@@ -338,10 +326,10 @@ pub(super) async fn proxy_api_keys(state: &EdgeState) -> Response {
         .config
         .configured_api_keys
         .iter()
-        .enumerate()
-        .map(|(index, (application, key))| {
+        .map(|(application, key)| {
             json!({
-                "id": format!("configured:{index}"),
+                // Stable identity shared with trace attribution so usage can join.
+                "id": format!("configured:{application}"),
                 "application": application,
                 "keyPreview": proxy_api_key_preview(key),
                 "source": "environment",

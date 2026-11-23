@@ -9,6 +9,7 @@ export type AnalyticsStatus = {
   invalidLines: number;
   error?: string;
   pricingBackfill?: { version: string; state: "running" | "complete"; cursor: number; upper: number; updated: number; unpriced: number };
+  keyBucketBackfill?: { version: string; state: "running" | "complete"; cursor: number; upper: number; scanned: number };
 };
 
 /** One bounded RPC queue and one worker per store, never one full scan per viewer. */

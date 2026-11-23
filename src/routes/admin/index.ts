@@ -24,6 +24,7 @@ import type {
   CapacityProfile,
   ModelAlias,
   ApplicationWebhook,
+  ApplicationPolicy,
   UpstreamMode,
   StoreSettings,
 } from "../../types.js";
@@ -76,7 +77,7 @@ import {
   requestOpenCodeDeviceCode,
 } from "../../opencode.js";
 import type { CodexProjectRegistry } from "../../codex-projects.js";
-import { aggregateProjectUsage } from "../../project-usage.js";
+import { aggregateProjectUsage, addTrace as addProjectTrace, emptyUsage, finalizeUsage } from "../../project-usage.js";
 import {
   aggregateSessionUsage,
   sessionTurnsFor,
@@ -1030,8 +1031,9 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     const managed = await store.listProxyApiKeys();
     res.json({
       proxyApiKeys: [
-        ...configuredProxyApiKeys.map((entry, index) => ({
-          id: `configured:${index}`,
+        ...configuredProxyApiKeys.map((entry) => ({
+          // Stable identity shared with trace attribution so usage can join.
+          id: `configured:${entry.application}`,
           application: entry.application,
           keyPreview: proxyApiKeyPreview(entry.key),
           source: "environment" as const,
@@ -1103,9 +1105,46 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     if (!Number.isFinite(fairnessWeight) || fairnessWeight < 0.1 || fairnessWeight > 100) {
       return res.status(400).json({ error: "fairnessWeight must be between 0.1 and 100" });
     }
+    // Admission share fields are optional: omitting one preserves the stored
+    // value, while sending null explicitly clears it back to the default.
+    const share = <K extends "maxConcurrentShare" | "burst" | "shareWindows">(
+      key: K,
+    ): ApplicationPolicy[K] | null | undefined => {
+      if (!(key in (req.body ?? {}))) return current[key];
+      return req.body[key] === null ? null : req.body[key];
+    };
+    const maxConcurrentShare = share("maxConcurrentShare");
+    if (
+      maxConcurrentShare !== undefined &&
+      maxConcurrentShare !== null &&
+      (!Number.isFinite(Number(maxConcurrentShare)) ||
+        Number(maxConcurrentShare) < 0 ||
+        Number(maxConcurrentShare) > 1)
+    ) {
+      return res.status(400).json({ error: "maxConcurrentShare must be between 0 and 1" });
+    }
+    const burst = share("burst");
+    if (
+      burst !== undefined &&
+      burst !== null &&
+      (!Number.isInteger(Number(burst)) || Number(burst) < 0 || Number(burst) > 8)
+    ) {
+      return res.status(400).json({ error: "burst must be an integer between 0 and 8" });
+    }
+    const shareWindows = share("shareWindows");
+    if (shareWindows !== undefined && shareWindows !== null && !Array.isArray(shareWindows)) {
+      return res.status(400).json({ error: "shareWindows must be an array" });
+    }
     const policy = await store.upsertApplicationPolicy({
       ...current,
       fairnessWeight,
+      ...(maxConcurrentShare === undefined
+        ? {}
+        : { maxConcurrentShare: maxConcurrentShare ?? undefined }),
+      ...(burst === undefined ? {} : { burst: burst ?? undefined }),
+      ...(shareWindows === undefined
+        ? {}
+        : { shareWindows: shareWindows ?? undefined }),
     });
     res.json({
       ok: true,
@@ -1150,6 +1189,15 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     if (policy.webhooks.length === before) return res.status(404).json({ error: "not found" });
     await store.upsertApplicationPolicy(policy);
     res.status(204).end();
+  });
+
+  router.delete("/application-policies/:application", async (req, res) => {
+    const application = normalizeApplicationName(req.params.application);
+    if (!application) return res.status(400).json({ error: "invalid application" });
+    // Revoking a key does not revoke its share reservation; this does.
+    const deleted = await store.deleteApplicationPolicy(application);
+    if (!deleted) return res.status(404).json({ error: "policy not found" });
+    res.json({ ok: true });
   });
 
   router.get("/config", (_req, res) => {
@@ -1759,15 +1807,17 @@ export function createAdminRouter(options: AdminRoutesOptions) {
         : "";
     const projectIdFilter =
       typeof req.query.projectId === "string" ? req.query.projectId.trim() : "";
+    const apiKeyFilter =
+      typeof req.query.apiKeyId === "string" ? req.query.apiKeyId.trim() : "";
     const sinceMs = parseQueryNumber(req.query.sinceMs);
     const untilMs = parseQueryNumber(req.query.untilMs);
 
     if (traceManager.queryAnalytics) {
-      const report = await traceManager.queryAnalytics("usage", { sinceMs, untilMs, accountId: accountIdFilter, route: routeFilter, application: applicationFilter, projectId: projectIdFilter });
+      const report = await traceManager.queryAnalytics("usage", { sinceMs, untilMs, accountId: accountIdFilter, route: routeFilter, application: applicationFilter, projectId: projectIdFilter, apiKeyId: apiKeyFilter });
       const accounts = await store.listAccounts();
       const meta = new Map(accounts.map(a => [a.id, { id: a.id, provider: a.provider ?? "openai", email: a.email, enabled: a.enabled }]));
       report.byAccount = report.byAccount.map((entry: any) => ({ ...entry, account: meta.get(entry.accountId) ?? { id: entry.accountId } }));
-      return res.json({ ok: true, filters: { sinceMs, untilMs, accountId: accountIdFilter || undefined, route: routeFilter || undefined, application: applicationFilter || undefined, projectId: projectIdFilter || undefined }, ...report, analytics: traceManager.getPersistenceStatus().analytics });
+      return res.json({ ok: true, filters: { sinceMs, untilMs, accountId: accountIdFilter || undefined, route: routeFilter || undefined, application: applicationFilter || undefined, projectId: projectIdFilter || undefined, apiKeyId: apiKeyFilter || undefined }, ...report, analytics: traceManager.getPersistenceStatus().analytics });
     }
 
     const traces = filterVisibleTraces(await readStatsHistoryRange(sinceMs, untilMs));
@@ -1776,6 +1826,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       if (routeFilter && t.route !== routeFilter) return false;
       if (applicationFilter && t.application !== applicationFilter) return false;
       if (projectIdFilter && t.projectId !== projectIdFilter) return false;
+      if (apiKeyFilter && t.apiKeyId !== apiKeyFilter) return false;
       return true;
     });
     const usageTraces = filtered.filter(
@@ -1787,6 +1838,8 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     const byAccount = new Map<string, ReturnType<typeof createUsageAggregate>>();
     const byRoute = new Map<string, ReturnType<typeof createUsageAggregate>>();
     const byApplication = new Map<string, ReturnType<typeof createUsageAggregate>>();
+    const byApiKey = new Map<string, ReturnType<typeof emptyUsage>>();
+    const apiKeyMeta = new Map<string, { application?: string; keyPreview?: string; firstAt?: number; lastAt?: number }>();
 
     for (const trace of usageTraces) {
       addTraceToAggregate(globalAgg, trace);
@@ -1805,6 +1858,18 @@ export function createAdminRouter(options: AdminRoutesOptions) {
         byApplication.set(applicationKey, createUsageAggregate());
       addTraceToAggregate(byApplication.get(applicationKey)!, trace);
 
+      const apiKeyId = trace.apiKeyId ?? "unattributed";
+      if (!byApiKey.has(apiKeyId)) byApiKey.set(apiKeyId, emptyUsage());
+      addProjectTrace(byApiKey.get(apiKeyId)!, trace);
+      // "unattributed" is not an application; only real keys carry that label.
+      const knownKey = apiKeyMeta.get(apiKeyId);
+      const attribution = apiKeyId === "unattributed" ? {} : { application: trace.application, keyPreview: trace.apiKeyPreview };
+      if (!knownKey) apiKeyMeta.set(apiKeyId, { ...attribution, firstAt: trace.at, lastAt: trace.at });
+      else {
+        if (!knownKey.keyPreview && trace.apiKeyPreview) knownKey.keyPreview = trace.apiKeyPreview;
+        knownKey.firstAt = Math.min(knownKey.firstAt ?? trace.at, trace.at);
+        knownKey.lastAt = Math.max(knownKey.lastAt ?? trace.at, trace.at);
+      }
     }
 
     const accounts = await store.listAccounts();
@@ -1840,6 +1905,9 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       .map(([application, agg]) => ({ application, ...finalizeAggregate(agg) }))
       .sort((a, b) => b.requests - a.requests);
     const byProjectOut = aggregateProjectUsage(usageTraces);
+    const byApiKeyOut = Array.from(byApiKey.entries())
+      .map(([apiKeyId, usage]) => ({ apiKeyId, ...(apiKeyMeta.get(apiKeyId) ?? {}), ...finalizeUsage(usage) }))
+      .sort((a, b) => b.costUsd - a.costUsd || b.requests - a.requests);
 
     res.json({
       ok: true,
@@ -1848,6 +1916,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
         route: routeFilter || undefined,
         application: applicationFilter || undefined,
         projectId: projectIdFilter || undefined,
+        apiKeyId: apiKeyFilter || undefined,
         sinceMs,
         untilMs,
       },
@@ -1855,6 +1924,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       byAccount: byAccountOut,
       byRoute: byRouteOut,
       byApplication: byApplicationOut,
+      byApiKey: byApiKeyOut,
       byProject: byProjectOut,
       tracesEvaluated: traces.length,
       tracesMatched: usageTraces.length,
@@ -1868,6 +1938,8 @@ export function createAdminRouter(options: AdminRoutesOptions) {
         : "";
     const projectIdFilter =
       typeof req.query.projectId === "string" ? req.query.projectId.trim() : "";
+    const apiKeyFilter =
+      typeof req.query.apiKeyId === "string" ? req.query.apiKeyId.trim() : "";
     const sinceMs = parseQueryNumber(req.query.sinceMs);
     const untilMs = parseQueryNumber(req.query.untilMs);
     const limit = Math.max(
@@ -1880,8 +1952,8 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     );
 
     if (traceManager.queryAnalytics) {
-      const report = await traceManager.queryAnalytics("sessions", { sinceMs, untilMs, application: applicationFilter, projectId: projectIdFilter, limit, offset });
-      return res.json({ ok: true, filters: { sinceMs, untilMs, application: applicationFilter || undefined, projectId: projectIdFilter || undefined }, ...report,
+      const report = await traceManager.queryAnalytics("sessions", { sinceMs, untilMs, application: applicationFilter, projectId: projectIdFilter, apiKeyId: apiKeyFilter, limit, offset });
+      return res.json({ ok: true, filters: { sinceMs, untilMs, application: applicationFilter || undefined, projectId: projectIdFilter || undefined, apiKeyId: apiKeyFilter || undefined }, ...report,
         coverage: { totalAttempts: report.summary.totalAttempts, identifiedAttempts: report.summary.attempts, ratio: report.summary.coverage }, analytics: traceManager.getPersistenceStatus().analytics });
     }
 
@@ -1891,6 +1963,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     const filtered = traces.filter((t) => {
       if (applicationFilter && t.application !== applicationFilter) return false;
       if (projectIdFilter && t.projectId !== projectIdFilter) return false;
+      if (apiKeyFilter && t.apiKeyId !== apiKeyFilter) return false;
       return true;
     });
     const { summary, sessions } = aggregateSessionUsage(filtered);
@@ -1900,6 +1973,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       filters: {
         application: applicationFilter || undefined,
         projectId: projectIdFilter || undefined,
+        apiKeyId: apiKeyFilter || undefined,
         sinceMs,
         untilMs,
       },
@@ -1921,10 +1995,12 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     }
     const sinceMs = parseQueryNumber(req.query.sinceMs);
     const untilMs = parseQueryNumber(req.query.untilMs);
+    const apiKeyFilter =
+      typeof req.query.apiKeyId === "string" ? req.query.apiKeyId.trim() : "";
     if (traceManager.queryAnalytics) {
-      const report = await traceManager.queryAnalytics("turns", { sinceMs, untilMs, sessionKey, limit: parseQueryNumber(req.query.limit), offset: parseQueryNumber(req.query.offset) });
+      const report = await traceManager.queryAnalytics("turns", { sinceMs, untilMs, sessionKey, apiKeyId: apiKeyFilter || undefined, limit: parseQueryNumber(req.query.limit), offset: parseQueryNumber(req.query.offset) });
       if (!report.total) return res.status(404).json({ error: "not found" });
-      return res.json({ ok: true, filters: { sinceMs, untilMs }, sessionKey, ...report, analytics: traceManager.getPersistenceStatus().analytics });
+      return res.json({ ok: true, filters: { sinceMs, untilMs, apiKeyId: apiKeyFilter || undefined }, sessionKey, ...report, analytics: traceManager.getPersistenceStatus().analytics });
     }
     const traces = filterVisibleTraces(
       await readStatsHistoryRange(sinceMs, untilMs),
@@ -1937,14 +2013,21 @@ export function createAdminRouter(options: AdminRoutesOptions) {
   router.get("/stats/traces", async (req, res) => {
     const sinceMs = parseQueryNumber(req.query.sinceMs);
     const untilMs = parseQueryNumber(req.query.untilMs);
+    const apiKeyFilter =
+      typeof req.query.apiKeyId === "string" ? req.query.apiKeyId.trim() : "";
+    const applicationFilter =
+      typeof req.query.application === "string" ? req.query.application.trim() : "";
+    const projectIdFilter =
+      typeof req.query.projectId === "string" ? req.query.projectId.trim() : "";
     const { totalStored, matched, stats } = await getTraceStats(
       sinceMs,
       untilMs,
+      { application: applicationFilter || undefined, projectId: projectIdFilter || undefined, apiKeyId: apiKeyFilter || undefined },
     );
 
     res.json({
       ok: true,
-      filters: { sinceMs, untilMs },
+      filters: { sinceMs, untilMs, application: applicationFilter || undefined, projectId: projectIdFilter || undefined, apiKeyId: apiKeyFilter || undefined },
       totalStored,
       matched,
       stats,

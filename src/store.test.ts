@@ -110,6 +110,75 @@ test("dashboard API keys are persisted and can be revoked", async () => {
   await fs.rm(directory, { recursive: true, force: true });
 });
 
+test("an admission share survives the round trip the edge reads", async () => {
+  // The admin API writes these fields and the Rust edge reads them from the same
+  // file. A silent drop on either side would leave the fair share at its default
+  // while the dashboard showed the configured value.
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-store-"));
+  const filePath = path.join(directory, "accounts.json");
+  const store = new AccountStore(filePath);
+  await store.init();
+
+  await store.upsertApplicationPolicy({
+    application: "hermes-client",
+    fairnessWeight: 1,
+    maxConcurrentShare: 0.1,
+    burst: 0,
+    shareWindows: [
+      { startHour: 22, endHour: 6, days: [5, 6], multiplier: 3 },
+    ],
+    webhooks: [],
+  });
+
+  const onDisk = JSON.parse(await fs.readFile(filePath, "utf8")) as {
+    applicationPolicies: Array<Record<string, unknown>>;
+  };
+  const written = onDisk.applicationPolicies.find(
+    (policy) => policy.application === "hermes-client",
+  );
+  assert.equal(written?.maxConcurrentShare, 0.1);
+  assert.equal(written?.burst, 0);
+  assert.deepEqual(written?.shareWindows, [
+    { startHour: 22, endHour: 6, days: [5, 6], multiplier: 3 },
+  ]);
+
+  await fs.rm(directory, { recursive: true, force: true });
+});
+
+test("out-of-range share values are clamped rather than written through", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-store-"));
+  const filePath = path.join(directory, "accounts.json");
+  const store = new AccountStore(filePath);
+  await store.init();
+
+  await store.upsertApplicationPolicy({
+    application: "wild",
+    fairnessWeight: 1,
+    maxConcurrentShare: 4,
+    burst: 99,
+    // An empty window is a no-op, not a period that matches nothing.
+    shareWindows: [
+      { startHour: 9, endHour: 9, multiplier: 2 },
+      { startHour: 22, endHour: 6, multiplier: 40 },
+    ],
+    webhooks: [],
+  });
+
+  const onDisk = JSON.parse(await fs.readFile(filePath, "utf8")) as {
+    applicationPolicies: Array<Record<string, unknown>>;
+  };
+  const written = onDisk.applicationPolicies.find((policy) => policy.application === "wild");
+  assert.equal(written?.maxConcurrentShare, 1, "a share is a fraction");
+  assert.equal(written?.burst, 8, "burst is bounded");
+  assert.deepEqual(
+    written?.shareWindows,
+    [{ startHour: 22, endHour: 6, multiplier: 8 }],
+    "the empty window is dropped and the multiplier is bounded",
+  );
+
+  await fs.rm(directory, { recursive: true, force: true });
+});
+
 test("new and upgraded stores materialize anonymous sharing as future-only and enabled", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-store-"));
   const filePath = path.join(directory, "accounts.json");
@@ -284,4 +353,158 @@ test("account configuration, membership, and aliases advance the catalog revisio
   assert.equal(store.getCatalogRevision(), 11);
   await store.deleteModelAlias(alias.id);
   assert.equal(store.getCatalogRevision(), 12);
+});
+
+test("a flush keeps an enrollment key written by the other process", async (t) => {
+  // The shipped container runs Node and the Rust edge on the same store file.
+  // Rust writes an enrolled application's key directly; Node must not erase it
+  // on its next flush. Before the merge, this sequence lost the key in
+  // production within seconds, which made enrollment impossible to complete.
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-store-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const filePath = path.join(directory, "accounts.json");
+  const store = new AccountStore(filePath);
+  await store.init();
+
+  // Simulate the Rust writer: mutate the document on disk, as
+  // `AccountStore::add_enrolled_application` does.
+  const onDisk = JSON.parse(await fs.readFile(filePath, "utf8"));
+  onDisk.proxyApiKeys = [
+    {
+      id: "rust-key-id",
+      application: "hermes-pilot",
+      key: "mvhb_from_rust",
+      createdAt: 1,
+    },
+  ];
+  onDisk.applicationPolicies = [
+    {
+      application: "hermes-pilot",
+      fairnessWeight: 1,
+      maxConcurrentShare: 0.25,
+      burst: 1,
+      webhooks: [],
+    },
+  ];
+  await fs.writeFile(filePath, JSON.stringify(onDisk, null, 2));
+
+  // A Node-side mutation triggers a flush that would previously rewrite the
+  // document from stale memory and drop the Rust entries.
+  await store.addProxyApiKey({
+    id: "node-key-id",
+    application: "codex-remote",
+    key: "mv_node",
+    createdAt: 2,
+  });
+
+  const persisted = JSON.parse(await fs.readFile(filePath, "utf8"));
+  assert.deepEqual(
+    persisted.proxyApiKeys.map((entry: { application: string }) => entry.application).sort(),
+    ["codex-remote", "hermes-pilot"],
+  );
+  assert.deepEqual(
+    persisted.applicationPolicies.map((policy: { application: string }) => policy.application),
+    ["hermes-pilot"],
+  );
+  // The merged view is adopted, so later readers in this process see it too.
+  assert.deepEqual(
+    store.getCachedProxyApiKeys().map((entry) => entry.application).sort(),
+    ["codex-remote", "hermes-pilot"],
+  );
+});
+
+test("a deleted key is not resurrected by the read-before-write merge", async (t) => {
+  // Revocation must stay durable: the merge adopts entries it has never seen,
+  // which would otherwise re-adopt a key the operator just deleted from a
+  // document the other process still holds.
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-store-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const filePath = path.join(directory, "accounts.json");
+  const store = new AccountStore(filePath);
+  await store.init();
+  await store.addProxyApiKey({
+    id: "revoke-me",
+    application: "revoke-me",
+    key: "mv_revoke",
+    createdAt: 1,
+  });
+  assert.equal(await store.deleteProxyApiKey("revoke-me"), true);
+
+  // The other process rewrites the document with its older copy still present.
+  const onDisk = JSON.parse(await fs.readFile(filePath, "utf8"));
+  onDisk.proxyApiKeys = [
+    { id: "revoke-me", application: "revoke-me", key: "mv_revoke", createdAt: 1 },
+  ];
+  await fs.writeFile(filePath, JSON.stringify(onDisk, null, 2));
+
+  await store.addProxyApiKey({
+    id: "keep-me",
+    application: "keep-me",
+    key: "mv_keep",
+    createdAt: 3,
+  });
+
+  const persisted = JSON.parse(await fs.readFile(filePath, "utf8"));
+  assert.deepEqual(
+    persisted.proxyApiKeys.map((entry: { application: string }) => entry.application),
+    ["keep-me"],
+  );
+});
+
+test("a key enrolled by the other process can be revoked", async (t) => {
+  // Enrollment writes the key from the Rust edge, after this process loaded the
+  // store. Deleting from memory alone reported 404 for a credential that was
+  // still valid, so offboarding silently failed and the key kept authenticating.
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-store-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const filePath = path.join(directory, "accounts.json");
+  const store = new AccountStore(filePath);
+  await store.init();
+
+  // The edge enrolls a machine: the document changes, this process does not know.
+  const onDisk = JSON.parse(await fs.readFile(filePath, "utf8"));
+  onDisk.proxyApiKeys = [
+    { id: "enrolled-id", application: "hermes-client", key: "mvhb_x", createdAt: 1 },
+  ];
+  await fs.writeFile(filePath, JSON.stringify(onDisk, null, 2));
+
+  // Revocation must find it, not claim it does not exist.
+  assert.equal(await store.deleteProxyApiKey("enrolled-id"), true);
+
+  const persisted = JSON.parse(await fs.readFile(filePath, "utf8"));
+  assert.deepEqual(persisted.proxyApiKeys, []);
+  // And a second delete is honestly a 404, not a silent success.
+  assert.equal(await store.deleteProxyApiKey("enrolled-id"), false);
+});
+
+test("an application policy can be deleted, and stays deleted", async (t) => {
+  // Revoking a key used to leave its policy behind with no way to remove it, so
+  // an offboarded client kept a share reservation in every admission decision.
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-store-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const filePath = path.join(directory, "accounts.json");
+  const store = new AccountStore(filePath);
+  await store.init();
+
+  // Enrollment writes the policy from the Rust edge, after this process started.
+  const onDisk = JSON.parse(await fs.readFile(filePath, "utf8"));
+  onDisk.applicationPolicies = [
+    { application: "offboarded", fairnessWeight: 1, maxConcurrentShare: 0.25, webhooks: [] },
+    { application: "keep", fairnessWeight: 1, webhooks: [] },
+  ];
+  await fs.writeFile(filePath, JSON.stringify(onDisk, null, 2));
+
+  assert.equal(await store.deleteApplicationPolicy("offboarded"), true);
+  assert.deepEqual(
+    store.getCachedApplicationPolicies().map((policy) => policy.application),
+    ["keep"],
+  );
+  // A second delete is an honest 404, and the merge must not resurrect it.
+  assert.equal(await store.deleteApplicationPolicy("offboarded"), false);
+  await store.addProxyApiKey({ id: "x", application: "other", key: "mv_x", createdAt: 1 });
+  const persisted = JSON.parse(await fs.readFile(filePath, "utf8"));
+  assert.deepEqual(
+    persisted.applicationPolicies.map((policy: { application: string }) => policy.application),
+    ["keep"],
+  );
 });

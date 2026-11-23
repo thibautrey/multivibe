@@ -218,6 +218,34 @@ export type TracePagination = {
   hasNext: boolean;
 };
 
+export type ApiKeyUsage = {
+  apiKeyId: string;
+  application?: string;
+  keyPreview?: string;
+  requests: number;
+  ok: number;
+  errors: number;
+  stream: number;
+  successRate: number;
+  streamingRate: number;
+  requestsWithUsage: number;
+  requestsWithCost: number;
+  unpricedRequests: number;
+  costUsd: number | null;
+  avgLatencyMs: number | null;
+  latencyMsTotal: number | null;
+  latencyP50Ms: number | null;
+  latencyP95Ms: number | null;
+  tokens: {
+    prompt: number | null;
+    completion: number | null;
+    input: number | null;
+    cachedInput: number | null;
+    output: number | null;
+    total: number | null;
+  };
+};
+
 export type ProjectUsageStats = {
   byProject: Array<{
     projectId: string;
@@ -273,6 +301,7 @@ export type ProjectUsageStats = {
     firstAt?: number;
     lastAt?: number;
   }>;
+  byApiKey?: ApiKeyUsage[];
 };
 
 export type TraceRange = TraceRangePreset | { startDate: string; endDate: string };

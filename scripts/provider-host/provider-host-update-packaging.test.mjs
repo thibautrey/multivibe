@@ -62,6 +62,11 @@ test("native packages include the updater and platform schedulers", async () => 
   assert.match(packager, /buildGo\(path\.join\(repositoryRoot, "host", "updater"\)/u);
   assert.match(packager, /buildRustEdge\(edgeDestination\)/u);
   assert.match(packager, /path\.join\(contents, "Helpers", "multivibe-v1-edge"\)/u);
+  // The Hermes bridge ships as a launcher plus its compiled entrypoint, and it must
+  // stay outside `Helpers/`: `codesign --deep` rejects an unsigned script there.
+  assert.match(packager, /path\.join\(applicationDirectory, "bin", "multivibe-hermes-bridge"\)/u);
+  assert.match(packager, /path\.join\(applicationDirectory, "dist", "hermes-bridge", "bin\.js"\)/u);
+  assert.doesNotMatch(packager, /Helpers", "multivibe-hermes-bridge"/u);
   assert.match(packager, /packaging", "macos", "Edge\.entitlements"/u);
   assert.match(packager, /buildGo\(\s*path\.join\(repositoryRoot, "host", "menu"\)/u);
   assert.match(packager, /CGO_ENABLED: selectedTarget\.goos === "linux" \? "1" : "0"/u);
@@ -103,6 +108,8 @@ test("native packages include the updater and platform schedulers", async () => 
   assert.match(macos, /body\.version!==process\.argv\[1\]/u);
   assert.match(verifier, /multivibe-host-updater/u);
   assert.match(verifier, /multivibe-v1-edge/u);
+  assert.match(verifier, /Resources\/app\/bin\/multivibe-hermes-bridge/u);
+  assert.match(verifier, /app\/dist\/hermes-bridge\/bin\.js/u);
   assert.match(verifier, /multivibe-host-menu/u);
   assert.match(uninstall, /multivibe-host-menu\.desktop/u);
   assert.match(packager, /windows-amd64.*zip/su);
@@ -188,4 +195,44 @@ test("native installer health probes reject stalled responses and wrong versions
       assert.equal(result, scenario === "healthy" ? 0 : 1);
     });
   }
+});
+
+test("Windows zip extraction avoids the Expand-Archive overload that is missing on .NET Framework", () => {
+  // Windows PowerShell 5.1's `Expand-Archive` calls
+  // `ZipFile.ExtractToDirectory(source, destination, overwrite)` — a three-argument
+  // overload that only exists on .NET Core. On .NET Framework it throws "Cannot
+  // find an overload for ExtractToDirectory and the argument count: 3", which
+  // failed the v0.2.147 release on the Windows runner. Both extractors must call
+  // the two-argument overload directly.
+  return Promise.all([
+    read("scripts/provider-host/package-provider-host.mjs"),
+    read("scripts/provider-host/verify-provider-host.mjs"),
+  ]).then(([packager, verifier]) => {
+    for (const [name, source] of [["packager", packager], ["verifier", verifier]]) {
+      // Only the *code* matters: the comments above each extractor name the
+      // cmdlet to explain why it is not used, and a naive scan would flag them.
+      const code = source
+        .split("\n")
+        .filter((line) => !line.trimStart().startsWith("//"))
+        .join("\n");
+      assert.doesNotMatch(code, /Expand-Archive|Compress-Archive/u, `${name} must not call Expand-Archive`);
+      assert.match(code, /\[System\.IO\.Compression\.ZipFile\]::ExtractToDirectory\(/u);
+      assert.match(code, /Add-Type -AssemblyName System\.IO\.Compression\.FileSystem/u);
+    }
+  });
+});
+
+test("the release workflow pins a Go toolchain without the stdlib vuln it scans for", async () => {
+  // `govulncheck` runs before packaging and fails on any *reachable* stdlib
+  // vulnerability, so the pinned version must be >= the fix for GO-2026-6859
+  // (fixed in 1.26.11). Pinning a vulnerable toolchain makes every release fail.
+  const workflow = await read(".github/workflows/provider-host-release.yml");
+  const match = /GO_VERSION:\s*"(\d+)\.(\d+)\.(\d+)"/u.exec(workflow);
+  assert.ok(match, "GO_VERSION must stay pinned");
+  const [, major, minor, patch] = match.map(Number);
+  const atLeastFix =
+    major > 1 ||
+    (major === 1 && minor > 26) ||
+    (major === 1 && minor === 26 && patch >= 11);
+  assert.ok(atLeastFix, `GO_VERSION ${major}.${minor}.${patch} is below the 1.26.11 fix for GO-2026-6859`);
 });

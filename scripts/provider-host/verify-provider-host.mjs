@@ -105,10 +105,20 @@ async function extractZipArchive(archive, destination) {
     MULTIVIBE_VERIFY_ZIP_SOURCE: archive,
     MULTIVIBE_VERIFY_ZIP_DESTINATION: destination,
   };
+  // `Expand-Archive` is not usable here. On Windows PowerShell 5.1 (.NET
+  // Framework) the cmdlet shipped with newer `Microsoft.PowerShell.Archive`
+  // builds calls `ZipFile.ExtractToDirectory` with three arguments, an overload
+  // that only exists on .NET Core, so it fails with "Cannot find an overload for
+  // ExtractToDirectory and the argument count: 3" — which is what broke the
+  // v0.2.147 release on the Windows runner. Call the two-argument overload
+  // directly instead; it is present on every .NET Framework, and it accepts an
+  // existing (empty) destination directory.
   await command(windowsPowerShellPath(), [
     "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand",
     encodedPowerShellCommand(
-      "$ErrorActionPreference = 'Stop'; Expand-Archive -LiteralPath $env:MULTIVIBE_VERIFY_ZIP_SOURCE -DestinationPath $env:MULTIVIBE_VERIFY_ZIP_DESTINATION -Force",
+      "$ErrorActionPreference = 'Stop'; " +
+        "Add-Type -AssemblyName System.IO.Compression.FileSystem; " +
+        "[System.IO.Compression.ZipFile]::ExtractToDirectory($env:MULTIVIBE_VERIFY_ZIP_SOURCE, $env:MULTIVIBE_VERIFY_ZIP_DESTINATION)",
     ),
   ], { env: environment });
 }
@@ -835,9 +845,10 @@ async function validateTree(root, options, archiveInspection) {
   const required = ["LICENSE", "NOTICE", "README.md", "THIRD_PARTY/node-LICENSE",
     "THIRD_PARTY/provider-host-dependencies.json"];
   if (manifest.platform === "darwin") required.push(
-    "install.sh", "uninstall.sh", `${macPrefix}/Frameworks/node`,
+    "install.sh", "uninstall.sh", "install-hermes-bridge.sh", `${macPrefix}/Frameworks/node`,
     `${macPrefix}/MacOS/multivibe-host`, `${macPrefix}/MacOS/MultiVibe Host`,
     `${macPrefix}/Helpers/multivibe-host-updater`, `${macPrefix}/Helpers/multivibe-v1-edge`,
+    `${macPrefix}/Resources/app/bin/multivibe-hermes-bridge`,
     `${macPrefix}/Resources/MultiVibeMenuBarTemplate.png`, `${macPrefix}/Resources/MultiVibe.icns`,
     `${macPrefix}/Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework`,
     `${macPrefix}/Frameworks/MultiVibe Chromium Helper.app/Contents/MacOS/MultiVibe Chromium Helper`,
@@ -851,8 +862,11 @@ async function validateTree(root, options, archiveInspection) {
     const suffix = manifest.platform === "windows" ? ".exe" : "";
     required.push(
       `install.${suffix ? "ps1" : "sh"}`, `uninstall.${suffix ? "ps1" : "sh"}`,
+      ...(manifest.platform === "windows" ? [] : ["install-hermes-bridge.sh"]),
       `bin/node${suffix}`, `bin/multivibe-host${suffix}`, `bin/multivibe-host-updater${suffix}`,
       `bin/multivibe-host-menu${suffix}`, "app/dist/server.js", "app/dist/instrument.js",
+      "app/dist/hermes-bridge/bin.js",
+      ...(manifest.platform === "windows" ? [] : ["bin/multivibe-hermes-bridge"]),
       "app/modules/security/multivibe.module.json", "app/modules/security/dist/index.js", "verify-provider-host.mjs",
       `resources/provider/multivibe-host.${suffix ? "ico" : "png"}`,
     );

@@ -19,7 +19,10 @@ concurrency:
 
 env:
   NODE_VERSION: 22.23.2
-  GO_VERSION: "1.26.10"
+  # 1.26.11 fixes GO-2026-6859 (net/http MaxBytesReader header race). The pinned
+  # govulncheck step fails the release on a reachable stdlib vulnerability, so
+  # staying on 1.26.10 makes every release fail at the scan.
+  GO_VERSION: "1.26.11"
 
 jobs:
   validate-tag:

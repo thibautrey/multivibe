@@ -17,7 +17,10 @@ import { MODEL_PRICING_VERSION, estimateCostUsd } from "./model-pricing.js";
 
 // Fixed release migration, deliberately independent of future catalog versions.
 export const MODELS_DEV_COST_BACKFILL = "models-dev-missing-costs-2026-10-25-v1";
+/** One release migration; entering a new key dimension needs its own buckets. */
+export const KEY_BUCKET_BACKFILL = "api-key-buckets-2026-11-16-v1";
 type PricingBackfill = { state: "running" | "complete"; cursor: number; upper: number; updated: number; unpriced: number };
+type KeyBucketBackfill = { state: "running" | "complete"; cursor: number; upper: number; scanned: number };
 
 const HOUR = 3_600_000;
 const MIN = -Number.MAX_SAFE_INTEGER;
@@ -25,12 +28,12 @@ const MAX = Number.MAX_SAFE_INTEGER;
 const BATCH = 1000;
 const encode = (value: unknown) => JSON.stringify(value, (_key, item) => item instanceof Map ? { $map: [...item] } : item);
 const decode = (value: string) => JSON.parse(value, (_key, item) => item && item.$map ? new Map(item.$map) : item);
-type Filter = { sinceMs?: number; untilMs?: number; accountId?: string; route?: string; application?: string; projectId?: string };
+type Filter = { sinceMs?: number; untilMs?: number; accountId?: string; route?: string; application?: string; projectId?: string; apiKeyId?: string };
 type Rollup = { meta: TraceEntry; usage: UsageAggregate; project: MutableUsage; sessionAttempts: number };
 function bounds(args: Filter) { return [Number.isFinite(args.sinceMs) ? args.sinceMs! : MIN, Number.isFinite(args.untilMs) ? args.untilMs! : MAX]; }
 function visible(t: TraceEntry) { return !isHiddenTraceRoute(t.route) && t.traceKind !== "diagnostic"; }
 function attempt(t: TraceEntry) { return !t.traceKind || t.traceKind === "upstream-attempt"; }
-function matches(t: TraceEntry, f: Filter) { return (!f.accountId || t.accountId === f.accountId) && (!f.route || t.route === f.route) && (!f.application || t.application === f.application) && (!f.projectId || t.projectId === f.projectId); }
+function matches(t: TraceEntry, f: Filter) { return (!f.accountId || t.accountId === f.accountId) && (!f.route || t.route === f.route) && (!f.application || t.application === f.application) && (!f.projectId || t.projectId === f.projectId) && (!f.apiKeyId || t.apiKeyId === f.apiKeyId); }
 function mergeUsage(target: UsageAggregate, source: UsageAggregate) {
   for (const key of ["requests", "ok", "errors", "stream", "latencyMsTotal", "requestsWithUsage", "promptTokens", "completionTokens", "totalTokens"] as const) target[key] += source[key];
   for (const [key, value] of Object.entries(source.statusCounts)) target.statusCounts[key] = (target.statusCounts[key] ?? 0) + value;
@@ -52,6 +55,8 @@ export class TraceAnalyticsStore {
   private scanning?: Promise<void>;
   private pricingBackfillEnabled = false;
   private repricing = false;
+  private retyping = false;
+  private keyBucketBackfill?: KeyBucketBackfill;
   private generation = 0;
   private cache = new Map<string, { generation: number; expires: number; value: any }>();
   status: AnalyticsStatus = { ready: false, indexed: 0, pendingBytes: 0, invalidLines: 0 };
@@ -71,6 +76,7 @@ export class TraceAnalyticsStore {
       CREATE INDEX IF NOT EXISTS entries_project_at ON entries(project_id, at);
       CREATE INDEX IF NOT EXISTS entries_application_at ON entries(application, at);
       CREATE TABLE IF NOT EXISTS buckets (at INTEGER PRIMARY KEY, payload TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS buckets_by_key (at INTEGER NOT NULL, key TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(at, key));
       CREATE TABLE IF NOT EXISTS usage_buckets (at INTEGER NOT NULL, key TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(at, key));
       CREATE TABLE IF NOT EXISTS recent (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE, payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS cursors (identity TEXT PRIMARY KEY, offset INTEGER NOT NULL);
@@ -90,8 +96,17 @@ export class TraceAnalyticsStore {
       CREATE TABLE IF NOT EXISTS session_reports (scope TEXT, key TEXT, payload TEXT, cost REAL, turns INTEGER, last_at INTEGER, PRIMARY KEY(scope,key));
       CREATE INDEX IF NOT EXISTS session_reports_page ON session_reports(scope,cost DESC,turns DESC,last_at DESC,key);
     `);
+    // Additive migration: existing databases gain the API-key column and index.
+    const entryColumns = new Set((this.db.prepare("PRAGMA table_info(entries)").all() as any[]).map(row => String(row.name)));
+    if (!entryColumns.has("api_key")) this.db.exec("ALTER TABLE entries ADD COLUMN api_key TEXT");
+    this.db.exec("CREATE INDEX IF NOT EXISTS entries_api_key_at ON entries(api_key, at)");
     this.status.indexed = Number((this.db.prepare("SELECT value FROM metadata WHERE key='count'").get() as any)?.value ?? 0);
     this.status.ready = !!this.db.prepare("SELECT 1 FROM metadata WHERE key='history_imported'").get();
+    const keyBackfillRow = this.db.prepare("SELECT value FROM metadata WHERE key=?").get(KEY_BUCKET_BACKFILL) as { value: string } | undefined;
+    this.keyBucketBackfill = keyBackfillRow
+      ? (JSON.parse(keyBackfillRow.value) as KeyBucketBackfill)
+      : { state: "running", cursor: 0, upper: Number((this.db.prepare("SELECT MAX(rowid) AS id FROM entries").get() as any).id ?? 0), scanned: 0 };
+    this.status.keyBucketBackfill = { version: KEY_BUCKET_BACKFILL, ...this.keyBucketBackfill };
   }
 
   static async open(config: ConstructorParameters<typeof TraceAnalyticsStore>[0], publish?: (status: AnalyticsStatus) => void) {
@@ -127,10 +142,11 @@ export class TraceAnalyticsStore {
     for (const t of this.range({ sinceMs: at, untilMs: at + HOUR - 1 })) {
       addTraceToBucket(bucket, t);
       if (!attempt(t)) continue;
-      const key = JSON.stringify([t.accountId, t.route, t.application, t.projectId, t.model]);
+      const key = JSON.stringify([t.accountId, t.route, t.application, t.apiKeyId, t.projectId, t.model]);
       let rollup = rollups.get(key);
       if (!rollup) {
-        rollup = { meta: { accountId: t.accountId, route: t.route, application: t.application, projectId: t.projectId,
+        rollup = { meta: { accountId: t.accountId, route: t.route, application: t.application, apiKeyId: t.apiKeyId,
+          apiKeyPreview: t.apiKeyPreview, projectId: t.projectId,
           projectName: t.projectName, projectRemote: t.projectRemote, model: t.model } as TraceEntry,
           usage: createUsageAggregate(), project: emptyUsage(), sessionAttempts: 0 };
         rollups.set(key, rollup);
@@ -141,6 +157,16 @@ export class TraceAnalyticsStore {
     }
     this.db.prepare("INSERT OR REPLACE INTO buckets VALUES (?,?)").run(at, encode(bucket));
     this.db.prepare("DELETE FROM usage_buckets WHERE at=?").run(at);
+    this.db.prepare("DELETE FROM buckets_by_key WHERE at=?").run(at);
+    const perKey = new Map<string, TraceBucketAggregate>();
+    for (const t of this.range({ sinceMs: at, untilMs: at + HOUR - 1 })) {
+      const key = t.apiKeyId ?? "unattributed";
+      const value = perKey.get(key) ?? createEmptyBucket(at);
+      addTraceToBucket(value, t);
+      perKey.set(key, value);
+    }
+    const insertKey = this.db.prepare("INSERT OR REPLACE INTO buckets_by_key VALUES (?,?,?)");
+    for (const [key, value] of perKey) insertKey.run(at, key, encode(value));
     const insert = this.db.prepare("INSERT INTO usage_buckets VALUES (?,?,?)");
     for (const [key, rollup] of rollups) insert.run(at, key, JSON.stringify(rollup));
   }
@@ -225,11 +251,67 @@ export class TraceAnalyticsStore {
     } finally { this.repricing = false; }
   }
 
+  /**
+   * Backfill the per-key hourly buckets once for history indexed before
+   * MULTIVIBE-270. Keyset batches over `entries` make it resumable after a
+   * restart and idempotent; progress is durable in `metadata`.
+   */
+  private async backfillKeyBuckets() {
+    const progress = this.keyBucketBackfill;
+    if (!progress || progress.state === "complete") return;
+    // Reports must not mix pre- and post-backfill key aggregates in one window.
+    this.retyping = true;
+    this.status.ready = false;
+    this.emit();
+    const select = this.db.prepare("SELECT rowid AS cursor, at, payload FROM entries WHERE rowid>? AND rowid<=? ORDER BY rowid LIMIT ?");
+    const insertKey = this.db.prepare("INSERT OR REPLACE INTO buckets_by_key VALUES (?,?,?)");
+    const getKey = this.db.prepare("SELECT payload FROM buckets_by_key WHERE at=? AND key=?");
+    while (!this.stopped) {
+      const rows = select.all(progress.cursor, progress.upper, BATCH) as Array<{ cursor: number; at: number; payload: string }>;
+      if (!rows.length) break;
+      const next = { ...progress };
+      const pending = new Map<string, { at: number; key: string; value: TraceBucketAggregate }>();
+      this.db.transaction(() => {
+        for (const row of rows) {
+          const t = JSON.parse(row.payload) as TraceEntry;
+          const hour = Math.floor(t.at / HOUR) * HOUR;
+          const key = t.apiKeyId ?? "unattributed";
+          const combined = `${hour}:${key}`;
+          let bucket = pending.get(combined);
+          if (!bucket) {
+            const existing = getKey.get(hour, key) as any;
+            bucket = { at: hour, key, value: existing ? decode(existing.payload) : createEmptyBucket(hour) };
+            pending.set(combined, bucket);
+          }
+          addTraceToBucket(bucket.value, t);
+          next.cursor = row.cursor;
+          next.scanned++;
+        }
+        for (const entry of pending.values()) insertKey.run(entry.at, entry.key, encode(entry.value));
+        this.saveMeta(KEY_BUCKET_BACKFILL, JSON.stringify(next));
+      })();
+      Object.assign(progress, next);
+      this.status.keyBucketBackfill = { version: KEY_BUCKET_BACKFILL, ...progress };
+      this.emit();
+      await yieldToQueries();
+    }
+    if (this.stopped) return;
+    progress.state = "complete";
+    this.saveMeta(KEY_BUCKET_BACKFILL, JSON.stringify(progress));
+    this.status.keyBucketBackfill = { version: KEY_BUCKET_BACKFILL, ...progress };
+    this.generation++; this.cache.clear();
+    this.retyping = false;
+    this.status.ready = true;
+    this.emit();
+  }
+
   /** Entries, deduplication, aggregates and input cursor commit in one transaction. */
   append(entries: TraceEntry[], cursor?: { identity: string; offset: number }, journal = false) {
     const buckets = new Map<number, TraceBucketAggregate>();
+    const keyBuckets = new Map<string, { at: number; key: string; value: TraceBucketAggregate }>();
+    const getKeyBucket = this.db.prepare("SELECT payload FROM buckets_by_key WHERE at=? AND key=?");
     const rollups = new Map<string, { at: number; key: string; value: Rollup }>();
-    const insert = this.db.prepare("INSERT OR IGNORE INTO entries VALUES (?,?,?,?,?,?,?,?,?)");
+    const insert = this.db.prepare("INSERT OR IGNORE INTO entries VALUES (?,?,?,?,?,?,?,?,?,?)");
     const deleteRecent = this.db.prepare("DELETE FROM recent WHERE id=?");
     const insertRecent = this.db.prepare("INSERT INTO recent(id,payload) VALUES (?,?)");
     const getBucket = this.db.prepare("SELECT payload FROM buckets WHERE at=?");
@@ -256,7 +338,7 @@ export class TraceAnalyticsStore {
         }
         if (normalized.lifecycleState === "started" || !visible(normalized)) continue;
         const t = toStatsHistoryEntry(normalized);
-        if (!insert.run(t.id, t.at, t.completedAt ?? t.at, sessionKeyOf(t) ?? null, t.application ?? null, t.projectId ?? null, t.clientRequestId ?? t.id, t.traceKind ?? null, JSON.stringify(t)).changes) continue;
+        if (!insert.run(t.id, t.at, t.completedAt ?? t.at, sessionKeyOf(t) ?? null, t.application ?? null, t.projectId ?? null, t.clientRequestId ?? t.id, t.traceKind ?? null, JSON.stringify(t), t.apiKeyId ?? null).changes) continue;
         inserted++;
         markRevision.run(t.id,this.status.indexed+inserted);
         const sessionKey = attempt(t) ? sessionKeyOf(t) : undefined;
@@ -265,13 +347,24 @@ export class TraceAnalyticsStore {
         let bucket = buckets.get(hour);
         if (!bucket) { const row = getBucket.get(hour) as any; bucket = row ? decode(row.payload) : createEmptyBucket(hour); buckets.set(hour, bucket!); }
         addTraceToBucket(bucket!, t);
+        // Per-key hourly buckets keep key-filtered stats bounded to the key's own
+        // hours instead of scanning raw entries for the whole range.
+        const keyId = t.apiKeyId ?? "unattributed";
+        const keyCombined = `${hour}:${keyId}`;
+        let keyBucket = keyBuckets.get(keyCombined);
+        if (!keyBucket) {
+          const row = getKeyBucket.get(hour, keyId) as any;
+          keyBucket = { at: hour, key: keyId, value: row ? decode(row.payload) : createEmptyBucket(hour) };
+          keyBuckets.set(keyCombined, keyBucket);
+        }
+        addTraceToBucket(keyBucket.value, t);
         if (!attempt(t)) continue;
-        const key = JSON.stringify([t.accountId, t.route, t.application, t.projectId, t.model]);
+        const key = JSON.stringify([t.accountId, t.route, t.application, t.apiKeyId, t.projectId, t.model]);
         const combined = `${hour}:${key}`;
         let rollup = rollups.get(combined);
         if (!rollup) {
           const row = getRollup.get(hour, key) as any;
-          rollup = { at: hour, key, value: row ? JSON.parse(row.payload) : { meta: { accountId: t.accountId, route: t.route, application: t.application, projectId: t.projectId, projectName: t.projectName, projectRemote: t.projectRemote, model: t.model }, usage: createUsageAggregate(), project: emptyUsage(), sessionAttempts: 0 } };
+          rollup = { at: hour, key, value: row ? JSON.parse(row.payload) : { meta: { accountId: t.accountId, route: t.route, application: t.application, apiKeyId: t.apiKeyId, apiKeyPreview: t.apiKeyPreview, projectId: t.projectId, projectName: t.projectName, projectRemote: t.projectRemote, model: t.model }, usage: createUsageAggregate(), project: emptyUsage(), sessionAttempts: 0 } };
           rollups.set(combined, rollup);
         }
         if (sessionKeyOf(t)) rollup.value.sessionAttempts++;
@@ -279,6 +372,9 @@ export class TraceAnalyticsStore {
         addTrace(rollup.value.project, t);
       }
       for (const [at, bucket] of buckets) this.db.prepare("INSERT OR REPLACE INTO buckets VALUES (?,?)").run(at, encode(bucket));
+      // (at, key) is the primary key, so replacements are idempotent.
+      const insertKeyBucket = this.db.prepare("INSERT OR REPLACE INTO buckets_by_key VALUES (?,?,?)");
+      for (const entry of keyBuckets.values()) insertKeyBucket.run(entry.at, entry.key, encode(entry.value));
       for (const r of rollups.values()) this.db.prepare("INSERT OR REPLACE INTO usage_buckets VALUES (?,?,?)").run(r.at, r.key, JSON.stringify(r.value));
       if (journal) this.db.prepare("DELETE FROM recent WHERE seq < COALESCE((SELECT seq FROM recent ORDER BY seq DESC LIMIT 1 OFFSET ?),0)").run(Math.max(0, this.config.retentionMax - 1));
       if (cursor) this.db.prepare("INSERT OR REPLACE INTO cursors VALUES (?,?)").run(cursor.identity, cursor.offset);
@@ -353,6 +449,8 @@ export class TraceAnalyticsStore {
         if (await this.consume(previous, true) === true) await unlink(previous).catch((e) => { if (e.code !== "ENOENT") throw e; });
         await this.consume(this.config.filePath, true);
       }
+      await this.backfillKeyBuckets();
+      if (this.stopped) return;
       await this.backfillMissingCosts();
       if (this.stopped) return;
       this.status.ready = true;
@@ -366,6 +464,7 @@ export class TraceAnalyticsStore {
     const bindings: any[] = [since, until];
     if (args.application) { clauses.push("application = ?"); bindings.push(args.application); }
     if (args.projectId) { clauses.push("project_id = ?"); bindings.push(args.projectId); }
+    if (args.apiKeyId) { clauses.push("api_key = ?"); bindings.push(args.apiKeyId); }
     const sql = `SELECT payload FROM entries WHERE ${clauses.join(" AND ")} ${extra}`;
     for (const row of this.db.prepare(sql).iterate(...bindings, ...params) as Iterable<{ payload: string }>) {
       const t = JSON.parse(row.payload); if (matches(t, args)) yield t;
@@ -391,8 +490,16 @@ export class TraceAnalyticsStore {
     const edges = new Map<number, TraceBucketAggregate>();
     for (const t of edge) { const hour=Math.floor(t.at/HOUR)*HOUR; const bucket=edges.get(hour)??createEmptyBucket(hour);addTraceToBucket(bucket,t);edges.set(hour,bucket); }
     const db=this.db;
+    // A key filter cannot use the global hourly buckets; its own durable
+    // per-key buckets keep the query bounded to that key's hours.
+    const keyFilter = args.apiKeyId;
     function* buckets(): Generator<TraceBucketAggregate> {
       const edgeHours=[...edges.values()].sort((a,b)=>a.at-b.at);
+      if (keyFilter) {
+        for(const bucket of edgeHours) yield bucket;
+        for(const row of db.prepare("SELECT payload FROM buckets_by_key WHERE key=? AND at>=? AND at<? ORDER BY at").iterate(keyFilter,firstFull,fullEnd) as Iterable<any>) yield decode(row.payload);
+        return;
+      }
       for(const bucket of edgeHours) if(bucket.at<firstFull)yield bucket;
       for(const row of db.prepare("SELECT payload FROM buckets WHERE at>=? AND at<? ORDER BY at").iterate(firstFull,fullEnd) as Iterable<any>) yield decode(row.payload);
       for(const bucket of edgeHours) if(bucket.at>=firstFull)yield bucket;
@@ -403,19 +510,31 @@ export class TraceAnalyticsStore {
   usage(args: Filter) {
     const { firstFull, fullEnd, edge } = this.edgeAndHours(args);
     const global = createUsageAggregate();
-    const dimensions = [new Map<string, UsageAggregate>(), new Map<string, UsageAggregate>(), new Map<string, UsageAggregate>()];
+    const dimensions = [new Map<string, UsageAggregate>(), new Map<string, UsageAggregate>(), new Map<string, UsageAggregate>(), new Map<string, UsageAggregate>()];
+    const keyMeta = new Map<string, { application?: string; keyPreview?: string }>();
     const projects = new Map<string, { meta: TraceEntry; usage: MutableUsage; models: Map<string, MutableUsage>; firstAt?: number; lastAt?: number }>();
+    // API keys need the same money/percentile dimensions as projects, which the
+    // plain UsageAggregate does not carry.
+    const apiKeys = new Map<string, { usage: MutableUsage; firstAt?: number; lastAt?: number }>();
     const merge = (r: Rollup) => {
       if (!matches(r.meta, args)) return;
       mergeUsage(global, r.usage);
-      const keys = [r.meta.accountId ?? "unknown", r.meta.route ?? "unknown", r.meta.application ?? "unattributed"];
+      const keys = [r.meta.accountId ?? "unknown", r.meta.route ?? "unknown", r.meta.application ?? "unattributed", r.meta.apiKeyId ?? "unattributed"];
       dimensions.forEach((map, i) => { const agg = map.get(keys[i]) ?? createUsageAggregate(); mergeUsage(agg, r.usage); map.set(keys[i], agg); });
+      const keyId = keys[3];
+      const known = keyMeta.get(keyId);
+      if (!known) keyMeta.set(keyId, { application: r.meta.application, keyPreview: r.meta.apiKeyPreview });
+      else if (!known.keyPreview && r.meta.apiKeyPreview) known.keyPreview = r.meta.apiKeyPreview;
       const key = r.meta.projectId ?? "unattributed";
       const p = projects.get(key) ?? { meta: r.meta, usage: emptyUsage(), models: new Map<string, MutableUsage>() };
       mergeProject(p.usage, r.project);
       const model = r.meta.model || "unknown"; const m = p.models.get(model) ?? emptyUsage(); mergeProject(m, r.project); p.models.set(model, m);
       p.firstAt = Math.min(p.firstAt ?? MAX, r.usage.firstAt ?? MAX); p.lastAt = Math.max(p.lastAt ?? MIN, r.usage.lastAt ?? MIN);
       projects.set(key, p);
+      const k = apiKeys.get(keyId) ?? { usage: emptyUsage() };
+      mergeProject(k.usage, r.project);
+      k.firstAt = Math.min(k.firstAt ?? MAX, r.usage.firstAt ?? MAX); k.lastAt = Math.max(k.lastAt ?? MIN, r.usage.lastAt ?? MIN);
+      apiKeys.set(keyId, k);
     };
     for (const row of this.db.prepare("SELECT payload FROM usage_buckets WHERE at>=? AND at<? ORDER BY at,key").iterate(firstFull, fullEnd) as Iterable<any>) merge(JSON.parse(row.payload));
     for (const t of edge) if (attempt(t)) { const usage = createUsageAggregate(); addTraceToAggregate(usage, t); const project = emptyUsage(); addTrace(project, t); merge({ meta: t, usage, project, sessionAttempts: sessionKeyOf(t) ? 1 : 0 }); }
@@ -423,7 +542,13 @@ export class TraceAnalyticsStore {
     const byProject = [...projects].map(([projectId, p]) => ({ projectId, projectName: p.meta.projectName, projectRemote: p.meta.projectRemote, firstAt: p.firstAt, lastAt: p.lastAt, ...finalizeUsage(p.usage), models: [...p.models].map(([model, value]) => ({ model, ...finalizeUsage(value) })).sort((a,b) => b.costUsd-a.costUsd || b.requests-a.requests) })).sort((a,b) => b.costUsd-a.costUsd || b.requests-a.requests);
     const [since, until] = bounds(args);
     const tracesEvaluated = (this.db.prepare("SELECT count(*) AS n FROM entries WHERE at>=? AND at<=?").get(since, until) as any).n;
-    return { totals: finalizeAggregate(global), byAccount: by(0, "accountId"), byRoute: by(1, "route"), byApplication: by(2, "application"), byProject, tracesEvaluated, tracesMatched: global.requests };
+    const byApiKey = [...apiKeys]
+      .map(([apiKeyId, k]) => {
+        const meta = apiKeyId === "unattributed" ? {} : (keyMeta.get(apiKeyId) ?? {});
+        return { apiKeyId, ...meta, firstAt: k.firstAt, lastAt: k.lastAt, ...finalizeUsage(k.usage) };
+      })
+      .sort((a, b) => b.costUsd - a.costUsd || b.requests - a.requests || a.apiKeyId.localeCompare(b.apiKeyId));
+    return { totals: finalizeAggregate(global), byAccount: by(0, "accountId"), byRoute: by(1, "route"), byApplication: by(2, "application"), byApiKey, byProject, tracesEvaluated, tracesMatched: global.requests };
   }
 
   /** Oversized sessions spill turn state to SQLite instead of growing a JS map without limit. */
@@ -484,7 +609,7 @@ export class TraceAnalyticsStore {
     // Recompute only sessions touched since the last durable report for this window.
     // A rolling live window reuses its scope until its lower bound changes.
     const [since, until] = bounds(args);
-    const scope = JSON.stringify([since, args.application ?? "", args.projectId ?? ""]);
+    const scope = JSON.stringify([since, args.application ?? "", args.projectId ?? "", args.apiKeyId ?? ""]);
     const previous = this.db.prepare("SELECT revision,until_ms FROM session_scopes WHERE scope=?").get(scope) as any;
     const rebuild = !previous || until < previous.until_ms;
     this.db.exec("CREATE TEMP TABLE IF NOT EXISTS changed_sessions (key TEXT PRIMARY KEY); DELETE FROM changed_sessions;");
@@ -542,9 +667,12 @@ export class TraceAnalyticsStore {
     const [since,until]=bounds(args);
     const limit=Math.max(1,Math.min(500,Math.floor(args.limit??200)));
     const offset=Math.max(0,Math.floor(args.offset??0));
-    const clause="session_key=? AND at>=? AND at<=? AND (kind IS NULL OR kind='upstream-attempt')";
-    const total=(this.db.prepare(`SELECT count(DISTINCT turn_id) AS n FROM entries WHERE ${clause}`).get(args.sessionKey,since,until) as any).n;
-    const keys=this.db.prepare(`SELECT turn_id FROM entries WHERE ${clause} GROUP BY turn_id ORDER BY min(at),turn_id LIMIT ? OFFSET ?`).all(args.sessionKey,since,until,limit,offset) as {turn_id:string}[];
+    // A key filter must constrain the turn count and the page, not only each turn body.
+    const keyClause = args.apiKeyId ? " AND api_key=?" : "";
+    const keyParams = args.apiKeyId ? [args.apiKeyId] : [];
+    const clause=`session_key=? AND at>=? AND at<=? AND (kind IS NULL OR kind='upstream-attempt')${keyClause}`;
+    const total=(this.db.prepare(`SELECT count(DISTINCT turn_id) AS n FROM entries WHERE ${clause}`).get(args.sessionKey,since,until,...keyParams) as any).n;
+    const keys=this.db.prepare(`SELECT turn_id FROM entries WHERE ${clause} GROUP BY turn_id ORDER BY min(at),turn_id LIMIT ? OFFSET ?`).all(args.sessionKey,since,until,...keyParams,limit,offset) as {turn_id:string}[];
     const turns=[];
     for(const {turn_id} of keys) turns.push(...sessionTurnsFor(this.range(args,"AND session_key=? AND turn_id=? ORDER BY at,id",[args.sessionKey,turn_id]),args.sessionKey));
     return {turns,total,limit,offset};
@@ -554,6 +682,7 @@ export class TraceAnalyticsStore {
     if (action === "append") { this.append(args.entries); return; }
     if (action === "status") return this.status;
     if (this.repricing) throw new Error("Analytics cost backfill is in progress");
+    if (this.retyping) throw new Error("Analytics API-key backfill is in progress");
     if (action === "recent") return (this.db.prepare("SELECT payload FROM recent ORDER BY seq").all() as any[]).map(r=>JSON.parse(r.payload));
     if (action === "trace") { const row=this.db.prepare("SELECT payload FROM recent WHERE id=?").get(args.id) as any; return row ? JSON.parse(row.payload) : null; }
     if (action === "range") return [...this.range(args)];
