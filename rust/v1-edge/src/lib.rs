@@ -12840,7 +12840,18 @@ fn inherit_alias_metadata(alias: &mut Value, target: &Value) {
 /// a window — a control-steered variant of a base model, for example — so there
 /// is nothing to inherit. The alias may then declare what it does support in
 /// `defaults.capabilities`. Declarations only fill fields the resolved catalog
-/// left empty; they never overwrite values the target published.
+/// left empty; they never overwrite values the target published — with one
+/// deliberate exception: the three reasoning fields.
+///
+/// Reasoning levels are frequently a cross-provider consensus rather than a
+/// fact about the runtime in use. `deepseek-v4.1-flash` is served by dozens of
+/// hosts whose published efforts only agree on `low` and `high`, so the merged
+/// entry advertises the intersection; a local vLLM deployment of the same
+/// weights accepts `max` as well. The operator who configures that deployment
+/// knows better than the federated catalog, so a declared
+/// `reasoning_options` / `default_reasoning_level` /
+/// `supported_reasoning_levels` replaces what the target carried instead of
+/// being dropped as a no-op.
 fn apply_alias_capabilities(entry: &mut Value, defaults: Option<&Value>) {
     let Some(capabilities) = defaults
         .and_then(|defaults| defaults.get("capabilities"))
@@ -12851,6 +12862,13 @@ fn apply_alias_capabilities(entry: &mut Value, defaults: Option<&Value>) {
     let Some(metadata) = entry.get_mut("metadata").and_then(Value::as_object_mut) else {
         return;
     };
+    // Declared reasoning levels win over the consensus a target publishes.
+    const AUTHORITATIVE: [&str; 3] = [
+        "reasoning_options",
+        "default_reasoning_level",
+        "supported_reasoning_levels",
+    ];
+    let declared_reasoning = capabilities.contains_key("reasoning_options");
     for key in [
         "context_window",
         "max_output_tokens",
@@ -12870,14 +12888,49 @@ fn apply_alias_capabilities(entry: &mut Value, defaults: Option<&Value>) {
         let Some(value) = capabilities.get(key).filter(|value| !value.is_null()) else {
             continue;
         };
-        let empty = metadata.get(key).is_none_or(Value::is_null);
         if key == "supports_reasoning" || key == "supports_tools" {
             if !value.is_boolean() {
                 continue;
             }
         }
-        if empty {
+        if (declared_reasoning && AUTHORITATIVE.contains(&key))
+            || metadata.get(key).is_none_or(Value::is_null)
+        {
             metadata.insert(key.to_owned(), value.clone());
+        }
+    }
+    // A replaced effort list can strand an inherited default outside it, which
+    // makes clients show no selected level. Keep the declared default, or drop
+    // one that the new list does not contain.
+    if declared_reasoning {
+        let declared = capabilities
+            .get("default_reasoning_level")
+            .and_then(Value::as_str);
+        let listed = metadata
+            .get("reasoning_options")
+            .and_then(Value::as_array)
+            .and_then(|options| {
+                options
+                    .iter()
+                    .find(|option| option["type"] == "effort")
+                    .and_then(|option| option["values"].as_array())
+            })
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let keep = match declared {
+            Some(effort) => listed.contains(&effort),
+            None => metadata
+                .get("default_reasoning_level")
+                .and_then(Value::as_str)
+                .is_some_and(|effort| listed.contains(&effort)),
+        };
+        if !keep {
+            metadata.remove("default_reasoning_level");
         }
     }
     let declared_name = metadata
@@ -18101,6 +18154,99 @@ mod tests {
             .expect("alias entry")["metadata"];
         assert_eq!(metadata["context_window"], json!(1048576), "{metadata}");
         assert_eq!(metadata["default_reasoning_level"], json!("high"), "{metadata}");
+    }
+
+    /// Reasoning levels come from a cross-provider consensus (`low`/`high` for
+    /// `deepseek-v4.1-flash`), which understates what the local runtime accepts.
+    /// A declared list must replace it, and the inherited default must not
+    /// survive outside the new list.
+    #[test]
+    fn alias_declared_reasoning_levels_override_the_target_consensus() {
+        let upstream = account("spark");
+        let mut store = store_with_accounts(vec![upstream.clone()]);
+        let mut alias = alias("bigmama", "deepseek-v4.1-flash");
+        alias.defaults = Some(json!({
+            "capabilities": {
+                "reasoning_options": [{"type": "effort", "values": ["low", "high", "max"]}],
+                "default_reasoning_level": "high",
+            }
+        }));
+        store.model_aliases.push(alias);
+        let mut cache = ModelCatalogCache::default();
+        cache.accounts.insert(
+            upstream.id.clone(),
+            AccountModelCatalogCache {
+                models: vec![model_entry_from_upstream(
+                    "deepseek-v4.1-flash",
+                    "openai-compatible",
+                    &upstream.id,
+                    &json!({
+                        "context_window": 1048576,
+                        "supports_reasoning": true,
+                        "reasoning_options": [{"type": "effort", "values": ["low", "high"]}],
+                        "default_reasoning_level": "high",
+                    }),
+                )],
+                ..Default::default()
+            },
+        );
+        let models = cached_exposed_models(&cache, &store, &EdgeConfig::default(), &[upstream]);
+        let metadata = &models
+            .iter()
+            .find(|entry| entry.get("id").and_then(Value::as_str) == Some("bigmama"))
+            .expect("alias entry")["metadata"];
+        assert_eq!(
+            metadata["reasoning_options"],
+            json!([{"type": "effort", "values": ["low", "high", "max"]}]),
+            "{metadata}"
+        );
+        assert_eq!(metadata["default_reasoning_level"], json!("high"), "{metadata}");
+        // Non-reasoning facts keep the conservative fill-only rule.
+        assert_eq!(metadata["context_window"], json!(1048576), "{metadata}");
+    }
+
+    /// A replacement list that omits the inherited default would leave clients
+    /// with no selected level, so the stale default is dropped instead.
+    #[test]
+    fn alias_reasoning_override_drops_a_default_it_no_longer_offers() {
+        let upstream = account("spark");
+        let mut store = store_with_accounts(vec![upstream.clone()]);
+        let mut alias = alias("bigmama", "deepseek-v4.1-flash");
+        alias.defaults = Some(json!({
+            "capabilities": {"reasoning_options": [{"type": "effort", "values": ["low", "max"]}]}
+        }));
+        store.model_aliases.push(alias);
+        let mut cache = ModelCatalogCache::default();
+        cache.accounts.insert(
+            upstream.id.clone(),
+            AccountModelCatalogCache {
+                models: vec![model_entry_from_upstream(
+                    "deepseek-v4.1-flash",
+                    "openai-compatible",
+                    &upstream.id,
+                    &json!({
+                        "supports_reasoning": true,
+                        "reasoning_options": [{"type": "effort", "values": ["low", "high"]}],
+                        "default_reasoning_level": "high",
+                    }),
+                )],
+                ..Default::default()
+            },
+        );
+        let models = cached_exposed_models(&cache, &store, &EdgeConfig::default(), &[upstream]);
+        let metadata = &models
+            .iter()
+            .find(|entry| entry.get("id").and_then(Value::as_str) == Some("bigmama"))
+            .expect("alias entry")["metadata"];
+        assert_eq!(
+            metadata["reasoning_options"],
+            json!([{"type": "effort", "values": ["low", "max"]}]),
+            "{metadata}"
+        );
+        assert!(
+            metadata.get("default_reasoning_level").is_none(),
+            "{metadata}"
+        );
     }
 
     #[test]
