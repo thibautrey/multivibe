@@ -7,12 +7,6 @@
       ]
     },
     {
-      "repository": "cce-server",
-      "candidateFiles": [
-        "./src/cce_server/models_runtime.py"
-      ]
-    },
-    {
       "repository": "proxy-of-proxy",
       "candidateFiles": []
     },
