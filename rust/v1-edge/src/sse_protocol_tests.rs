@@ -269,9 +269,13 @@ async fn assert_held_open_terminal_closes(transform: StreamTransform, dialect: C
         capacity_lease: AdmissionLease {
             controller: Arc::new(AdmissionController::new(Arc::new(AtomicU64::new(0)))),
             account_id: None,
+            application: None,
+            borrowed_from_grace: false,
         },
         activity_lease: None,
         stream_heartbeat: Duration::from_secs(15),
+        admission: None,
+        admission_note: None,
     });
     let result =
         tokio::time::timeout(Duration::from_secs(10), response.into_body().collect()).await;
