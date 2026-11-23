@@ -20087,11 +20087,8 @@ mod tests {
         );
         assert!(
             !report.grace_keeps_priority,
-            "but it no longer takes the last free slots (util={}, active={}, capacity={}, decision={:?})",
-            report.utilisation(),
-            report.account_active,
-            report.capacity,
-            report.decision
+            "but it no longer takes the last free slots (capacity={}, decision={:?})",
+            report.capacity, report.decision
         );
         drop(held);
     }
