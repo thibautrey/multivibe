@@ -91,8 +91,9 @@ Runtime behavior:
   `HEADROOM_COMPRESS_ALLOW_REMOTE=1`; the proxy token is still required on every
   call. A manual service reached over a network needs the same variable.
 - **Stop** stops the container and disables compression. **Uninstall** removes
-  the container, its named volume and both state files, and clears the edge
-  contract; the extension stays visible and can be installed again.
+  the container, its named volume and the node state file, and clears the edge
+  contract (the edge state file keeps `url: null`); the extension stays visible
+  and can be installed again.
 - Without a reachable Docker socket (no mount, or Docker Desktop not running)
   the panel reports the limitation, and you can still use the manual URL.
 - A startup reconcile reinstalls a missing container when the extension is
