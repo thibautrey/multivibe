@@ -12,6 +12,8 @@
 
 use std::{
     fmt,
+    io::Write as _,
+    path::Path,
     sync::{
         Arc,
         atomic::{AtomicU32, AtomicU64, Ordering},
@@ -38,7 +40,11 @@ const FAILURE_COOLDOWN_MAX_MS: u64 = 30_000;
 
 /// Marker-free modes only.  `ccr` would insert retrieval markers, but this
 /// integration never performs the response half that redeems them.
-const ALLOWED_MODES: &[&str] = &["lossy_inline", "lossless_then_lossy", "lossless"];
+pub const ALLOWED_MODES: &[&str] = &["lossy_inline", "lossless_then_lossy", "lossless"];
+
+const MAX_MIN_BYTES: usize = 1024 * 1024;
+const MIN_TIMEOUT_MS: u64 = 50;
+const MAX_TIMEOUT_MS: u64 = 30_000;
 
 #[derive(Clone)]
 pub struct Config {
@@ -97,17 +103,147 @@ impl Config {
             env("HEADROOM_TIMEOUT_MS")
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(DEFAULT_TIMEOUT_MS)
-                .clamp(50, 30_000),
+                .clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS),
         );
         config.min_bytes = env("HEADROOM_MIN_BYTES")
             .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(DEFAULT_MIN_BYTES);
+            .unwrap_or(DEFAULT_MIN_BYTES)
+            .min(MAX_MIN_BYTES);
         config.mode = env("HEADROOM_COMPRESS_MODE").map(|value| value.to_ascii_lowercase());
         config
     }
 
     pub fn enabled(&self) -> bool {
         self.url.is_some()
+    }
+
+    /// Parse the runtime contract used by the internal control endpoint and by
+    /// the persisted state file.  Unknown keys are rejected so a typo cannot
+    /// silently leave compression configured differently than the operator
+    /// asked for.
+    pub fn from_json(value: &Value) -> Result<Self, String> {
+        let object = value
+            .as_object()
+            .ok_or_else(|| "compression settings must be a JSON object".to_owned())?;
+        for key in object.keys() {
+            if !matches!(
+                key.as_str(),
+                "url" | "token" | "mode" | "timeoutMs" | "minBytes"
+            ) {
+                return Err(format!("unknown compression setting: {key}"));
+            }
+        }
+        let mut config = Self::default();
+        match object.get("url") {
+            None | Some(Value::Null) => {}
+            Some(Value::String(url)) => {
+                let url = url.trim();
+                if !url.is_empty() {
+                    config.url = Some(url.to_owned());
+                }
+            }
+            Some(_) => return Err("url must be a string or null".to_owned()),
+        }
+        match object.get("token") {
+            None | Some(Value::Null) => {}
+            Some(Value::String(token)) => {
+                let token = token.trim();
+                if !token.is_empty() {
+                    config.token = Some(token.to_owned());
+                }
+            }
+            Some(_) => return Err("token must be a string or null".to_owned()),
+        }
+        match object.get("mode") {
+            None | Some(Value::Null) => {}
+            Some(Value::String(mode)) => {
+                let mode = mode.trim().to_ascii_lowercase();
+                if !mode.is_empty() {
+                    if !ALLOWED_MODES.contains(&mode.as_str()) {
+                        return Err(format!(
+                            "mode must be one of {} (CCR is not supported)",
+                            ALLOWED_MODES.join(", ")
+                        ));
+                    }
+                    config.mode = Some(mode);
+                }
+            }
+            Some(_) => return Err("mode must be a string or null".to_owned()),
+        }
+        if let Some(value) = object.get("timeoutMs") {
+            let timeout = value
+                .as_u64()
+                .ok_or_else(|| "timeoutMs must be a positive integer".to_owned())?;
+            config.timeout = Duration::from_millis(timeout.clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS));
+        }
+        if let Some(value) = object.get("minBytes") {
+            let min_bytes = value
+                .as_u64()
+                .ok_or_else(|| "minBytes must be a positive integer".to_owned())?;
+            config.min_bytes = usize::try_from(min_bytes)
+                .unwrap_or(MAX_MIN_BYTES)
+                .min(MAX_MIN_BYTES);
+        }
+        Ok(config)
+    }
+
+    /// Write-only shape: the token is persisted to a `0600` file and never
+    /// returned by the status endpoint.
+    pub fn to_json(&self) -> Value {
+        json!({
+            "url": self.url,
+            "token": self.token,
+            "mode": self.mode,
+            "timeoutMs": self.timeout.as_millis() as u64,
+            "minBytes": self.min_bytes,
+        })
+    }
+
+    /// Load the persisted runtime contract.  A missing file means "no runtime
+    /// override"; a malformed one is reported and ignored so a bad file never
+    /// prevents the edge from starting.
+    pub fn load(path: &Path) -> Result<Option<Self>, String> {
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(format!("failed to read {}: {error}", path.display())),
+        };
+        if bytes.iter().all(u8::is_ascii_whitespace) {
+            return Ok(None);
+        }
+        let value: Value = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("invalid {}: {error}", path.display()))?;
+        Self::from_json(&value).map(Some)
+    }
+
+    pub fn persist(&self, path: &Path) -> Result<(), String> {
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty());
+        if let Some(parent) = parent {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
+        }
+        let temporary = path.with_extension("tmp");
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(&temporary)
+            .map_err(|error| format!("failed to write {}: {error}", temporary.display()))?;
+        let payload = serde_json::to_vec_pretty(&self.to_json())
+            .map_err(|error| format!("failed to serialize compression state: {error}"))?;
+        file.write_all(&payload)
+            .and_then(|()| file.write_all(b"\n"))
+            .and_then(|()| file.sync_all())
+            .map_err(|error| format!("failed to write {}: {error}", temporary.display()))?;
+        drop(file);
+        std::fs::rename(&temporary, path)
+            .map_err(|error| format!("failed to replace {}: {error}", path.display()))
     }
 }
 
@@ -293,6 +429,25 @@ impl Client {
 
     pub fn enabled(&self) -> bool {
         self.http.is_some() && self.endpoint.is_some() && self.config_error.is_none()
+    }
+
+    /// Status view for the internal control endpoint.  The proxy token is
+    /// deliberately absent: it is write-only once configured.
+    pub fn status_value(&self) -> Value {
+        json!({
+            "enabled": self.enabled(),
+            "configured": self.config.url.is_some(),
+            "url": self.endpoint,
+            "mode": self.config.mode,
+            "timeoutMs": self.config.timeout.as_millis() as u64,
+            "minBytes": self.config.min_bytes,
+            "configError": self.config_error,
+            "failures": self.failures.load(Ordering::Relaxed),
+            "blockedForMs": self
+                .blocked_until_ms
+                .load(Ordering::Relaxed)
+                .saturating_sub(now_ms()),
+        })
     }
 
     /// Compress a provider-ready body through the Headroom gateway request

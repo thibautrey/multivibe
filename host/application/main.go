@@ -446,6 +446,7 @@ func coreEnvironment(layout bundleLayout, dataDirectory string, credentials loca
 		"ANONYMOUS_USAGE_STATE_PATH=" + filepath.Join(dataDirectory, "anonymous-usage-state.json"),
 		"CODEX_PROJECTS_PATH=" + filepath.Join(dataDirectory, "codex-projects.json"),
 		"JOBS_DB_PATH=" + filepath.Join(dataDirectory, "jobs.sqlite"),
+		"HEADROOM_STATE_PATH=" + filepath.Join(dataDirectory, "headroom-runtime.json"),
 		"MULTIVIBE_HOST_APPLICATION=true",
 		"TRACE_INCLUDE_BODY=false",
 		"TRACE_INCLUDE_HEADERS=false",
@@ -515,6 +516,7 @@ func edgeEnvironment(base []string, network coreNetworkConfiguration, internalTo
 		"HEADROOM_TIMEOUT_MS",
 		"HEADROOM_MIN_BYTES",
 		"HEADROOM_COMPRESS_MODE",
+		"HEADROOM_STATE_PATH",
 	} {
 		if value := inheritedEnvironment(name); value != "" {
 			environment = append(environment, name+"="+value)

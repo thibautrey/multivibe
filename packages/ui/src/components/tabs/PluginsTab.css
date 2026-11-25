@@ -27,3 +27,9 @@
 .audio-env-copy { display: flex; align-items: flex-start; gap: 12px; margin-top: 12px; }
 .audio-env-copy pre { flex: 1; margin: 0; padding: 12px; overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-muted); font-size: 12px; }
 @media (max-width: 680px) { .audio-panel { padding: 20px; } .audio-panel-header { flex-direction: column; } .audio-panel-status { width: 100%; justify-content: space-between; } }
+.headroom-runtime { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 20px; }
+.headroom-runtime h3 { margin: 4px 0 8px; }
+.headroom-runtime-actions { display: grid; gap: 10px; justify-items: end; }
+.headroom-form { display: grid; gap: 16px; max-width: 720px; }
+.headroom-form .control-field { display: grid; gap: 6px; }
+@media (max-width: 720px) { .headroom-runtime { grid-template-columns: 1fr; } .headroom-runtime-actions { justify-items: start; } }

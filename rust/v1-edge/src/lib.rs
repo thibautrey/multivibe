@@ -25,7 +25,7 @@ mod backend_relay;
 
 use async_stream::stream;
 use axum::{
-    Router,
+    Json, Router,
     body::{Body, to_bytes},
     extract::{
         Path, Query, State, WebSocketUpgrade,
@@ -154,6 +154,10 @@ pub struct EdgeConfig {
     /// Optional Headroom request-half compression.  Disabled unless
     /// `HEADROOM_COMPRESS_URL` is set.
     pub headroom: headroom::Config,
+    /// Where the extension-managed compression settings are persisted.  When
+    /// present, a saved runtime override wins over the environment at startup
+    /// and the internal control endpoint keeps it up to date.
+    pub headroom_state_path: Option<String>,
     pub confidential_inference_trust_policy: Option<String>,
     pub job_worker_concurrency: usize,
     pub oauth_token_url: String,
@@ -252,6 +256,7 @@ impl Default for EdgeConfig {
             idempotency_max_response_bytes: 1024 * 1024,
             cloud_privacy_mode: "standard".to_owned(),
             headroom: headroom::Config::default(),
+            headroom_state_path: None,
             confidential_inference_trust_policy: None,
             job_worker_concurrency: 16,
             oauth_token_url: "https://auth.openai.com/oauth/token".to_owned(),
@@ -462,6 +467,7 @@ impl EdgeConfig {
             cloud_privacy_mode: env("MULTIVIBE_CLOUD_PRIVACY_MODE")
                 .unwrap_or(defaults.cloud_privacy_mode),
             headroom: headroom::Config::from_env(),
+            headroom_state_path: env("HEADROOM_STATE_PATH"),
             confidential_inference_trust_policy: env(
                 "MULTIVIBE_CONFIDENTIAL_INFERENCE_TRUST_POLICY",
             ),
@@ -6572,7 +6578,7 @@ pub struct EdgeState {
     backend_relay_client: reqwest::Client,
     control_plane_client: reqwest::Client,
     webhook_client: reqwest::Client,
-    headroom: headroom::Client,
+    headroom: Arc<RwLock<headroom::Client>>,
     blocked: Arc<Mutex<HashMap<String, u64>>>,
     selected: Arc<Mutex<HashMap<String, String>>>,
     confidential: Option<confidential::ConfidentialClient>,
@@ -6660,7 +6666,20 @@ impl EdgeState {
         });
         let capacity_version = Arc::new(AtomicU64::new(1));
         let admission_grace = config.admission_grace.clone();
-        let headroom = headroom::Client::new(config.headroom.clone());
+        // A saved runtime override is newer than the deployment environment:
+        // the extension writes it when it provisions or reconstitutes Headroom.
+        let mut headroom_config = config.headroom.clone();
+        if let Some(path) = config.headroom_state_path.as_deref() {
+            match headroom::Config::load(std::path::Path::new(path)) {
+                Ok(Some(persisted)) => headroom_config = persisted,
+                Ok(None) => {}
+                Err(error) => eprintln!(
+                    "{}",
+                    json!({"event": "headroom.state_error", "error": error})
+                ),
+            }
+        }
+        let headroom = headroom::Client::new(headroom_config);
         if let Some(error) = headroom.config_error() {
             eprintln!(
                 "{}",
@@ -6690,7 +6709,7 @@ impl EdgeState {
             backend_relay_client,
             control_plane_client,
             webhook_client,
-            headroom,
+            headroom: Arc::new(RwLock::new(headroom)),
             blocked: Arc::new(Mutex::new(HashMap::new())),
             selected: Arc::new(Mutex::new(HashMap::new())),
             confidential,
@@ -6751,6 +6770,27 @@ impl EdgeState {
             );
         }
         cache.restored_at = now_ms();
+    }
+
+    /// Current compression contract, without the proxy token.
+    pub async fn compression_status(&self) -> Value {
+        self.headroom.read().await.status_value()
+    }
+
+    /// Replace the compression contract at runtime.  The candidate is built
+    /// first, so an invalid URL, mode or token leaves the running client
+    /// untouched.
+    pub async fn set_compression(&self, config: headroom::Config) -> Result<Value, String> {
+        let client = headroom::Client::new(config.clone());
+        if let Some(error) = client.config_error() {
+            return Err(error.to_owned());
+        }
+        if let Some(path) = self.config.headroom_state_path.as_deref() {
+            config.persist(std::path::Path::new(path))?;
+        }
+        let status = client.status_value();
+        *self.headroom.write().await = client;
+        Ok(status)
     }
 
     /// Start the capacity probe for this edge.
@@ -8121,7 +8161,9 @@ async fn proxy_inference(
                 }
                 // Headroom rewrites only the provider-ready body. Routing,
                 // auth and quota remain MultiVibe's, and every failure keeps
-                // `payload` untouched.
+                // `payload` untouched.  The client is cloned so a concurrent
+                // extension update never holds the lock across the call.
+                let headroom = state.headroom.read().await.clone();
                 let compression = if image_route
                     || embeddings_route
                     || decisions_route
@@ -8131,8 +8173,7 @@ async fn proxy_inference(
                 {
                     headroom::CompressionResult::Disabled
                 } else {
-                    state
-                        .headroom
+                    headroom
                         .compress(
                             &payload,
                             prompt_cache_session_id.as_deref(),
@@ -17811,6 +17852,52 @@ async fn drain_resume_handler(State(state): State<EdgeState>, headers: HeaderMap
     drain_status_response(&state)
 }
 
+async fn compression_status_handler(State(state): State<EdgeState>, headers: HeaderMap) -> Response {
+    if !internal_control_authorized(&headers, &state.config) {
+        return json_response(StatusCode::UNAUTHORIZED, json!({"error": "unauthorized"}));
+    }
+    json_response(StatusCode::OK, state.compression_status().await)
+}
+
+async fn compression_update_handler(
+    State(state): State<EdgeState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    if !internal_control_authorized(&headers, &state.config) {
+        return json_response(StatusCode::UNAUTHORIZED, json!({"error": "unauthorized"}));
+    }
+    let config = match headroom::Config::from_json(&body) {
+        Ok(config) => config,
+        Err(error) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                json!({"error": error, "code": "invalid_compression_config"}),
+            );
+        }
+    };
+    match state.set_compression(config).await {
+        Ok(status) => json_response(StatusCode::OK, status),
+        Err(error) => json_response(
+            StatusCode::BAD_REQUEST,
+            json!({"error": error, "code": "invalid_compression_config"}),
+        ),
+    }
+}
+
+async fn compression_clear_handler(State(state): State<EdgeState>, headers: HeaderMap) -> Response {
+    if !internal_control_authorized(&headers, &state.config) {
+        return json_response(StatusCode::UNAUTHORIZED, json!({"error": "unauthorized"}));
+    }
+    match state.set_compression(headroom::Config::default()).await {
+        Ok(status) => json_response(StatusCode::OK, status),
+        Err(error) => json_response(
+            StatusCode::BAD_REQUEST,
+            json!({"error": error, "code": "invalid_compression_config"}),
+        ),
+    }
+}
+
 fn build_base_router(state: &EdgeState) -> Router<EdgeState> {
     Router::new()
         // Rust owns the dashboard REST boundary incrementally. Session
@@ -17918,6 +18005,12 @@ fn build_base_router(state: &EdgeState) -> Router<EdgeState> {
         .route("/internal/v1-edge/drain/status", get(drain_status_handler))
         .route("/internal/v1-edge/drain/begin", post(drain_begin_handler))
         .route("/internal/v1-edge/drain/resume", post(drain_resume_handler))
+        .route(
+            "/internal/v1-edge/compression",
+            get(compression_status_handler)
+                .put(compression_update_handler)
+                .delete(compression_clear_handler),
+        )
         // Applied to every route so an Anthropic client receives the Anthropic
         // error envelope even when the failure is raised before protocol
         // conversion (authorization, routing, idempotency, upstream failure).
@@ -19524,6 +19617,92 @@ mod tests {
         let _ = fs::remove_file(store_path).await;
         let _ = fs::remove_file(jobs_path).await;
         let _ = fs::remove_file(trace_path).await;
+    }
+
+    #[tokio::test]
+    async fn compression_settings_update_at_runtime_and_survive_a_restart() {
+        let store_path = temporary_path("compression-runtime-store");
+        let jobs_path = temporary_path("compression-runtime-jobs");
+        let state_path = temporary_path("compression-runtime-state");
+        fs::write(&store_path, serde_json::to_vec(&store_with_accounts(vec![])).unwrap())
+            .await
+            .unwrap();
+
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.internal_job_token = Some("internal-secret".to_owned());
+        config.headroom_state_path = Some(state_path.to_string_lossy().into_owned());
+        let state = EdgeState::new(config.clone()).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(state)).await;
+        let client = reqwest::Client::new();
+
+        let unauthorized = client
+            .put(format!("{edge_url}/internal/v1-edge/compression"))
+            .json(&json!({"url": "http://127.0.0.1:9/v1/compress"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let updated = client
+            .put(format!("{edge_url}/internal/v1-edge/compression"))
+            .header("x-multivibe-internal-token", "internal-secret")
+            .json(&json!({
+                "url": "http://headroom:8787",
+                "token": "extension-token",
+                "mode": "lossy_inline",
+                "timeoutMs": 1200,
+                "minBytes": 2048
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(updated.status(), StatusCode::OK);
+        let status: Value = updated.json().await.unwrap();
+        assert_eq!(status["enabled"], true);
+        assert_eq!(status["url"], "http://headroom:8787/v1/compress");
+        assert_eq!(status["mode"], "lossy_inline");
+        assert_eq!(status["timeoutMs"], 1200);
+        assert_eq!(status["minBytes"], 2048);
+        assert!(status.get("token").is_none());
+
+        let rejected = client
+            .put(format!("{edge_url}/internal/v1-edge/compression"))
+            .header("x-multivibe-internal-token", "internal-secret")
+            .json(&json!({"url": "http://headroom:8787", "mode": "ccr"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+        let rejected: Value = rejected.json().await.unwrap();
+        assert_eq!(rejected["code"], "invalid_compression_config");
+
+        // The same saved contract is loaded before the control plane has a
+        // chance to reconcile after a restart.
+        let restarted = EdgeState::new(config).await.unwrap();
+        let status = restarted.compression_status().await;
+        assert_eq!(status["enabled"], true);
+        assert_eq!(status["url"], "http://headroom:8787/v1/compress");
+        assert_eq!(status["mode"], "lossy_inline");
+
+        let cleared = client
+            .delete(format!("{edge_url}/internal/v1-edge/compression"))
+            .header("x-multivibe-internal-token", "internal-secret")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(cleared.status(), StatusCode::OK);
+        let status: Value = cleared.json().await.unwrap();
+        assert_eq!(status["enabled"], false);
+        let persisted: Value =
+            serde_json::from_slice(&fs::read(&state_path).await.unwrap()).unwrap();
+        assert!(persisted["url"].is_null());
+
+        edge_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+        let _ = fs::remove_file(state_path).await;
     }
 
     async fn latest_compression_trace(path: &std::path::Path) -> Value {

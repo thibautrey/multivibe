@@ -115,6 +115,9 @@ import { instanceRelayRoutes, type InstanceRelay } from "../../host/instance-rel
 import { legacyHarnessRun } from "../../host/harness-runtime/legacy.js";
 import { isInstallableConversationHarness } from "../../host/conversation-harnesses.js";
 import { audioRoutes } from "../../audio-routes.js";
+import { headroomRoutes } from "../../headroom-routes.js";
+import type { HeadroomProvisioner } from "../../headroom-provisioner.js";
+import { HEADROOM_PLUGIN } from "../../headroom-plugin.js";
 
 const MULTIVIBE_CLOUD_FLOW_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -149,6 +152,7 @@ export type AdminRoutesOptions = {
   hostHarnessRuntime?: HostHarnessRuntime;
   instanceRelay?: InstanceRelay;
   moduleManager?: ModuleManager;
+  headroomProvisioner?: HeadroomProvisioner;
   hostUpdateController?: HostUpdateController;
   multivibeCloud?: MultivibeCloudService;
   teamSync?: MultivibeTeamSyncService;
@@ -449,6 +453,15 @@ export function createAdminRouter(options: AdminRoutesOptions) {
 
   const router = express.Router();
   router.use("/audio", audioRoutes({ moduleManager, store }));
+  router.use("/headroom", headroomRoutes({
+    provisioner: options.headroomProvisioner,
+    onUninstalled: async () => {
+      if (!moduleManager) return;
+      // Uninstall must survive a restart: disable the extension so startup
+      // reconciliation does not provision a fresh container.
+      await moduleManager.setEnabled(HEADROOM_PLUGIN, false);
+    },
+  }));
   router.use("/host-harness-runtime/v1", harnessRuntimeRoutes(options.hostHarnessRuntime));
   router.use("/instance-relay/v1", instanceRelayRoutes(options.instanceRelay,
     options.multivibeCloud ? operation => options.multivibeCloud!.withRelayAccount(operation) : undefined));
@@ -845,9 +858,34 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     if (!moduleManager) return res.status(503).json({ error: "Module manager is unavailable" });
     try {
       let result;
-      if (req.body?.enabled && MULTIVIBE_CONTROL_PLANE) throw new Error("JavaScript inference plugins require the JavaScript inference profile; native Rust inference does not run these hooks");
+      // Inference hooks never run on the native Rust path. Modules without
+      // hooks (for example the Headroom extension, whose work happens in the
+      // edge) can still be enabled here.
+      const target = moduleManager.list().find((entry) => entry.id === req.params.id);
+      if (req.body?.enabled && MULTIVIBE_CONTROL_PLANE && (target?.manifest?.hooks?.length ?? 0) > 0) throw new Error("JavaScript inference plugins require the JavaScript inference profile; native Rust inference does not run these hooks");
       if ("enabled" in (req.body ?? {})) result = await moduleManager.setEnabled(req.params.id, Boolean(req.body.enabled));
+      // The manual Headroom token is a secret: it is pulled out of the settings
+      // payload and stored by the provisioner next to the generated token.
+      let headroomManualToken: string | undefined;
+      if (req.params.id === HEADROOM_PLUGIN && req.body?.settings && typeof req.body.settings === "object") {
+        const raw = (req.body.settings as Record<string, unknown>).proxyToken;
+        if (typeof raw === "string") {
+          headroomManualToken = raw.trim() || undefined;
+          delete (req.body.settings as Record<string, unknown>).proxyToken;
+        }
+      }
       if ("settings" in (req.body ?? {})) result = await moduleManager.setSettings(req.params.id, req.body.settings);
+      if (req.params.id === HEADROOM_PLUGIN && options.headroomProvisioner) {
+        // The container follows the extension switch; a settings-only edit is
+        // applied to the live edge. Failures stay in the extension status so
+        // the panel can explain them without losing the saved settings.
+        try {
+          if ("enabled" in (req.body ?? {})) await options.headroomProvisioner.syncEnabled(Boolean(req.body.enabled));
+          else await options.headroomProvisioner.apply(headroomManualToken);
+        } catch (error) {
+          console.warn(`[headroom] applying module change failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
       // Declared virtual models are reconciled on every module change so a
       // disabled or misconfigured module cannot leave a routable alias behind.
       let virtualModels;

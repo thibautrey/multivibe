@@ -6,6 +6,9 @@ import { takeDeviceSignIn } from "./host/device-signin.js";
 import { getHostMenuProviderActivity, recordHostMenuTraceUsage } from "./host/menu-bar.js";
 import { automaticRouterManifest, createAutomaticRouter } from "./automatic-router.js";
 import { audioPluginManifest, createAudioPlugin } from "./audio-plugin.js";
+import { headroomPluginManifest, createHeadroomPlugin, HEADROOM_PLUGIN } from "./headroom-plugin.js";
+import { HeadroomEdgeClient } from "./headroom-edge-client.js";
+import { HeadroomProvisioner } from "./headroom-provisioner.js";
 import { codingEconomyManifest, createCodingEconomy } from "./coding-economy.js";
 import { syncVirtualModelAliases } from "./virtual-model-registry.js";
 import { createAuthRateLimiter } from "./auth-rate-limit.js";
@@ -245,6 +248,20 @@ const moduleManager = new ModuleManager(
 );
 moduleManager.registerBuiltin(automaticRouterManifest, createAutomaticRouter());
 moduleManager.registerBuiltin(audioPluginManifest, createAudioPlugin());
+moduleManager.registerBuiltin(headroomPluginManifest, createHeadroomPlugin());
+const headroomEdge = new HeadroomEdgeClient({
+  baseUrl: V1_EDGE_BASE_URL,
+  token: V1_EDGE_INTERNAL_JOB_TOKEN,
+});
+const headroomProvisioner = new HeadroomProvisioner({
+  statePath: path.join(dataDir, "headroom-provision.json"),
+  edge: headroomEdge,
+  moduleState: () => {
+    const module = moduleManager.list().find((entry) => entry.id === HEADROOM_PLUGIN);
+    return module ? { enabled: module.enabled, settings: module.settings } : null;
+  },
+  network: process.env.MULTIVIBE_EXTENSION_NETWORK?.trim() || undefined,
+});
 moduleManager.registerBuiltin(codingEconomyManifest, createCodingEconomy());
 const modelsDevCatalog = new UnifiedModelCatalog({ cachePath: SDK_MODELS_DEV_CACHE_PATH, onUpdate: installModelsDevPricing });
 await modelsDevCatalog.ensure();
@@ -296,6 +313,10 @@ if (!MULTIVIBE_CONTROL_PLANE) {
   try { await syncVirtualModelAliases(store, moduleManager); }
   catch (error) { console.warn("Virtual model synchronization failed", error instanceof Error ? error.message : String(error)); }
 }
+// The extension owns the container and the saved endpoint; reconcile it after
+// the module locks are loaded so a restart resumes compression without an
+// operator click. Failures are logged and never block startup.
+void headroomProvisioner.reconcile();
 const attemptManagedTeamEnrollment = async () => {
   try { await managedTeamEnrollment.enrollIfPresent(); }
   catch (error) { Sentry.captureException(error, { tags: { subsystem: "managed-team-enrollment" } }); }
@@ -466,6 +487,7 @@ const adminRouter = createAdminRouter({
   hostHarnessRuntime,
   instanceRelay,
   moduleManager,
+  headroomProvisioner,
   hostUpdateController,
   multivibeCloud,
   teamSync,

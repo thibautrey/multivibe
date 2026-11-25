@@ -36,10 +36,68 @@ empty.
 | `HEADROOM_TIMEOUT_MS` | `3000` | Whole-call budget. Clamped to 50–30000 ms. |
 | `HEADROOM_MIN_BYTES` | `4096` | Serialized provider body below this size is not sent to Headroom. |
 | `HEADROOM_COMPRESS_MODE` | unset | Optional marker-free mode: `lossless`, `lossy_inline` or `lossless_then_lossy`. `ccr` is rejected. |
+| `HEADROOM_STATE_PATH` | unset | Where the edge persists the contract pushed by the extension. A saved contract wins over the variables above. |
 
 For a container deployment, publish Headroom only on loopback and set
 `HEADROOM_COMPRESS_ALLOW_REMOTE=1` only when the sidecar really is reached over
 a container network. Keep `HEADROOM_PROXY_TOKEN` set in that case.
+
+## The Headroom extension
+
+Dashboard → **Extensions** → **Headroom** provisions the sidecar for you and
+keeps the edge contract in sync. The extension is bundled with MultiVibe
+(`multivibe.headroom`), disabled by default, and never adds inference hooks: the
+rewrite still happens inside the Rust edge.
+
+Recommended path:
+
+1. Mount the Docker socket into the MultiVibe container (already present in
+   `docker-compose.yml`):
+
+   ```yaml
+   volumes:
+     - /var/run/docker.sock:/var/run/docker.sock
+   ```
+
+2. Open the Headroom tab and click **Install Headroom**. MultiVibe pulls
+   `ghcr.io/headroomlabs-ai/headroom:latest`, creates a container named
+   `multivibe-headroom` on MultiVibe's own Docker network, generates the proxy
+   token, waits for `/readyz`, and pushes the endpoint to the edge over the
+   internal route.
+3. Enable the extension. Enabling installs/starts the container when needed;
+   disabling stops it and turns compression off.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| Manage the Docker container | on | MultiVibe owns pull/start/stop/remove. Turn it off to point at an existing service. |
+| Image | `ghcr.io/headroomlabs-ai/headroom:latest` | Any compatible tag. Pin a tag to keep a known contract. |
+| Manual URL / proxy token | empty | Used only when container management is off. |
+| Mode | Headroom default | `lossless`, `lossy_inline` or `lossless_then_lossy`. `ccr` is rejected. |
+| Timeout / minimum payload | `3000` ms / `4096` B | Same limits as the environment variables. |
+
+Runtime behavior:
+
+- The generated token and resolved URL live in
+  `HEADROOM_STATE_PATH` (compose: `/data/headroom-runtime.json`; native host:
+  `<data dir>/headroom-runtime.json`) with mode `0600`. The node control plane
+  keeps its copy in `<data dir>/headroom-provision.json`. A manual-service token
+  is stored there too: extension settings and admin responses only report
+  whether one is present.
+- The edge persists the last pushed contract and reloads it at startup, so
+  compression resumes before the control plane reconciles. A saved runtime
+  contract wins over `HEADROOM_COMPRESS_*`.
+- **Stop** stops the container and disables compression. **Uninstall** removes
+  the container, its named volume and both state files, and clears the edge
+  contract; the extension stays visible and can be installed again.
+- Without a reachable Docker socket (no mount, or Docker Desktop not running)
+  the panel reports the limitation, and you can still use the manual URL.
+- A startup reconcile reinstalls a missing container when the extension is
+  enabled, and stops an orphaned container when it is disabled. Failures are
+  logged and never block MultiVibe startup.
+
+The socket mount grants the container the same authority as `root` on the
+Docker host. Only enable the extension on a host you already trust, or remove
+the mount and use a manually managed Headroom service.
 
 ## When compression runs
 

@@ -79,10 +79,21 @@ services:
       - HEADROOM_TIMEOUT_MS=${HEADROOM_TIMEOUT_MS:-3000}
       - HEADROOM_MIN_BYTES=${HEADROOM_MIN_BYTES:-4096}
       - HEADROOM_COMPRESS_MODE=${HEADROOM_COMPRESS_MODE:-}
+      # The Headroom extension persists the contract it pushes to the edge here;
+      # the saved runtime override wins over the HEADROOM_COMPRESS_* defaults.
+      - HEADROOM_STATE_PATH=/data/headroom-runtime.json
+      # Docker access for the extension provisioner (see the socket mount below).
+      # The sidecar joins MultiVibe's own network; set MULTIVIBE_EXTENSION_NETWORK
+      # only to override that discovery.
+      - MULTIVIBE_DOCKER_SOCKET=${MULTIVIBE_DOCKER_SOCKET:-/var/run/docker.sock}
+      - MULTIVIBE_EXTENSION_NETWORK=${MULTIVIBE_EXTENSION_NETWORK:-}
       # Sentry (optional - leave SENTRY_DSN empty to disable)
       - SENTRY_DSN=${SENTRY_DSN:-}
       - SENTRY_ENVIRONMENT=${SENTRY_ENVIRONMENT:-production}
       - SENTRY_TRACES_SAMPLE_RATE=${SENTRY_TRACES_SAMPLE_RATE:-0.1}
     volumes:
       - ./data:/data
+      # Lets the bundled Headroom extension create, start, stop and remove its
+      # own sidecar container. Remove this mount to keep the extension manual.
+      - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
