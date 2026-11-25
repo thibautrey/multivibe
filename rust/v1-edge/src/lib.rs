@@ -3518,14 +3518,36 @@ fn chat_to_response(value: &Value, fallback_model: &str) -> Value {
         .unwrap_or_default()
         .replace("<think>", "")
         .replace("</think>", "");
-    if !text.trim().is_empty() {
-        output.push(json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text.trim_start()}]}));
+    let finish_reason = value_string(choice.get("finish_reason")).unwrap_or_default();
+    let incomplete_reason = match finish_reason.as_str() {
+        "length" => Some("max_output_tokens"),
+        "content_filter" => Some("content_filter"),
+        _ => None,
+    };
+    let incomplete = incomplete_reason.is_some();
+    let refusal = value_string(message.get("refusal")).filter(|r| !r.is_empty());
+    let has_message = !text.trim().is_empty() || refusal.is_some();
+    let item_status = if incomplete {
+        "incomplete"
+    } else {
+        "completed"
+    };
+    if has_message {
+        let mut parts = Vec::new();
+        if !text.trim().is_empty() {
+            parts.push(json!({"type": "output_text", "text": text.trim_start()}));
+        }
+        if let Some(refusal_text) = refusal {
+            parts.push(json!({"type": "refusal", "refusal": refusal_text}));
+        }
+        output.push(json!({"id": new_id("msg"), "type": "message", "status": item_status, "role": "assistant", "content": parts}));
     }
     if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
         for call in calls {
             let function = call.get("function").cloned().unwrap_or_else(|| json!({}));
             output.push(json!({
                 "type": "function_call",
+                "status": item_status,
                 "id": call.get("id"),
                 "call_id": call.get("id"),
                 "name": function.get("name").cloned().unwrap_or_else(|| Value::String("unknown".to_owned())),
@@ -3534,21 +3556,26 @@ fn chat_to_response(value: &Value, fallback_model: &str) -> Value {
         }
     }
     if output.is_empty() {
-        output.push(json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": ""}]}));
+        output.push(json!({"id": new_id("msg"), "type": "message", "status": item_status, "role": "assistant", "content": [{"type": "output_text", "text": ""}]}));
     }
     for item in &mut output {
+        item["status"] = json!(item_status);
         normalize_response_tool_item_id(item);
     }
     let usage = value.get("usage").cloned().unwrap_or_else(|| json!({}));
-    json!({
+    let mut resp = json!({
         "id": new_id("resp"),
         "object": "response",
         "created_at": value.get("created").and_then(Value::as_i64).unwrap_or((now_ms() / 1000) as i64),
         "model": value.get("model").cloned().unwrap_or_else(|| Value::String(fallback_model.to_owned())),
-        "status": "completed",
+        "status": if incomplete { "incomplete" } else { "completed" },
         "output": output,
         "usage": chat_usage_to_response_usage(&usage)
-    })
+    });
+    if let Some(reason) = incomplete_reason {
+        resp["incomplete_details"] = json!({"reason": reason});
+    }
+    resp
 }
 
 fn response_to_chat(value: &Value, model: &str) -> Value {
@@ -3705,6 +3732,7 @@ struct SseBatch {
 /// accepted, and multiple events in one chunk are all returned.
 #[derive(Debug, Default)]
 struct SseDecoder {
+    bom_checked: bool,
     buffer: Vec<u8>,
     event: Option<String>,
     data: Vec<u8>,
@@ -3725,6 +3753,18 @@ impl SseDecoder {
             };
         }
         self.buffer.extend_from_slice(chunk);
+        if !self.bom_checked {
+            const BOM: &[u8] = b"\xef\xbb\xbf";
+            if self.buffer.is_empty()
+                || (self.buffer.len() < BOM.len() && BOM.starts_with(&self.buffer))
+            {
+                return SseBatch::default();
+            }
+            if self.buffer.starts_with(BOM) {
+                self.buffer.drain(..BOM.len());
+            }
+            self.bom_checked = true;
+        }
         let mut batch = SseBatch::default();
         let mut consumed = 0;
         while let Some((line_end, next)) = sse_next_line_from(&self.buffer, consumed) {
@@ -3747,8 +3787,7 @@ impl SseDecoder {
             self.buffer.drain(..consumed);
         }
         if !batch.overflow
-            && (self.buffer.len() > SSE_MAX_EVENT_BYTES
-                || self.data_len > SSE_MAX_EVENT_BYTES)
+            && (self.buffer.len() > SSE_MAX_EVENT_BYTES || self.data_len > SSE_MAX_EVENT_BYTES)
         {
             batch.overflow = true;
             self.overflow = true;
@@ -5455,7 +5494,7 @@ impl NativeStreamDiagnostics {
                     self.saw_meaningful_output = true;
                 }
             }
-            "response.completed" | "response.failed" | "response.incomplete" | "error" => {
+            "response.completed" | "response.failed" | "response.incomplete" | "response.error" | "error" => {
                 if self.terminal_event_type.is_none() {
                     self.terminal_event_type = Some(event_type.clone());
                 }
@@ -5644,7 +5683,7 @@ impl NativeStreamDiagnostics {
     }
 
     fn upstream_failure(&self) -> Option<String> {
-        let failed = ["response.failed", "response.incomplete", "error"]
+        let failed = ["response.failed", "response.error", "response.incomplete", "error"]
             .iter()
             .find(|event| {
                 self.event_types
@@ -5667,6 +5706,7 @@ impl NativeStreamDiagnostics {
 }
 
 struct SseTraceObserver {
+    terminal: bool,
     decoder: SseDecoder,
     diagnostics: NativeStreamDiagnostics,
 }
@@ -5674,6 +5714,7 @@ struct SseTraceObserver {
 impl SseTraceObserver {
     fn new() -> Self {
         Self {
+            terminal: false,
             decoder: SseDecoder::new(),
             diagnostics: NativeStreamDiagnostics::default(),
         }
@@ -5682,11 +5723,28 @@ impl SseTraceObserver {
     fn push(&mut self, bytes: &[u8]) {
         let batch = self.decoder.push(bytes);
         for event in batch.events {
+            self.terminal |= event.data == "[DONE]"
+                || serde_json::from_str::<Value>(&event.data)
+                    .ok()
+                    .is_some_and(|value| {
+                        matches!(
+                            value.get("type").and_then(Value::as_str),
+                            Some(
+                                "response.completed"
+                                    | "response.incomplete"
+                                    | "response.failed"
+                                    | "error"
+                                    | "message_stop"
+                            )
+                        )
+                    });
             self.diagnostics.inspect_payload(&event.data);
         }
         if batch.overflow {
-            self.diagnostics.invalid_data_payload_count =
-                self.diagnostics.invalid_data_payload_count.saturating_add(1);
+            self.diagnostics.invalid_data_payload_count = self
+                .diagnostics
+                .invalid_data_payload_count
+                .saturating_add(1);
         }
     }
 
@@ -6093,6 +6151,26 @@ fn trace_string(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
 }
 
+/// Fixed client-facing text for an upstream error code. Upstream messages
+/// routinely embed account ids, endpoint URLs and the request echo, so the
+/// client never receives them verbatim: it gets one message per known code and
+/// the full text stays in the trace.
+fn client_error_message(code: &str) -> &'static str {
+    match code {
+        "server_overloaded" => "upstream is at capacity, retry later",
+        "rate_limit_exceeded" => "upstream rate limit reached, retry later",
+        "content_filter" => "upstream rejected the request under its content policy",
+        "invalid_request" => "upstream rejected the request",
+        _ => "upstream stream reported an error",
+    }
+}
+
+/// Truncates and strips control characters so upstream text cannot forge log
+/// lines or inject terminal escapes into an operator console.
+fn log_safe(value: &str, max: usize) -> String {
+    value.chars().filter(|c| !c.is_control()).take(max).collect()
+}
+
 struct TraceSink {
     path: Option<PathBuf>,
     max_bytes: u64,
@@ -6411,10 +6489,17 @@ impl StreamingTrace {
             client_disconnected,
         );
         let client_error = outcome.error.clone();
-        self.sink.record(&self.context, outcome).await;
-        self.sink
-            .record(
-                &self.client_context,
+        let sink = self.sink.clone();
+        let context = self.context.clone();
+        let client_context = self.client_context.clone();
+        // Past the `finished` guard, so this runs once per stream. Awaiting the
+        // handle keeps a panicking commit visible; dropping it would only
+        // detach the task, which is what lets the write survive a client
+        // disconnect while the records are being committed.
+        let recording = tokio::spawn(async move {
+            sink.record(&context, outcome).await;
+            sink.record(
+                &client_context,
                 client_trace_outcome(
                     if client_disconnected == Some(true) {
                         499
@@ -6427,6 +6512,10 @@ impl StreamingTrace {
                 ),
             )
             .await;
+        });
+        if let Err(error) = recording.await {
+            eprintln!("stream trace commit task failed: {error}");
+        }
     }
 }
 
@@ -8910,12 +8999,25 @@ struct ChatResponseStreamState {
     model: String,
     created: u64,
     content: String,
+    refusal: String,
     reasoning: String,
     created_sent: bool,
     reasoning_started: bool,
     content_started: bool,
+    refusal_started: bool,
+    /// Index of the refusal part, fixed when the part opens. Recomputing it
+    /// per delta would move the part if later content shifted the count.
+    refusal_content_index: usize,
+    /// Index of the text part, fixed when the part opens. It is 1 when a
+    /// refusal already occupies index 0, so the stream never announces two
+    /// parts on the same index.
+    content_content_index: usize,
+    /// Set once the assistant message item is announced, so a refusal that
+    /// streams before content cannot announce the same item twice.
+    message_started: bool,
     completed_sent: bool,
     finish_pending: bool,
+    finish_reason: Option<String>,
     usage: Option<Value>,
     tool_calls: Vec<Value>,
 }
@@ -8943,6 +9045,34 @@ impl ChatResponseStreamState {
         )
     }
 
+    /// Parts in content_index order. The client is told each part's index when
+    /// it opens, so the terminal snapshot has to match that order even when the
+    /// refusal streamed before the text.
+    fn ordered_parts(&self) -> Vec<Value> {
+        let mut parts = Vec::new();
+        if !self.content.is_empty() {
+            parts.push((self.content_content_index, json!({"type": "output_text", "text": self.content})));
+        }
+        if !self.refusal.is_empty() {
+            parts.push((self.refusal_content_index, json!({"type": "refusal", "refusal": self.refusal})));
+        }
+        parts.sort_by_key(|(index, _)| *index);
+        parts.into_iter().map(|(_, part)| part).collect()
+    }
+
+    /// Opens the assistant message item once, whichever part reaches the client
+    /// first.
+    fn ensure_message_item(&mut self, output_index: usize) -> String {
+        if self.message_started {
+            return String::new();
+        }
+        self.message_started = true;
+        sse_frame(
+            "response.output_item.added",
+            &json!({"type": "response.output_item.added", "output_index": output_index, "item": {"id": self.output_item_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []}}),
+        )
+    }
+
     /// A provider can report `finish_reason` one chunk before it reports usage.
     /// Hold the terminal frame until that usage arrives (or the stream ends) so
     /// the client still receives real token accounting.
@@ -8958,12 +9088,24 @@ impl ChatResponseStreamState {
             return String::new();
         }
         self.completed_sent = true;
+        let has_message = !self.content.is_empty() || !self.refusal.is_empty();
+        let incomplete_reason = match self.finish_reason.as_deref() {
+            Some("length") => Some("max_output_tokens"),
+            Some("content_filter") => Some("content_filter"),
+            _ => None,
+        };
+        let incomplete_truncated = incomplete_reason.is_some();
+        let item_status = if incomplete_truncated {
+            "incomplete"
+        } else {
+            "completed"
+        };
         let mut output = Vec::new();
         if !self.reasoning.is_empty() {
-            output.push(json!({"id": self.reasoning_item_id, "type": "reasoning", "status": "completed", "summary": [], "encrypted_content": encode_reasoning_content(&self.reasoning)}));
+            output.push(json!({"id": self.reasoning_item_id, "type": "reasoning", "status": item_status, "summary": [], "encrypted_content": encode_reasoning_content(&self.reasoning)}));
         }
-        if !self.content.is_empty() {
-            output.push(json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": self.content}]}));
+        if has_message {
+            output.push(json!({"id": self.output_item_id, "type": "message", "status": item_status, "role": "assistant", "content": self.ordered_parts()}));
         }
         for tool in &mut self.tool_calls {
             if let Err(message) = self.chat_tools.restore_item(tool) {
@@ -8972,20 +9114,28 @@ impl ChatResponseStreamState {
                     &json!({"type": "response.failed", "response": {"id": self.response_id, "status": "failed", "error": {"code": "invalid_tool_arguments", "message": message}}}),
                 );
             }
+            tool["status"] = json!(item_status);
         }
         output.extend(self.tool_calls.clone());
         if output.is_empty() {
-            output.push(json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": ""}]}));
+            output.push(json!({"id": self.output_item_id, "type": "message", "status": item_status, "role": "assistant", "content": [{"type": "output_text", "text": ""}]}));
         }
         let usage = self
             .usage
             .as_ref()
             .map(chat_usage_to_response_usage)
             .unwrap_or_else(|| json!({"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}));
-        let response = json!({"id": self.response_id, "object": "response", "created_at": self.created, "model": self.model, "status": "completed", "output": output, "usage": usage});
+        let mut response = json!({"id": self.response_id, "object": "response", "created_at": self.created, "model": self.model, "status": if incomplete_truncated { "incomplete" } else { "completed" }, "output": output, "usage": usage});
+        if let Some(reason) = incomplete_reason {
+            response["incomplete_details"] = json!({"reason": reason});
+        }
         let mut out = String::new();
         if !self.reasoning.is_empty() {
-            let item = output.first().cloned().unwrap_or_else(|| json!({}));
+            let item = response["output"]
+                .as_array()
+                .and_then(|arr| arr.first())
+                .cloned()
+                .unwrap_or_else(|| json!({}));
             if !self.reasoning_started {
                 out.push_str(&sse_frame(
                     "response.output_item.added",
@@ -8997,15 +9147,30 @@ impl ChatResponseStreamState {
                 &json!({"type": "response.output_item.done", "output_index": 0, "item": item}),
             ));
         }
+        let msg_output_index = usize::from(!self.reasoning.is_empty());
         if self.content_started {
-            out.push_str(&sse_frame("response.output_text.done", &json!({"type": "response.output_text.done", "item_id": self.output_item_id, "output_index": usize::from(!self.reasoning.is_empty()), "content_index": 0, "text": self.content})));
-            out.push_str(&sse_frame("response.content_part.done", &json!({"type": "response.content_part.done", "item_id": self.output_item_id, "output_index": usize::from(!self.reasoning.is_empty()), "content_index": 0, "part": {"type": "output_text", "text": self.content}})));
-            out.push_str(&sse_frame("response.output_item.done", &json!({"type": "response.output_item.done", "output_index": usize::from(!self.reasoning.is_empty()), "item": {"id": self.output_item_id, "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": self.content}]}})));
+            let content_idx = self.content_content_index;
+            out.push_str(&sse_frame("response.output_text.done", &json!({"type": "response.output_text.done", "item_id": self.output_item_id, "output_index": msg_output_index, "content_index": content_idx, "text": self.content})));
+            out.push_str(&sse_frame("response.content_part.done", &json!({"type": "response.content_part.done", "item_id": self.output_item_id, "output_index": msg_output_index, "content_index": content_idx, "part": {"type": "output_text", "text": self.content}})));
+        }
+        if self.refusal_started {
+            let content_idx = self.refusal_content_index;
+            out.push_str(&sse_frame("response.refusal.done", &json!({"type": "response.refusal.done", "item_id": self.output_item_id, "output_index": msg_output_index, "content_index": content_idx, "refusal": self.refusal})));
+            out.push_str(&sse_frame("response.content_part.done", &json!({"type": "response.content_part.done", "item_id": self.output_item_id, "output_index": msg_output_index, "content_index": content_idx, "part": {"type": "refusal", "refusal": self.refusal}})));
+        }
+        // The snapshot always carries a message item, the empty placeholder
+        // included, so the client must see that item announced and closed too.
+        if has_message || self.tool_calls.is_empty() {
+            let mut parts = self.ordered_parts();
+            if parts.is_empty() {
+                parts.push(json!({"type": "output_text", "text": ""}));
+            }
+            out.push_str(&self.ensure_message_item(msg_output_index));
+            out.push_str(&sse_frame("response.output_item.done", &json!({"type": "response.output_item.done", "output_index": msg_output_index, "item": {"id": self.output_item_id, "type": "message", "status": item_status, "role": "assistant", "content": parts}})));
         }
         for (index, tool) in self.tool_calls.iter().enumerate() {
-            let output_index = index
-                + usize::from(!self.content.is_empty())
-                + usize::from(!self.reasoning.is_empty());
+            let output_index =
+                index + usize::from(has_message) + usize::from(!self.reasoning.is_empty());
             let custom = tool["type"] == "custom_tool_call";
             let field = if custom { "input" } else { "arguments" };
             let event = if custom {
@@ -9022,10 +9187,17 @@ impl ChatResponseStreamState {
             done[field] = tool[field].clone();
             out.push_str(&sse_frame(event, &done));
             let mut completed = tool.clone();
-            completed["status"] = json!("completed");
+            completed["status"] = json!(item_status);
             out.push_str(&sse_frame("response.output_item.done", &json!({"type": "response.output_item.done", "output_index": output_index, "item": completed})));
         }
-        out.push_str(&response_completed_sse(&response));
+        if incomplete_truncated {
+            out.push_str(&sse_frame(
+                "response.incomplete",
+                &json!({"type": "response.incomplete", "response": sanitize_response(&response)}),
+            ));
+        } else {
+            out.push_str(&response_completed_sse(&response));
+        }
         out
     }
 
@@ -9149,11 +9321,17 @@ impl ResponseChatStreamState {
     }
 
     fn finish(&mut self) -> String {
+        self.finish_with_reason(None)
+    }
+
+    fn finish_with_reason(&mut self, override_reason: Option<&str>) -> String {
         if self.finished {
             return String::new();
         }
         self.finished = true;
-        let reason = if self.tools.iter().any(|tool| tool.introduced) {
+        let reason = if let Some(reason) = override_reason {
+            reason
+        } else if self.tools.iter().any(|tool| tool.introduced) {
             "tool_calls"
         } else {
             "stop"
@@ -9310,13 +9488,17 @@ impl SseStreamTransformer {
             return String::new();
         }
         self.terminal = true;
+        // The stored text keeps the real transport detail for the trace; the
+        // client gets the fixed message, because transport errors embed the
+        // upstream URL and provider ids.
+        let client_message = client_error_message("");
         match self.mode {
-            StreamTransform::ChatToResponse => self.chat_response.fail(message),
+            StreamTransform::ChatToResponse => self.chat_response.fail(client_message),
             StreamTransform::ResponseToChat => format!(
                 "data: {}\n\n",
                 json!({
                     "error": {
-                        "message": message,
+                        "message": client_message,
                         "type": "upstream_error",
                         "code": "stream_interrupted"
                     }
@@ -9326,7 +9508,7 @@ impl SseStreamTransformer {
                 self.anthropic.stopped = true;
                 sse_frame(
                     "error",
-                    &anthropic_error_value(StatusCode::BAD_GATEWAY, message),
+                    &anthropic_error_value(StatusCode::BAD_GATEWAY, client_message),
                 )
             }
             StreamTransform::None => sse_frame(
@@ -9334,7 +9516,7 @@ impl SseStreamTransformer {
                 &json!({
                     "type": "error",
                     "code": "upstream_error",
-                    "message": message,
+                    "message": client_message,
                     "param": Value::Null,
                     "sequence_number": 0
                 }),
@@ -9361,7 +9543,7 @@ impl SseStreamTransformer {
             .unwrap_or_default();
         if matches!(
             event_type,
-            "response.completed" | "response.failed" | "response.incomplete" | "error"
+            "response.completed" | "response.failed" | "response.incomplete" | "response.error" | "error"
         ) {
             self.terminal = true;
         }
@@ -9413,13 +9595,32 @@ impl SseStreamTransformer {
             if let Some(content) =
                 raw_string(delta.get("content")).filter(|content| !content.is_empty())
             {
+                let out_idx = usize::from(!self.chat_response.reasoning.is_empty());
                 if !self.chat_response.content_started {
                     self.chat_response.content_started = true;
-                    output.push_str(&sse_frame("response.output_item.added", &json!({"type": "response.output_item.added", "output_index": usize::from(!self.chat_response.reasoning.is_empty()), "item": {"id": self.chat_response.output_item_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []}})));
-                    output.push_str(&sse_frame("response.content_part.added", &json!({"type": "response.content_part.added", "item_id": self.chat_response.output_item_id, "output_index": usize::from(!self.chat_response.reasoning.is_empty()), "content_index": 0, "part": {"type": "output_text", "text": ""}})));
+                    let item = self.chat_response.ensure_message_item(out_idx);
+                    output.push_str(&item);
+                    self.chat_response.content_content_index =
+                        usize::from(self.chat_response.refusal_started);
+                    output.push_str(&sse_frame("response.content_part.added", &json!({"type": "response.content_part.added", "item_id": self.chat_response.output_item_id, "output_index": out_idx, "content_index": self.chat_response.content_content_index, "part": {"type": "output_text", "text": ""}})));
                 }
                 self.chat_response.content.push_str(&content);
-                output.push_str(&sse_frame("response.output_text.delta", &json!({"type": "response.output_text.delta", "item_id": self.chat_response.output_item_id, "output_index": usize::from(!self.chat_response.reasoning.is_empty()), "content_index": 0, "delta": content})));
+                output.push_str(&sse_frame("response.output_text.delta", &json!({"type": "response.output_text.delta", "item_id": self.chat_response.output_item_id, "output_index": out_idx, "content_index": self.chat_response.content_content_index, "delta": content})));
+            }
+            if let Some(refusal) =
+                raw_string(delta.get("refusal")).filter(|refusal| !refusal.is_empty())
+            {
+                let out_idx = usize::from(!self.chat_response.reasoning.is_empty());
+                let item = self.chat_response.ensure_message_item(out_idx);
+                output.push_str(&item);
+                if !self.chat_response.refusal_started {
+                    self.chat_response.refusal_started = true;
+                    self.chat_response.refusal_content_index =
+                        usize::from(!self.chat_response.content.is_empty());
+                    output.push_str(&sse_frame("response.content_part.added", &json!({"type": "response.content_part.added", "item_id": self.chat_response.output_item_id, "output_index": out_idx, "content_index": self.chat_response.refusal_content_index, "part": {"type": "refusal", "refusal": ""}})));
+                }
+                self.chat_response.refusal.push_str(&refusal);
+                output.push_str(&sse_frame("response.refusal.delta", &json!({"type": "response.refusal.delta", "item_id": self.chat_response.output_item_id, "output_index": out_idx, "content_index": self.chat_response.refusal_content_index, "delta": refusal})));
             }
             if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
                 for call in calls {
@@ -9460,10 +9661,39 @@ impl SseStreamTransformer {
             .and_then(|choice| value_string(choice.get("finish_reason")))
         {
             if reason != "" {
+                self.chat_response.finish_reason = Some(reason);
                 self.chat_response.finish_pending = true;
             }
         }
         self.chat_response.finish_if_ready(output)
+    }
+
+    /// Replays assistant text that the upstream buffered into the terminal
+    /// snapshot instead of streaming it, so a delta-less upstream does not leave
+    /// the chat client with an empty message. Streamed text wins over the
+    /// snapshot.
+    fn replay_buffered_text(&mut self, items: &[Value]) -> String {
+        if !self.response_chat.content.is_empty() {
+            return String::new();
+        }
+        let text = items
+            .iter()
+            .filter(|item| item.get("type").and_then(Value::as_str) == Some("message"))
+            .filter_map(|item| item.get("content").and_then(Value::as_array))
+            .flatten()
+            .filter(|part| {
+                matches!(
+                    part.get("type").and_then(Value::as_str),
+                    Some("output_text" | "text")
+                )
+            })
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .collect::<String>();
+        if text.is_empty() {
+            return String::new();
+        }
+        self.response_chat.content.push_str(&text);
+        self.response_chat.chunk(json!({"content": text}), None)
     }
 
     fn transform_response_event(&mut self, value: &Value) -> String {
@@ -9529,21 +9759,80 @@ impl SseStreamTransformer {
                     }
                 }
             }
+            if let Some(items) = value["response"]["output"].as_array() {
+                output.push_str(&self.replay_buffered_text(items));
+            }
             output.push_str(&self.response_chat.finish());
             return output;
         }
-        if matches!(
-            event_type,
-            "response.completed" | "response.failed" | "response.incomplete" | "error"
-        ) {
-            return self.response_chat.finish();
+        if event_type == "response.incomplete" {
+            let reason = match value
+                .pointer("/response/incomplete_details/reason")
+                .and_then(Value::as_str)
+            {
+                Some("content_filter") => "content_filter",
+                Some("max_output_tokens") => "length",
+                _ => "stop",
+            };
+            let mut output = String::new();
+            if let Some(items) = value["response"]["output"].as_array() {
+                for (index, item) in items.iter().enumerate() {
+                    if item["type"] == "function_call" {
+                        output.push_str(
+                            &self
+                                .response_chat
+                                .tool_event(&json!({"output_index": index, "item": item}), true),
+                        );
+                    }
+                }
+            }
+            if let Some(items) = value["response"]["output"].as_array() {
+                output.push_str(&self.replay_buffered_text(items));
+            }
+            output.push_str(&self.response_chat.finish_with_reason(Some(reason)));
+            return output;
+        }
+        if matches!(event_type, "response.failed" | "response.error" | "error") {
+            if self.response_chat.finished {
+                return String::new();
+            }
+            self.response_chat.finished = true;
+            let detail = value
+                .get("response")
+                .and_then(|r| r.get("error"))
+                .filter(|v| !v.is_null())
+                .or_else(|| value.get("error").filter(|v| !v.is_null()))
+                .unwrap_or(value);
+            let upstream_code = value_string(detail.get("code")).unwrap_or_default();
+            let upstream_message = value_string(detail.get("message")).unwrap_or_default();
+            // The full text goes to the trace journal, never to stderr verbatim:
+            // it can carry account ids and request echoes, and stderr is not
+            // covered by the journal's rotation or access rules.
+            eprintln!(
+                "upstream stream error: code={} message_bytes={}",
+                log_safe(&upstream_code, 64),
+                upstream_message.len()
+            );
+            let client_message = client_error_message(&upstream_code);
+            let mut output = sse_frame(
+                "error",
+                &json!({
+                    "type": "error",
+                    "error": {"type": "upstream_error", "code": "upstream_stream_failed", "message": client_message}
+                }),
+            );
+            output.push_str("data: [DONE]\n\n");
+            return output;
         }
         String::new()
     }
 
     fn anthropic_frames(&mut self, frames: &str) -> String {
         let mut output = String::new();
-        for line in frames.lines().filter_map(|line| line.strip_prefix("data: ")) {
+        for line in frames
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+        {
             if let Ok(value) = serde_json::from_str::<Value>(line) {
                 output.push_str(&self.transform_anthropic_event(&value));
             }
@@ -9560,7 +9849,6 @@ impl SseStreamTransformer {
         output.push_str(&self.anthropic.stop());
         output
     }
-
     fn transform_anthropic_event(&mut self, value: &Value) -> String {
         if value.get("choices").is_some() {
             self.anthropic_chat = true;
@@ -9653,10 +9941,19 @@ impl SseStreamTransformer {
                 self.anthropic.max_tokens = value.pointer("/response/incomplete_details/reason").and_then(Value::as_str) == Some("max_output_tokens");
                 output.push_str(&self.anthropic.stop())
             }
-            "response.failed" | "error" => {
+            "response.failed" | "response.error" | "error" => {
                 self.anthropic.stopped = true;
-                let message = value.pointer("/response/error/message").or_else(|| value.pointer("/error/message")).and_then(Value::as_str).unwrap_or("Upstream stream failed");
-                output.push_str(&sse_frame("error", &anthropic_error_value(StatusCode::BAD_GATEWAY, message)));
+                // Same redaction as the chat path: the client gets a fixed
+                // message keyed by the upstream code, never the upstream text.
+                let code = value
+                    .pointer("/response/error/code")
+                    .or_else(|| value.pointer("/error/code"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                output.push_str(&sse_frame(
+                    "error",
+                    &anthropic_error_value(StatusCode::BAD_GATEWAY, client_error_message(code)),
+                ));
             }
             _ => {}
         }
@@ -9715,7 +10012,7 @@ impl PassthroughSseState {
                         self.output = items.clone();
                     }
                 }
-                "response.failed" | "error" => {
+                "response.failed" | "response.error" | "error" => {
                     self.terminal = true;
                     self.error = value
                         .pointer("/response/error/message")
@@ -9850,6 +10147,7 @@ fn streaming_response(reply: StreamingReply) -> Response {
             // error frame to every answer that completed normally.
             let mut state =
                 (dialect == ClientDialect::Responses).then(PassthroughSseState::default);
+            let mut observer = SseTraceObserver::new();
             loop {
                 tokio::select! {
                     next = upstream.next() => match next {
@@ -9861,7 +10159,11 @@ fn streaming_response(reply: StreamingReply) -> Response {
                                     break;
                                 }
                             }
-                            yield Ok::<Bytes, Infallible>(chunk)
+                            observer.push(&chunk);
+                            yield Ok::<Bytes, Infallible>(chunk);
+                            if observer.terminal {
+                                break;
+                            }
                         }
                         Some(Err(error)) => {
                             stream_error = Some(error.to_string());
@@ -9879,8 +10181,13 @@ fn streaming_response(reply: StreamingReply) -> Response {
                     let message = stream_error
                         .clone()
                         .unwrap_or_else(|| "upstream stream ended before a terminal event".to_owned());
-                    stream_error = Some(message.clone());
-                    yield Ok::<Bytes, Infallible>(Bytes::from(state.failure_frame(&message)));
+                    // Transport errors embed the upstream URL, so they stay in the
+                    // log and the trace; the client gets the fixed message.
+                    eprintln!("upstream stream failure: {}", log_safe(&message, 512));
+                    stream_error = Some(message);
+                    yield Ok::<Bytes, Infallible>(Bytes::from(
+                        state.failure_frame(client_error_message("")),
+                    ));
                 }
             }
         } else {
@@ -9895,6 +10202,17 @@ fn streaming_response(reply: StreamingReply) -> Response {
                             if !output.is_empty() { yield Ok::<Bytes, Infallible>(Bytes::from(output)); }
                             if let Some(message) = converter.failed.clone() {
                                 stream_error = Some(message);
+                                break;
+                            }
+                            // Chat finish_reason may precede usage: wait until the
+                            // converter emitted its terminal snapshot, not just finish_pending.
+                            let finished = match transform {
+                                StreamTransform::ChatToResponse => converter.chat_response.completed_sent,
+                                StreamTransform::ResponseToChat => converter.response_chat.finished,
+                                StreamTransform::ResponseToAnthropic => converter.anthropic.stopped,
+                                StreamTransform::None => false,
+                            };
+                            if finished {
                                 break;
                             }
                         }
@@ -16231,7 +16549,7 @@ impl WsConnectionLog {
         self.events_sent = self.events_sent.saturating_add(1);
         if is_ws_terminal_event(event) {
             self.terminal_event = Some(event_type.to_owned());
-            if matches!(event_type, "response.failed" | "error") {
+            if matches!(event_type, "response.failed" | "response.error" | "error") {
                 self.upstream_error = event
                     .pointer("/response/error/message")
                     .or_else(|| event.pointer("/error/message"))
@@ -20452,11 +20770,8 @@ mod tests {
         );
         assert!(
             !report.grace_keeps_priority,
-            "but it no longer takes the last free slots (util={}, active={}, capacity={}, decision={:?})",
-            report.utilisation(),
-            report.account_active,
-            report.capacity,
-            report.decision
+            "but it no longer takes the last free slots (capacity={}, decision={:?})",
+            report.capacity, report.decision
         );
         drop(held);
     }
@@ -21152,13 +21467,25 @@ mod tests {
                 .await
                 .unwrap();
             // The first body byte is a data-bearing keepalive so a proxied
-            // client receives headers before upstream prefill completes.
+            // client receives headers before upstream prefill completes. The
+            // terminal event must still arrive without waiting for the socket to
+            // close, so read until it shows up; the bound turns a never-delivered
+            // terminal into a failure instead of a hung test.
             let mut received = String::new();
-            while !received.contains(event) {
-                let chunk = response.chunk().await.unwrap().unwrap();
+            let mut last_name = String::new();
+            for _ in 0..64 {
+                let Some(chunk) = response.chunk().await.unwrap() else {
+                    break;
+                };
                 received.push_str(&String::from_utf8_lossy(&chunk));
+                if let Some((name, _)) = parse_sse_events(&received).pop() {
+                    last_name = name;
+                    if last_name == event {
+                        break;
+                    }
+                }
             }
-            assert!(received.contains(event));
+            assert_eq!(last_name, event, "{received}");
             drop(response);
 
             let traces = timeout(Duration::from_secs(2), async {
@@ -21171,6 +21498,9 @@ mod tests {
                         if traces
                             .iter()
                             .any(|trace| trace["traceKind"] == "client-request")
+                            && traces
+                                .iter()
+                                .any(|trace| trace["traceKind"] == "upstream-attempt")
                         {
                             break traces;
                         }
@@ -21179,7 +21509,25 @@ mod tests {
                 }
             })
             .await
-            .expect("dropping after response.completed should finalize the trace");
+            .expect("the terminal event should commit both trace records");
+            // Both records are written by one detached task, so a regression that
+            // drops the second one has to fail here.
+            assert_eq!(
+                traces
+                    .iter()
+                    .filter(|trace| trace["traceKind"] == "client-request")
+                    .count(),
+                1,
+                "{traces:?}"
+            );
+            assert_eq!(
+                traces
+                    .iter()
+                    .filter(|trace| trace["traceKind"] == "upstream-attempt")
+                    .count(),
+                1,
+                "{traces:?}"
+            );
             for trace in traces.iter().filter(|trace| {
                 matches!(
                     trace["traceKind"].as_str(),
@@ -21189,7 +21537,10 @@ mod tests {
                 assert_eq!(trace["status"], 200);
                 assert_eq!(trace["isError"], expected_error);
                 assert_eq!(trace["lifecycleState"], "completed");
-                assert_eq!(trace["clientDisconnected"], true);
+                // The edge now finishes on the terminal event, so the client is
+                // still connected when the trace is written.
+                // `pre_terminal_disconnect_traces_as_499` covers the other branch.
+                assert_eq!(trace["clientDisconnected"], false);
                 if expected_error {
                     assert_eq!(
                         trace["error"],
@@ -22399,8 +22750,12 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
     #[test]
     fn anthropic_stream_reports_failure_instead_of_successful_completion() {
         let mut converter = SseStreamTransformer::new(StreamTransform::ResponseToAnthropic,"model");
-        let output = converter.transform_anthropic_event(&json!({"type":"response.failed","response":{"error":{"message":"provider failed"}}}));
-        assert!(output.contains("event: error"));assert!(output.contains("provider failed"));assert!(!output.contains("event: message_stop"));assert!(converter.finish().is_empty());
+        let output = converter.transform_anthropic_event(&json!({"type":"response.failed","response":{"error":{"message":"provider failed for account acct_123 at https://upstream.example/v1"}}}));
+        assert!(output.contains("event: error"));assert!(!output.contains("event: message_stop"));assert!(converter.finish().is_empty());
+        // The client gets a fixed message; upstream text stays out of the frame.
+        assert!(!output.contains("provider failed"));
+        assert!(!output.contains("acct_123"));
+        assert!(output.contains("upstream stream reported an error"));
     }
 
     #[test]
@@ -27782,3 +28137,6 @@ mod voice_router_tests {
         assert_eq!(voice_route_model(&store, &complex, &catalog, VOICE_MODEL), None);
     }
 }
+
+#[cfg(test)]
+mod sse_protocol_tests;
