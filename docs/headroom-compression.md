@@ -86,6 +86,10 @@ Runtime behavior:
 - The edge persists the last pushed contract and reloads it at startup, so
   compression resumes before the control plane reconciles. A saved runtime
   contract wins over `HEADROOM_COMPRESS_*`.
+- The sidecar joins MultiVibe's Docker network. Because Headroom's loopback
+  guard rejects peer containers, the generated container sets
+  `HEADROOM_COMPRESS_ALLOW_REMOTE=1`; the proxy token is still required on every
+  call. A manual service reached over a network needs the same variable.
 - **Stop** stops the container and disables compression. **Uninstall** removes
   the container, its named volume and both state files, and clears the edge
   contract; the extension stays visible and can be installed again.

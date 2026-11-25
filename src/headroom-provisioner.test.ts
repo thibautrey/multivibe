@@ -248,6 +248,9 @@ test("install provisions a managed sidecar and activates compression", async () 
     assert.deepEqual(Object.keys(container.NetworkSettings.Networks), ["multivibe_default"]);
     assert.equal(container.NetworkSettings.Ports["8787/tcp"], undefined, "no host port inside a container");
     assert.ok(container.Config.Env?.includes("HOME=/root"));
+    // Peer containers are rejected by Headroom's loopback guard unless the
+    // sidecar explicitly allows remote callers on its private network.
+    assert.ok(container.Config.Env?.includes("HEADROOM_COMPRESS_ALLOW_REMOTE=1"));
     const create = harness.docker.requests.find((request) =>
       request.path.includes("/containers/create"),
     );
@@ -499,6 +502,8 @@ test("outside a container the sidecar publishes a loopback port", async () => {
     assert.equal(container?.NetworkSettings.Ports["8787/tcp"]?.[0]?.HostPort, "32768");
     // A host install does not have a container network to discover.
     assert.deepEqual(Object.keys(container!.NetworkSettings.Networks), ["bridge"]);
+    // The published loopback port keeps Headroom's default loopback guard.
+    assert.equal(container?.Config.Env?.includes("HEADROOM_COMPRESS_ALLOW_REMOTE=1"), false);
   });
 });
 

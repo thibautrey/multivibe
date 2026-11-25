@@ -429,17 +429,25 @@ export class HeadroomProvisioner {
       // The image runs as root with its state volume at /root/.headroom.
       Binds: [`${this.volumeName}:/root/.headroom`],
     };
-    if (!this.runningInContainer) {
+    const env = [
+      "HEADROOM_HOST=0.0.0.0",
+      `HEADROOM_PORT=${HEADROOM_PORT}`,
+      `HEADROOM_PROXY_TOKEN=${token}`,
+      "HOME=/root",
+    ];
+    if (this.runningInContainer) {
+      // Headroom's /v1/compress loopback guard rejects peer containers on the
+      // bridge network with a 404 by default. The sidecar is only reachable on
+      // MultiVibe's network and still requires the proxy token, so opt this
+      // route out of the loopback dependency. A host install keeps the default
+      // because it reaches the sidecar over a published loopback port.
+      env.push("HEADROOM_COMPRESS_ALLOW_REMOTE=1");
+    } else {
       hostConfig.PortBindings = { [`${HEADROOM_PORT}/tcp`]: [{ HostIp: "127.0.0.1", HostPort: "" }] };
     }
     return {
       Image: settings.image,
-      Env: [
-        "HEADROOM_HOST=0.0.0.0",
-        `HEADROOM_PORT=${HEADROOM_PORT}`,
-        `HEADROOM_PROXY_TOKEN=${token}`,
-        "HOME=/root",
-      ],
+      Env: env,
       Labels: { "multivibe.extension": "headroom", "multivibe.managed": "true" },
       ExposedPorts: { [`${HEADROOM_PORT}/tcp`]: {} },
       HostConfig: hostConfig,
