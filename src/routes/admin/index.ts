@@ -2057,11 +2057,21 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       typeof req.query.application === "string" ? req.query.application.trim() : "";
     const projectIdFilter =
       typeof req.query.projectId === "string" ? req.query.projectId.trim() : "";
-    const { totalStored, matched, stats } = await getTraceStats(
-      sinceMs,
-      untilMs,
-      { application: applicationFilter || undefined, projectId: projectIdFilter || undefined, apiKeyId: apiKeyFilter || undefined },
-    );
+    const filters = {
+      application: applicationFilter || undefined,
+      projectId: projectIdFilter || undefined,
+      apiKeyId: apiKeyFilter || undefined,
+    };
+    const [{ totalStored, matched, stats }, moduleAnalytics] = await Promise.all([
+      getTraceStats(sinceMs, untilMs, filters),
+      traceManager.queryModuleAnalytics(
+        moduleManager?.analyticsDescriptors() ?? [],
+        { sinceMs, untilMs, ...filters },
+      ),
+    ]);
+    // Extension-contributed metrics participate in the same time window and
+    // filters as every other analytics panel.
+    stats.moduleAnalytics = moduleAnalytics;
 
     res.json({
       ok: true,

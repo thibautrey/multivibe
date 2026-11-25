@@ -5,6 +5,8 @@ import express from "express";
 import { createAdminRouter, type AdminRoutesOptions } from "./index.js";
 import { sessionKeyFor } from "../../session-identity.js";
 import { createTraceManager, type TraceEntry } from "../../traces.js";
+import { moduleAnalyticsDescriptors } from "../../module-analytics.js";
+import { headroomPluginManifest } from "../../headroom-plugin.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -164,5 +166,38 @@ test("indexed admin endpoints expose complete totals, account metadata and pagin
     const page = await r.json(); assert.equal(page.total, 203); assert.equal(page.turns.length, 3); assert.equal(page.turns[0].clientRequestId, "request-200");
     const exact = await fetch(`${base}/admin/stats/traces?sinceMs=${BASE + 10}&untilMs=${BASE + 10}`).then(r => r.json());
     assert.equal(exact.stats.totals.upstreamAttempts, 1);
+  });
+});
+
+test("admin trace stats expose analytics declared by extensions over the selected range", async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-admin-extension-stats-"));
+  const historyFilePath = path.join(dir, "history.jsonl");
+  const records = [
+    attempt({ id: "compressed", at: BASE, tokensInput: 300, compression: {
+      provider: "headroom", outcome: "compressed", tokensBefore: 1000, tokensAfter: 300,
+      tokensSaved: 700, compressionRatio: 0.3, toolTokensSaved: 5,
+    } }),
+    attempt({ id: "plain", at: BASE + 1, tokensInput: 1000 }),
+  ];
+  await fs.writeFile(historyFilePath, records.map((record) => JSON.stringify(record)).join("\n") + "\n");
+  const manager = createTraceManager({ filePath: path.join(dir, "journal.jsonl"), historyFilePath, indexedHistoryPath: path.join(dir, "index.sqlite"), externalWriter: true });
+  t.after(async () => { await manager.close(); await fs.rm(dir, { recursive: true, force: true }); });
+  const opts = options([]);
+  opts.traceManager = manager;
+  opts.moduleManager = {
+    analyticsDescriptors: () => moduleAnalyticsDescriptors([
+      { id: headroomPluginManifest.id, manifest: headroomPluginManifest },
+    ]),
+  } as unknown as AdminRoutesOptions["moduleManager"];
+  await manager.initialize();
+  await manager.queryAnalytics!("sync", {});
+  await withServer(opts, async (base) => {
+    const body = await fetch(`${base}/admin/stats/traces?sinceMs=${BASE}&untilMs=${BASE + 1}`).then((r) => r.json());
+    const metrics = body.stats.moduleAnalytics["multivibe.headroom"] as Array<{ id: string; value: number; samples: number }>;
+    const byId = Object.fromEntries(metrics.map((metric) => [metric.id, metric]));
+    assert.equal(byId.compressedRequests.value, 1);
+    assert.equal(byId.tokensSaved.value, 700);
+    assert.equal(byId.avgPayloadKept.value, 0.3);
+    assert.equal(byId.tokensSaved.samples, 1);
   });
 });

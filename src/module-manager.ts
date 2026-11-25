@@ -1,5 +1,6 @@
 import { ModuleSandbox } from "./module-sandbox.js";
 import { ModuleStorageManager } from "./module-storage.js";
+import { moduleAnalyticsDescriptors, validateModuleAnalytics } from "./module-analytics.js";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
@@ -146,6 +147,7 @@ export async function readModuleManifest(root: string): Promise<ModuleManifest> 
     try { homepage = new URL(manifest.homepage); } catch { throw new Error("Invalid module homepage"); }
     if (homepage.protocol !== "https:" || homepage.username || homepage.password) throw new Error("Module homepage must be a public HTTPS URL");
   }
+  validateModuleAnalytics(manifest.analytics);
   const entrypoint = path.resolve(root, String(manifest.entrypoint ?? ""));
   if (!entrypoint.startsWith(`${path.resolve(root)}${path.sep}`)) throw new Error("Module entrypoint escapes repository");
   const stat = await fs.stat(entrypoint);
@@ -437,6 +439,11 @@ export class ModuleManager {
     this.locks = this.locks.filter((entry) => entry.id !== id);
     this.loaded.delete(id);
     await this.saveLocks();
+  }
+
+  /** Validated dashboard contributions from all known modules. */
+  analyticsDescriptors() {
+    return moduleAnalyticsDescriptors(this.list());
   }
 
   analytics(id: string) {

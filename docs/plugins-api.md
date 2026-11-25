@@ -95,6 +95,42 @@ handlers listed in the manifest are invoked. The SDK is defined in
 [`src/module-sdk.ts`](../src/module-sdk.ts); TypeScript authors may consume its
 types at build time, but installed code must be JavaScript.
 
+## Dashboard analytics contributions
+
+A module can declare metrics in its manifest that the host aggregates from trace
+telemetry and displays in the analytics dashboard. No plugin code runs during an
+analytics query, and the declarations are validated on installation.
+
+```json
+"analytics": [
+  {
+    "id": "savedTokens",
+    "label": "Input tokens removed",
+    "description": "Tokens removed from provider-ready requests.",
+    "unit": "tokens",
+    "aggregation": "sum",
+    "path": "compression.tokensSaved",
+    "when": { "compression": { "provider": "headroom", "outcome": "compressed" } }
+  }
+]
+```
+
+- `aggregation` is `sum`, `count`, or `average` (sum/count of contributing traces).
+- `path` is a dotted trace field containing a finite number; it is required
+  unless `aggregation` is `count`. `when` is a nested partial match that selects
+  contributing traces; an array value means "one of".
+- `unit` is `count`, `tokens`, `ms`, `ratio`, or `usd`. At most 16 metrics and
+  8 conditions per metric are accepted.
+- Values are computed over the dashboard's selected time range and its
+  application/project/API-key filters, by the same analytics worker that serves
+  `/admin/stats/traces`. They are returned under `stats.moduleAnalytics`, keyed
+  by module id, and rendered in the Activity overview. No query can execute
+  arbitrary plugin code, and one module cannot read another module's metrics.
+- The built-in `multivibe.headroom` module uses this contract to expose
+  compressed request count, input/tool tokens removed, and average payload
+  ratio. These savings are deliberately separate from provider cache hits and
+  are not converted into billed cost.
+
 ## Hooks and return values
 
 | Hook | Value and current execution coverage |

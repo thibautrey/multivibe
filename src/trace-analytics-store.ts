@@ -12,6 +12,7 @@ import {
 import { emptyUsage, addTrace, finalizeUsage, type MutableUsage } from "./project-usage.js";
 import { aggregateSessionUsage, sessionTurnsFor, createTurn, addTraceToTurn } from "./session-usage.js";
 import { sessionKeyOf } from "./session-identity.js";
+import { aggregateModuleAnalytics, analyticsTraceRoots, validateModuleAnalytics, type ModuleAnalyticsDescriptor, type ModuleAnalyticsResult } from "./module-analytics.js";
 import type { AnalyticsStatus } from "./trace-analytics-client.js";
 import { MODEL_PRICING_VERSION, estimateCostUsd } from "./model-pricing.js";
 
@@ -507,6 +508,25 @@ export class TraceAnalyticsStore {
     return buildBucketTraceStats(buckets(),this.status.indexed,args.sinceMs,args.untilMs);
   }
 
+  /**
+   * Manifest-declared dashboard metrics. Raw entries are only touched for the
+   * requested range and only when a declared trace field is present; the query
+   * result is cached with the other analytics reads.
+   */
+  moduleAnalytics(args: Filter & { descriptors?: ModuleAnalyticsDescriptor[] }): ModuleAnalyticsResult {
+    const descriptors: ModuleAnalyticsDescriptor[] = [];
+    for (const item of (Array.isArray(args.descriptors) ? args.descriptors : []).slice(0, 64)) {
+      if (!item || typeof item !== "object" || !/^[a-z0-9][a-z0-9.-]{2,127}$/.test(item.moduleId ?? "")) continue;
+      try {
+        for (const metric of validateModuleAnalytics([item.metric]) ?? []) descriptors.push({ moduleId: item.moduleId, metric });
+      } catch { /* one invalid declaration cannot break the dashboard */ }
+    }
+    if (!descriptors.length) return {};
+    const roots = analyticsTraceRoots(descriptors);
+    const extra = roots.length ? ` AND (${roots.map((root) => `json_type(payload,'$.${root}') IS NOT NULL`).join(" OR ")})` : "";
+    return aggregateModuleAnalytics(this.range(args, extra), descriptors);
+  }
+
   usage(args: Filter) {
     const { firstFull, fullEnd, edge } = this.edgeAndHours(args);
     const global = createUsageAggregate();
@@ -690,6 +710,7 @@ export class TraceAnalyticsStore {
     if (cached && cached.generation === this.generation && cached.expires > Date.now()) return cached.value;
     let value: any;
     if (action === "stats") value=this.stats(args);
+    else if (action === "module-analytics") value=this.moduleAnalytics(args);
     else if (action === "usage") value=this.usage(args);
     else if (action === "sessions") value=this.sessions(args);
     else if (action === "turns") value=this.turns(args);

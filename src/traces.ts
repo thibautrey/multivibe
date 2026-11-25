@@ -13,6 +13,8 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import { normalizeTraceHeaders } from "./trace-headers.js";
 import { sessionKeyFor } from "./session-identity.js";
+import { aggregateModuleAnalytics, type ModuleAnalyticsDescriptor, type ModuleAnalyticsResult } from "./module-analytics.js";
+export type { ModuleAnalyticsResult } from "./module-analytics.js";
 import type { CommunityReportTrace } from "./community-report.js";
 import type { CodexProjectAttribution } from "./codex-projects.js";
 import type {
@@ -323,6 +325,8 @@ export type TraceStats = {
   timeseries: TraceTimeseriesBucket[];
   ttftByProviderModel: TraceTtftStats[];
   accountSelection: AccountSelectionSummary;
+  /** Metrics declared by extensions, keyed by module id. */
+  moduleAnalytics: ModuleAnalyticsResult;
 };
 
 export type UsageTokenTotals = {
@@ -1454,6 +1458,7 @@ export function buildTraceStats(traces: TraceEntry[]): TraceStats {
     timeseries,
     ttftByProviderModel: finalizeTtftGroups(ttftGroups),
     accountSelection: finalizeAccountSelection(accountSelection),
+    moduleAnalytics: {},
   };
 }
 
@@ -1733,6 +1738,7 @@ export function buildBucketTraceStats(buckets: Iterable<TraceBucketAggregate>, t
         timeseries,
         ttftByProviderModel: finalizeTtftGroups(ttftGroups),
         accountSelection: finalizeAccountSelection(accountSelection),
+        moduleAnalytics: {},
       },
     };
 }
@@ -2270,6 +2276,22 @@ export function createTraceManager(config: TraceManagerConfig) {
     return buildBucketTraceStats([...statsBuckets.values()].sort((a, b) => a.at - b.at), totalStored, sinceMs, untilMs);
   }
 
+  async function queryModuleAnalytics(
+    descriptors: readonly ModuleAnalyticsDescriptor[],
+    filters: { sinceMs?: number; untilMs?: number; application?: string; projectId?: string; apiKeyId?: string } = {},
+  ): Promise<ModuleAnalyticsResult> {
+    if (!descriptors.length) return {};
+    if (analytics) return analytics.call("module-analytics", { ...filters, descriptors });
+    await syncExternalTraces();
+    const traces = (await readStatsHistoryRange(filters.sinceMs, filters.untilMs)).filter((trace) => {
+      if (filters.application && trace.application !== filters.application) return false;
+      if (filters.projectId && trace.projectId !== filters.projectId) return false;
+      if (filters.apiKeyId && trace.apiKeyId !== filters.apiKeyId) return false;
+      return true;
+    });
+    return aggregateModuleAnalytics(traces, descriptors);
+  }
+
   async function appendTrace(
     entry: Omit<
       TraceEntry,
@@ -2495,6 +2517,7 @@ export function createTraceManager(config: TraceManagerConfig) {
     seedStatsHistoryIfMissing,
     compactTraceStorageIfNeeded,
     getTraceStats,
+    queryModuleAnalytics,
     appendTrace,
     recordTrace,
     beginTrace,

@@ -22,6 +22,7 @@ import {
   runtimeIdentityForAccount,
   runtimeIdentityForProvider,
 } from "../../lib/runtimeCatalog";
+import { ExtensionImpact } from "../ExtensionImpact";
 import { Metric } from "../Metric";
 import { TtftComparisonChart } from "../TtftComparisonChart";
 import { WidgetGrid } from "../WidgetGrid";
@@ -477,6 +478,7 @@ function TracingTabContent(props: Props) {
               </div>
             </section>
           </section>
+          <ExtensionImpact modules={traceStats.moduleAnalytics} />
         </div>
       )}
 

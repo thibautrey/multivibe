@@ -13,6 +13,9 @@ test("the bundled manifest is installable, hook-free and disabled by default", (
   assert.equal(headroomPluginManifest.id, "multivibe.headroom");
   assert.equal(headroomPluginManifest.defaultEnabled, false);
   assert.deepEqual(headroomPluginManifest.hooks, []);
+  assert.deepEqual(headroomPluginManifest.analytics?.map((metric) => metric.id), [
+    "compressedRequests", "tokensSaved", "toolTokensSaved", "avgPayloadKept",
+  ]);
   assert.equal(headroomPluginManifest.settingsSchema!.additionalProperties, false);
   assert.equal(HEADROOM_DEFAULT_SETTINGS.manageContainer, true);
   assert.equal(HEADROOM_DEFAULT_SETTINGS.image, HEADROOM_DEFAULT_IMAGE);

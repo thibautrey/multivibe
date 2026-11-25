@@ -136,6 +136,16 @@ export type Trace = {
   hasRequestHeaders?: boolean;
 };
 
+export type ModuleAnalyticsValue = {
+  id: string;
+  label: string;
+  description?: string;
+  unit?: "count" | "tokens" | "ms" | "ratio" | "usd";
+  aggregation: "sum" | "count" | "average";
+  value: number;
+  samples: number;
+};
+
 export type TraceStats = {
   totals: {
     requests: number;
@@ -207,6 +217,8 @@ export type TraceStats = {
       "quota-headroom": number;
     };
   };
+  /** Dashboard metrics contributed by extensions, keyed by module id. */
+  moduleAnalytics?: Record<string, ModuleAnalyticsValue[]>;
 };
 
 export type TracePagination = {

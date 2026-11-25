@@ -38,6 +38,7 @@ export const EMPTY_TRACE_STATS: TraceStats = {
       "quota-headroom": 0,
     },
   },
+  moduleAnalytics: {},
 };
 
 export const EMPTY_SESSIONS_RESPONSE: SessionsResponse = {

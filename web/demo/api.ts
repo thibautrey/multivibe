@@ -1,6 +1,8 @@
 import { configuredInvoiceProviders } from "../../src/provider-invoices";
 import { sdkProviderCatalog } from "../../src/ai-sdk/catalog";
 import { buildTraceStats } from "../../src/traces";
+import { aggregateModuleAnalytics, moduleAnalyticsDescriptors } from "../../src/module-analytics";
+import { headroomPluginManifest } from "../../src/headroom-plugin";
 import { aggregateProjectUsage } from "../../src/project-usage";
 import { aggregateSessionUsage, sessionTurnsFor } from "../../src/session-usage";
 import { createDemoFixtures } from "./fixtures";
@@ -77,7 +79,13 @@ export function createDemoApi(now = Date.now(), workspace: "personal" | "owner" 
       const since = Number(url.searchParams.get("sinceMs") ?? "0");
       const until = Number(url.searchParams.get("untilMs") ?? now);
       const selected = fixtures.traces.filter((trace) => trace.at >= since && trace.at <= until);
-      if (path === "/admin/stats/traces") return json({ stats: buildTraceStats(selected) });
+      if (path === "/admin/stats/traces") {
+        const stats = buildTraceStats(selected);
+        stats.moduleAnalytics = aggregateModuleAnalytics(selected, moduleAnalyticsDescriptors([
+          { id: headroomPluginManifest.id, manifest: headroomPluginManifest },
+        ]));
+        return json({ stats });
+      }
       if (path === "/admin/stats/usage") return json({ byProject: aggregateProjectUsage(selected.filter((trace) => trace.traceKind === "client-request")) });
       const positiveInt = (value: string | null, fallback: number) => value && /^\d+$/.test(value) && Number.isSafeInteger(Number(value)) && Number(value) > 0 ? Number(value) : fallback;
       const pageSize = Math.min(100, positiveInt(url.searchParams.get("pageSize"), 100));

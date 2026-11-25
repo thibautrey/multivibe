@@ -32,6 +32,30 @@ export type ModuleVirtualModel = {
   aliasDescription?: string;
 };
 
+export const MODULE_ANALYTICS_UNITS = ["count", "tokens", "ms", "ratio", "usd"] as const;
+export type ModuleAnalyticsUnit = (typeof MODULE_ANALYTICS_UNITS)[number];
+
+export const MODULE_ANALYTICS_AGGREGATIONS = ["sum", "count", "average"] as const;
+export type ModuleAnalyticsAggregation = (typeof MODULE_ANALYTICS_AGGREGATIONS)[number];
+
+/**
+ * A dashboard metric contributed by a module. The host reads trace telemetry
+ * and computes the value over the dashboard's time range; modules never run
+ * code during analytics queries and cannot see other modules' data.
+ */
+export type ModuleAnalyticsMetric = {
+  /** Stable id, namespaced by the module id in analytics responses. */
+  id: string;
+  label: string;
+  description?: string;
+  unit?: ModuleAnalyticsUnit;
+  /** Dot path to a numeric trace field, e.g. `compression.tokensSaved`. */
+  path?: string;
+  /** Nested partial match selecting the traces that contribute to this metric. */
+  when?: Record<string, unknown>;
+  aggregation: ModuleAnalyticsAggregation;
+};
+
 export type ModuleManifest = {
   id: string;
   name: string;
@@ -54,6 +78,8 @@ export type ModuleManifest = {
   defaultEnabled?: boolean;
   /** Virtual models this bundled module contributes to the instance catalog. */
   virtualModels?: readonly ModuleVirtualModel[];
+  /** Dashboard analytics metrics contributed by this module. */
+  analytics?: readonly ModuleAnalyticsMetric[];
 };
 
 export type ModuleConversation = {

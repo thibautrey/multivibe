@@ -3621,6 +3621,26 @@ body:has(> .modal-backdrop) {
   grid-template-columns: minmax(0, .88fr) minmax(0, 1.12fr);
 }
 
+.trace-extension-panel {
+  display: grid;
+  align-content: start;
+  margin-top: 14px;
+}
+
+.trace-extension-groups {
+  display: grid;
+  gap: 6px;
+}
+
+.trace-extension-group h3 {
+  margin: 16px 0 -8px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
 .trace-quality-panel,
 .trace-routing-panel {
   display: grid;
