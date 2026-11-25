@@ -1250,3 +1250,43 @@ test("normalizes image edit costs using resolved models and modality details", a
   assert.equal(normalizeTrace({...raw, costUsd: 0.2})?.costUsd, 0.2);
   assert.equal(normalizeTrace({...raw, usage: undefined})?.costUsd, undefined);
 });
+
+test("keeps Headroom compression savings separate from provider cache usage", async () => {
+  const {normalizeTrace} = await import("./traces.js");
+  const raw = {
+    at: Date.now(),
+    route: "/responses",
+    status: 200,
+    latencyMs: 12,
+    usage: {
+      input_tokens: 1000,
+      output_tokens: 20,
+      input_tokens_details: {cached_tokens: 800},
+    },
+    compression: {
+      provider: "headroom",
+      outcome: "compressed",
+      tokensBefore: 1200,
+      tokensAfter: 500,
+      tokensSaved: 700,
+      compressionRatio: 0.4167,
+      transforms: ["smart_crusher"],
+      durationMs: 9,
+      wireShape: "openai_responses",
+      frozenMessageCount: 3,
+      cachedPrefixReplayed: false,
+    },
+  };
+  const trace = normalizeTrace(raw);
+  assert.ok(trace);
+  assert.equal(trace.tokensInput, 1000);
+  assert.equal(trace.tokensInputCached, 800);
+  assert.equal(trace.compression?.outcome, "compressed");
+  assert.equal(trace.compression?.tokensSaved, 700);
+  assert.deepEqual(trace.compression?.transforms, ["smart_crusher"]);
+  assert.equal(trace.costUsd, normalizeTrace({...raw, compression: undefined})?.costUsd);
+  assert.equal(
+    normalizeTrace({...raw, compression: {provider: "other", outcome: "compressed"}})?.compression,
+    undefined,
+  );
+});

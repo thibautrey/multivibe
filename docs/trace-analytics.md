@@ -18,6 +18,17 @@ Session reports are stored for up to four filter windows. New events mark their 
 
 The worker bounds its query cache and the client shares identical in-flight requests. Dashboard polling runs only for the visible activity view, pauses in hidden browser tabs, prevents overlap, and discards obsolete range responses. Turn details are displayed one page at a time.
 
+## Request compression signal
+
+When Headroom request compression is enabled, entries carry an optional
+`compression` object written by the Rust edge (`provider: "headroom"`,
+`outcome`, `tokensBefore`, `tokensAfter`, `tokensSaved`, `compressionRatio`,
+`transforms`, `durationMs`, `wireShape`, and session replay hints). It is stored
+and normalized with the rest of the entry payload, including after cost
+backfills. Compression savings stay separate from provider usage: they are never
+added to `tokensInputCached`, `tokensInputCacheWrite`, `cacheSavingsUsd` or
+`costUsd`. See [headroom-compression.md](headroom-compression.md).
+
 ## Verification
 
 Run `npm run build`, the trace analytics/trace/session/project tests, and `cargo test -p multivibe-v1-edge`. `node scripts/benchmark-trace-analytics.mjs --rows 3000000` generates a synthetic multi-million-event history, validates token and attempt totals, measures migration and query latency, checks repeated session reports, and measures the HTTP thread's event-loop delay. This benchmark excludes upstream model inference. The temporary synthetic history and index are removed when it finishes.

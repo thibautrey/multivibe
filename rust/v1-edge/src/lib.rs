@@ -13,6 +13,7 @@ mod codex_prefix;
 mod confidential;
 mod dashboard;
 mod enrollment;
+mod headroom;
 mod idempotency;
 mod lease;
 mod images;
@@ -150,6 +151,9 @@ pub struct EdgeConfig {
     pub idempotency_max_bytes: usize,
     pub idempotency_max_response_bytes: usize,
     pub cloud_privacy_mode: String,
+    /// Optional Headroom request-half compression.  Disabled unless
+    /// `HEADROOM_COMPRESS_URL` is set.
+    pub headroom: headroom::Config,
     pub confidential_inference_trust_policy: Option<String>,
     pub job_worker_concurrency: usize,
     pub oauth_token_url: String,
@@ -247,6 +251,7 @@ impl Default for EdgeConfig {
             idempotency_max_bytes: 32 * 1024 * 1024,
             idempotency_max_response_bytes: 1024 * 1024,
             cloud_privacy_mode: "standard".to_owned(),
+            headroom: headroom::Config::default(),
             confidential_inference_trust_policy: None,
             job_worker_concurrency: 16,
             oauth_token_url: "https://auth.openai.com/oauth/token".to_owned(),
@@ -456,6 +461,7 @@ impl EdgeConfig {
                 .max(1_024),
             cloud_privacy_mode: env("MULTIVIBE_CLOUD_PRIVACY_MODE")
                 .unwrap_or(defaults.cloud_privacy_mode),
+            headroom: headroom::Config::from_env(),
             confidential_inference_trust_policy: env(
                 "MULTIVIBE_CONFIDENTIAL_INFERENCE_TRUST_POLICY",
             ),
@@ -5307,6 +5313,9 @@ struct TraceContext {
     latency_breakdown: Option<Value>,
     account_selection: Option<Value>,
     input_context: Option<Value>,
+    /// Headroom request-half compression signal.  Kept separate from provider
+    /// usage (`tokensInputCached`, `costUsd`) on purpose.
+    compression: Option<Value>,
     request_body: Option<Value>,
     request_headers: Option<Value>,
 }
@@ -6199,6 +6208,9 @@ impl TraceSink {
         if let Some(value) = context.input_context.as_ref() {
             entry["inputContext"] = value.clone();
         }
+        if let Some(value) = context.compression.as_ref() {
+            entry["compression"] = value.clone();
+        }
         if context.provider_attempts > 0 {
             entry["providerAttempts"] = Value::Number((context.provider_attempts as u64).into());
         }
@@ -6471,6 +6483,7 @@ pub struct EdgeState {
     backend_relay_client: reqwest::Client,
     control_plane_client: reqwest::Client,
     webhook_client: reqwest::Client,
+    headroom: headroom::Client,
     blocked: Arc<Mutex<HashMap<String, u64>>>,
     selected: Arc<Mutex<HashMap<String, String>>>,
     confidential: Option<confidential::ConfidentialClient>,
@@ -6558,6 +6571,16 @@ impl EdgeState {
         });
         let capacity_version = Arc::new(AtomicU64::new(1));
         let admission_grace = config.admission_grace.clone();
+        let headroom = headroom::Client::new(config.headroom.clone());
+        if let Some(error) = headroom.config_error() {
+            eprintln!(
+                "{}",
+                json!({
+                    "event": "headroom.config_error",
+                    "error": error,
+                })
+            );
+        }
         let (shutdown, _) = broadcast::channel(16);
         let state = Self {
             store: AccountStore::new(config.store_path.clone()),
@@ -6578,6 +6601,7 @@ impl EdgeState {
             backend_relay_client,
             control_plane_client,
             webhook_client,
+            headroom,
             blocked: Arc::new(Mutex::new(HashMap::new())),
             selected: Arc::new(Mutex::new(HashMap::new())),
             confidential,
@@ -6901,6 +6925,7 @@ fn build_trace_context(
         input_context: (!trace_content_redacted)
             .then(|| trace_input_context(body))
             .flatten(),
+        compression: None,
         request_body: (state.config.trace_include_body
             && !confidential
             && !trace_content_redacted)
@@ -8005,6 +8030,40 @@ async fn proxy_inference(
                 if provider == "openai" && account.chatgpt_account_id.is_some() {
                     default_chatgpt_reasoning_effort(&mut payload, sends_chat);
                 }
+                // Headroom rewrites only the provider-ready body. Routing,
+                // auth and quota remain MultiVibe's, and every failure keeps
+                // `payload` untouched.
+                let compression = if image_route
+                    || embeddings_route
+                    || decisions_route
+                    || image_upload.is_some()
+                    || path.ends_with("/responses/compact")
+                    || account.multivibe_cloud == Some(true)
+                {
+                    headroom::CompressionResult::Disabled
+                } else {
+                    state
+                        .headroom
+                        .compress(
+                            &payload,
+                            prompt_cache_session_id.as_deref(),
+                            require_confidential || account_is_confidential(&account),
+                            header_value(headers, "anthropic-beta").as_deref(),
+                        )
+                        .await
+                };
+                trace_context.compression = compression.trace_value();
+                let mut compression_headers = Vec::new();
+                if let headroom::CompressionResult::Applied {
+                    body,
+                    headers,
+                    metrics,
+                } = compression
+                    && metrics.tokens_saved > 0
+                {
+                    payload = body;
+                    compression_headers = headers;
+                }
                 let url = if image_route {
                     format!("{}/images/{}", model_discovery_url(&account, &state.config).trim_end_matches("/models"),
                         if path.ends_with("/edits") { "edits" } else { "generations" })
@@ -8188,6 +8247,9 @@ async fn proxy_inference(
                         Some(&route.model),
                         &state.config,
                     );
+                    for (name, value) in &compression_headers {
+                        set_header(&mut request_headers, name, value);
+                    }
                     if image_upload.is_some() {
                         if let Some(content_type) = header_value(headers, "content-type") {
                             set_header(&mut request_headers, "content-type", content_type);
@@ -18953,6 +19015,208 @@ mod tests {
         upstream_task.abort();
         let _ = fs::remove_file(store_path).await;
         let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
+    async fn headroom_compression_rewrites_the_provider_body_and_keeps_savings_separate() {
+        let upstream_bodies = Arc::new(Mutex::new(Vec::new()));
+        let upstream_slot = upstream_bodies.clone();
+        let upstream = Router::new()
+            .route(
+                "/backend-api/codex/models",
+                get(|| async { Json(json!({"models": [{"slug": "gpt-compress"}]})) }),
+            )
+            .route(
+                "/backend-api/codex/responses",
+                post(move |Json(body): Json<Value>| {
+                    let slot = upstream_slot.clone();
+                    async move {
+                        slot.lock().await.push(body);
+                        Json(json!({
+                            "id": "resp_headroom",
+                            "object": "response",
+                            "status": "completed",
+                            "model": "gpt-compress",
+                            "output": [{
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "ok"}]
+                            }],
+                            "usage": {
+                                "input_tokens": 1000,
+                                "output_tokens": 20,
+                                "total_tokens": 1020,
+                                "input_tokens_details": {"cached_tokens": 600}
+                            }
+                        }))
+                    }
+                }),
+            );
+        let (upstream_url, upstream_task) = start_server(upstream).await;
+
+        let gateway_requests = Arc::new(Mutex::new(Vec::new()));
+        let gateway_slot = gateway_requests.clone();
+        let headroom = Router::new().route(
+            "/v1/compress",
+            post(move |Json(body): Json<Value>| {
+                let slot = gateway_slot.clone();
+                async move {
+                    let fails = body["config"]["session_id"] == "conv-fail";
+                    let stream = body.get("stream").cloned().unwrap_or(Value::Bool(false));
+                    let cache_key = body.get("prompt_cache_key").cloned();
+                    slot.lock().await.push(body);
+                    if fails {
+                        return json_response(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            json!({"error": {"type": "compression_timeout"}}),
+                        );
+                    }
+                    let mut compressed = json!({
+                        "model": "gpt-compress",
+                        "input": "compressed hello",
+                        "stream": stream,
+                        "store": false
+                    });
+                    if let Some(cache_key) = cache_key {
+                        compressed["prompt_cache_key"] = cache_key;
+                    }
+                    json_response(
+                        StatusCode::OK,
+                        json!({
+                            "body": compressed,
+                            "tokens_before": 900,
+                            "tokens_after": 120,
+                            "tokens_saved": 780,
+                            "transforms_applied": ["router:smart_crusher:0.4"],
+                            "wire_shape": "openai_responses",
+                            "obligations": [],
+                            "session": {"frozen_message_count": 1, "cached_prefix_replayed": false}
+                        }),
+                    )
+                }
+            }),
+        );
+        let (headroom_url, headroom_task) = start_server(headroom).await;
+
+        let store_path = temporary_path("headroom-store");
+        let jobs_path = temporary_path("headroom-jobs");
+        let trace_path = temporary_path("headroom-trace");
+        fs::write(
+            &store_path,
+            serde_json::to_vec(&store_with_accounts(vec![account("compress-account")])).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.trace_path = Some(trace_path.clone());
+        config.chatgpt_base_url = upstream_url;
+        config.configured_api_keys = vec![("hermes-a".to_owned(), "edge-secret".to_owned())];
+        config.models_cache_ttl = Duration::from_secs(60);
+        let mut headroom_config = headroom::Config::new(format!("{headroom_url}/v1/compress"));
+        headroom_config.min_bytes = 0;
+        headroom_config.timeout = Duration::from_secs(2);
+        config.headroom = headroom_config;
+
+        let state = EdgeState::new(config).await.unwrap();
+        let (edge_url, edge_task) = start_server(build_router(state)).await;
+        let client = reqwest::Client::new();
+        let request = json!({"model": "gpt-compress", "input": "hello"});
+
+        let response = client
+            .post(format!("{edge_url}/v1/responses"))
+            .header("authorization", "Bearer edge-secret")
+            .header("session_id", "conv-compress")
+            .header("anthropic-beta", "fine-grained-tool-streaming-2025-05-14")
+            .json(&request)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        {
+            let calls = gateway_requests.lock().await;
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0]["config"]["session_id"], "conv-compress");
+            assert_eq!(calls[0]["gateway"]["can_redrive"], false);
+            assert_eq!(calls[0]["gateway"]["can_relay_response"], false);
+            assert_eq!(
+                calls[0]["gateway"]["request_headers"]["anthropic-beta"],
+                "fine-grained-tool-streaming-2025-05-14"
+            );
+            assert!(calls[0]["config"].get("mode").is_none());
+        }
+        {
+            let bodies = upstream_bodies.lock().await;
+            assert_eq!(bodies.len(), 1);
+            assert_eq!(bodies[0]["input"], "compressed hello");
+        }
+        {
+            let trace = latest_compression_trace(&trace_path).await;
+            assert_eq!(trace["compression"]["provider"], "headroom");
+            assert_eq!(trace["compression"]["outcome"], "compressed");
+            assert_eq!(trace["compression"]["tokensSaved"], 780);
+            // Provider usage stays measured and untouched by Headroom.
+            assert_eq!(trace["tokensInput"], 1000);
+            assert_eq!(trace["tokensInputCached"], 600);
+        }
+
+        // A Headroom failure is invisible to the client: the original body
+        // reaches the provider and the trace records the failed attempt.
+        let response = client
+            .post(format!("{edge_url}/v1/responses"))
+            .header("authorization", "Bearer edge-secret")
+            .header("session_id", "conv-fail")
+            .json(&request)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let expected = {
+            let calls = gateway_requests.lock().await;
+            assert_eq!(calls.len(), 2);
+            assert!(calls[1]["gateway"].get("request_headers").is_none());
+            let mut expected = calls[1].clone();
+            let expected_object = expected.as_object_mut().unwrap();
+            expected_object.remove("config");
+            expected_object.remove("gateway");
+            expected
+        };
+        {
+            let bodies = upstream_bodies.lock().await;
+            assert_eq!(bodies.len(), 2);
+            assert_eq!(bodies[1], expected);
+        }
+        {
+            let trace = latest_compression_trace(&trace_path).await;
+            assert_eq!(trace["compression"]["outcome"], "failed");
+            assert!(
+                trace["compression"]["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("503")
+            );
+        }
+
+        edge_task.abort();
+        upstream_task.abort();
+        headroom_task.abort();
+        let _ = fs::remove_file(store_path).await;
+        let _ = fs::remove_file(jobs_path).await;
+        let _ = fs::remove_file(trace_path).await;
+    }
+
+    async fn latest_compression_trace(path: &std::path::Path) -> Value {
+        fs::read_to_string(path)
+            .await
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|entry| entry.get("compression").is_some())
+            .next_back()
+            .expect("trace entry with a compression signal")
     }
 
     #[tokio::test]

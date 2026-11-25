@@ -73,6 +73,12 @@ services:
       - OAUTH_TOKEN_URL=https://auth.openai.com/oauth/token
       - OAUTH_SCOPE=openid profile email offline_access
       - OAUTH_REDIRECT_URI=http://localhost:1455/auth/callback
+      # Optional Headroom request-half compression (disabled when empty).
+      - HEADROOM_COMPRESS_URL=${HEADROOM_COMPRESS_URL:-}
+      - HEADROOM_PROXY_TOKEN=${HEADROOM_PROXY_TOKEN:-}
+      - HEADROOM_TIMEOUT_MS=${HEADROOM_TIMEOUT_MS:-3000}
+      - HEADROOM_MIN_BYTES=${HEADROOM_MIN_BYTES:-4096}
+      - HEADROOM_COMPRESS_MODE=${HEADROOM_COMPRESS_MODE:-}
       # Sentry (optional - leave SENTRY_DSN empty to disable)
       - SENTRY_DSN=${SENTRY_DSN:-}
       - SENTRY_ENVIRONMENT=${SENTRY_ENVIRONMENT:-production}

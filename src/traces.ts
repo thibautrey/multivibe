@@ -34,6 +34,24 @@ function normalizeSelectionProvider(value: unknown): ProviderId {
     : "openai";
 }
 
+export type CompressionTrace = {
+  provider: "headroom";
+  outcome: "compressed" | "skipped" | "failed";
+  reason?: string;
+  /** Request tokens Headroom measured before/after compression. */
+  tokensBefore?: number;
+  tokensAfter?: number;
+  tokensSaved?: number;
+  /** `tokensAfter / tokensBefore`; lower is better. */
+  compressionRatio?: number;
+  toolTokensSaved?: number;
+  transforms?: string[];
+  durationMs?: number;
+  wireShape?: string;
+  frozenMessageCount?: number;
+  cachedPrefixReplayed?: boolean;
+};
+
 export type TraceEntry = {
   id: string;
   at: number;
@@ -129,6 +147,8 @@ export type TraceEntry = {
     compactionItemCount: number;
     itemsBeforeLatestCompaction: number;
   };
+  /** Headroom request-half savings, kept separate from provider cache usage. */
+  compression?: CompressionTrace;
   assistantEmptyOutput?: boolean;
   assistantFinishReason?: string;
   responseStreamDiagnostics?: ResponseStreamDiagnostics;
@@ -474,6 +494,61 @@ function safeNumber(value: unknown): number | undefined {
     if (Number.isFinite(n)) return n;
   }
   return undefined;
+}
+
+function normalizeCompressionTrace(raw: any): CompressionTrace | undefined {
+  if (!raw || typeof raw !== "object" || raw.provider !== "headroom") return undefined;
+  const outcome =
+    raw.outcome === "compressed" || raw.outcome === "skipped" || raw.outcome === "failed"
+      ? raw.outcome
+      : undefined;
+  if (!outcome) return undefined;
+  const tokensBefore = safeNumber(raw.tokensBefore);
+  const tokensAfter = safeNumber(raw.tokensAfter);
+  const tokensSaved = safeNumber(raw.tokensSaved);
+  const compressionRatio = safeNumber(raw.compressionRatio);
+  const toolTokensSaved = safeNumber(raw.toolTokensSaved);
+  const durationMs = safeNumber(raw.durationMs);
+  const frozenMessageCount = safeNumber(raw.frozenMessageCount);
+  return {
+    provider: "headroom",
+    outcome,
+    reason:
+      typeof raw.reason === "string" && raw.reason.trim()
+        ? raw.reason.trim().slice(0, 200)
+        : undefined,
+    tokensBefore,
+    tokensAfter,
+    tokensSaved,
+    compressionRatio:
+      typeof compressionRatio === "number" && compressionRatio >= 0
+        ? compressionRatio
+        : undefined,
+    toolTokensSaved:
+      typeof toolTokensSaved === "number" && toolTokensSaved >= 0
+        ? toolTokensSaved
+        : undefined,
+    transforms: Array.isArray(raw.transforms)
+      ? raw.transforms
+          .filter((value: unknown): value is string => typeof value === "string" && value.trim() !== "")
+          .slice(0, 32)
+          .map((value: string) => value.slice(0, 120))
+      : undefined,
+    durationMs:
+      typeof durationMs === "number" && durationMs >= 0 ? durationMs : undefined,
+    wireShape:
+      typeof raw.wireShape === "string" && raw.wireShape.trim()
+        ? raw.wireShape.trim().slice(0, 40)
+        : undefined,
+    frozenMessageCount:
+      typeof frozenMessageCount === "number" && frozenMessageCount >= 0
+        ? Math.floor(frozenMessageCount)
+        : undefined,
+    cachedPrefixReplayed:
+      typeof raw.cachedPrefixReplayed === "boolean"
+        ? raw.cachedPrefixReplayed
+        : undefined,
+  };
 }
 
 function normalizeTokenFields(
@@ -826,6 +901,7 @@ export function normalizeTrace(raw: any): TraceEntry | null {
               safeNumber(raw.inputContext.itemsBeforeLatestCompaction) ?? 0,
           }
         : undefined,
+    compression: normalizeCompressionTrace(raw.compression),
     assistantEmptyOutput:
       typeof raw.assistantEmptyOutput === "boolean"
         ? raw.assistantEmptyOutput

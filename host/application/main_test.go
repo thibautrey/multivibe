@@ -131,6 +131,28 @@ func TestCoreEnvironmentIsAllowlistedAndPinsAllState(t *testing.T) {
 	}
 }
 
+func TestEdgeEnvironmentPassesOnlyHeadroomCompressionSettings(t *testing.T) {
+	t.Setenv("HEADROOM_COMPRESS_URL", "http://127.0.0.1:8787/v1/compress")
+	t.Setenv("HEADROOM_PROXY_TOKEN", "headroom-secret")
+	t.Setenv("UNRELATED_SECRET", "must-not-leak")
+	environment := edgeEnvironment(nil, coreNetworkConfiguration{
+		BindAddress: "127.0.0.1", Port: "1455", PublicBaseURL: "http://localhost:1455",
+	}, "internal-token")
+	joined := strings.Join(environment, "\n")
+	for _, expected := range []string{
+		"HEADROOM_COMPRESS_URL=http://127.0.0.1:8787/v1/compress",
+		"HEADROOM_PROXY_TOKEN=headroom-secret",
+		"V1_EDGE_INTERNAL_JOB_TOKEN=internal-token",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("missing edge environment %q in %s", expected, joined)
+		}
+	}
+	if strings.Contains(joined, "UNRELATED_SECRET") || strings.Contains(joined, "must-not-leak") {
+		t.Fatalf("unrelated parent environment leaked to the edge: %s", joined)
+	}
+}
+
 func TestHostBindAddressPreservesLoopbackDefaultAndBoundsExposure(t *testing.T) {
 	for input, expected := range map[string]string{
 		"": "127.0.0.1", "127.0.0.1": "127.0.0.1", "::1": "::1", "0.0.0.0": "0.0.0.0", "::": "::",

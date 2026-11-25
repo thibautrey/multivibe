@@ -505,6 +505,21 @@ func edgeEnvironment(base []string, network coreNetworkConfiguration, internalTo
 		"TRACE_JOURNAL_MAX_BYTES=67108864",
 		"V1_EDGE_INTERNAL_JOB_TOKEN="+internalToken,
 	)
+	// Headroom is an optional loopback compression service. Only the edge
+	// consumes these settings; they are never inherited wholesale from the
+	// parent environment.
+	for _, name := range []string{
+		"HEADROOM_COMPRESS_URL",
+		"HEADROOM_PROXY_TOKEN",
+		"HEADROOM_API_TOKEN",
+		"HEADROOM_TIMEOUT_MS",
+		"HEADROOM_MIN_BYTES",
+		"HEADROOM_COMPRESS_MODE",
+	} {
+		if value := inheritedEnvironment(name); value != "" {
+			environment = append(environment, name+"="+value)
+		}
+	}
 	return environment
 }
 
