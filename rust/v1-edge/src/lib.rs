@@ -1460,6 +1460,9 @@ fn normalize_model_key(model: &str) -> String {
 // first-party provider. Unknown names have no provider instead of OpenAI.
 fn infer_provider(model: &str) -> Option<&'static str> {
     let key = normalize_model_key(model);
+    if key.starts_with("decision-spark/") {
+        return Some("decision-spark");
+    }
     if key.starts_with("mistral")
         || key.starts_with("codestral")
         || key.starts_with("ministral")
@@ -7902,11 +7905,14 @@ async fn proxy_inference(
             }
             if decisions_route {
                 accounts.retain(|account| {
+                    let upstream_model = route.model.split_once('/').map(|(_, model)| model).unwrap_or(&route.model);
+                    let decision_model_ok = upstream_model == "gpt-6-luna"
+                        || upstream_model == "deepseek-v4.1-flash-decision";
+                    let decision_provider_ok = (normalize_provider(account) == "ai-sdk"
+                        && matches!(account.sdk_provider.as_deref(), Some("openai") | Some("decision-spark")))
+                        || normalize_provider(account) == "openai-compatible";
                     !account_is_confidential(account) && account.multivibe_cloud != Some(true)
-                        && ((normalize_provider(account) == "ai-sdk"
-                            && account.sdk_provider.as_deref() == Some("openai"))
-                            || normalize_provider(account) == "openai-compatible")
-                        && route.model.strip_prefix("openai/").unwrap_or(&route.model) == "gpt-6-luna"
+                        && decision_provider_ok && decision_model_ok
                 });
             }
             if image_route {
@@ -18086,6 +18092,45 @@ mod tests {
             assert_eq!(client.post(format!("{url}/v1/decisions")).bearer_auth("secret").json(&invalid).send().await.unwrap().status(), StatusCode::BAD_REQUEST);
         }
         assert_eq!(client.post(format!("{url}/v1/decisions")).bearer_auth("secret").header("x-multivibe-execution","defer").json(&payload).send().await.unwrap().status(), StatusCode::BAD_REQUEST);
+        runtime_task.abort(); edge_task.abort();
+        let _ = fs::remove_file(store_path).await; let _ = fs::remove_file(jobs_path).await;
+    }
+
+    #[tokio::test]
+    async fn decisions_accept_decision_spark_account_and_alias() {
+        let payload = json!({"model":"decision-spark/deepseek-v4.1-flash-decision", "input":"The gate is open",
+            "questions":[{"type":"predicate","name":"open","instructions":"Is the gate open?"}]});
+        let answer = json!({"id":"dec_spark","object":"decision","model":"deepseek-v4.1-flash-decision",
+            "answers":[{"type":"predicate","name":"open","probability":0.99}],
+            "usage":{"input_tokens":100,"output_tokens":0}});
+        let expected_answer = answer.clone();
+        let runtime = Router::new()
+            .route("/internal/ai-sdk/api/v1/models", get(|| async { Json(json!({"data":[{"id":"decision-spark/deepseek-v4.1-flash-decision"}]})) }))
+            .route("/internal/ai-sdk/api/v1/decisions", post(move || {
+                let answer = expected_answer.clone();
+                async move { Json(answer) }
+            }));
+        let (runtime_url, runtime_task) = start_server(runtime).await;
+        let mut api = account("api");
+        api.provider = Some("ai-sdk".to_owned());
+        api.sdk_provider = Some("decision-spark".to_owned());
+        api.sdk_models = Some(vec!["deepseek-v4.1-flash-decision".to_owned()]);
+        let store_path = temporary_path("decisions-spark-store");
+        let jobs_path = temporary_path("decisions-spark-jobs");
+        fs::write(&store_path, serde_json::to_vec(&store_with_accounts(vec![api])).unwrap()).await.unwrap();
+        let mut config = EdgeConfig::default();
+        config.store_path = store_path.clone();
+        config.jobs_path = jobs_path.clone();
+        config.node_control_plane_url = runtime_url;
+        config.internal_job_token = Some("internal-secret".to_owned());
+        config.configured_api_keys = vec![("test".to_owned(), "secret".to_owned())];
+        let (url, edge_task) = start_server(build_router(EdgeState::new(config).await.unwrap())).await;
+        let client = reqwest::Client::new();
+        let result = client.post(format!("{url}/v1/decisions")).bearer_auth("secret").json(&payload).send().await.unwrap();
+        let status = result.status();
+        let body = result.text().await.unwrap();
+        assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+        assert_eq!(serde_json::from_str::<Value>(&body).unwrap(), answer);
         runtime_task.abort(); edge_task.abort();
         let _ = fs::remove_file(store_path).await; let _ = fs::remove_file(jobs_path).await;
     }
