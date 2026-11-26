@@ -298,3 +298,29 @@ test("Decisions forwards its native contract and errors without the chat codec",
     listener.closeAllConnections(); await new Promise<void>(resolve => listener.close(() => resolve()));
   }
 });
+
+test("Decisions forwards to the Decision Spark middleware with its own alias", async () => {
+  const account: Account = {id: "decisions-spark", provider: "ai-sdk", sdkProvider: "decision-spark", sdkModels: ["deepseek-v4.1-flash-decision"], accessToken: "spark-secret", enabled: true};
+  const calls: Array<{url: string; body: any}> = [];
+  const answer = {id: "dec_spark", object: "decision", answers: [{type: "predicate", name: "open", probability: 0.99}], usage: {input_tokens: 100, output_tokens: 0}};
+  const app = express(); app.use(express.json());
+  app.use(createSdkAdapterRouter({store: {listAccounts: async () => [account]}, internalToken: "internal-secret", fetch: async (url, init) => {
+    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer spark-secret");
+    calls.push({url: String(url), body: JSON.parse(String(init?.body))});
+    return Response.json(answer);
+  }}));
+  const listener = app.listen(0, "127.0.0.1");
+  await new Promise<void>(resolve => listener.once("listening", resolve));
+  const url = `http://127.0.0.1:${(listener.address() as AddressInfo).port}/decisions-spark/v1/decisions`;
+  const body = {model: "decision-spark/deepseek-v4.1-flash-decision", input: "The gate is open", questions: [{type: "predicate", name: "open", instructions: "Is the gate open?"}]};
+  try {
+    const result = await fetch(url, {method: "POST", headers: auth, body: JSON.stringify(body)});
+    assert.equal(result.status, 200);
+    assert.deepEqual(await result.json(), answer);
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0]!.url.endsWith("/v1/decisions"));
+    assert.equal(calls[0]!.body.model, "deepseek-v4.1-flash-decision");
+  } finally {
+    listener.closeAllConnections(); await new Promise<void>(resolve => listener.close(() => resolve()));
+  }
+});

@@ -13,4 +13,16 @@ Requests preserve text, image and JSON evidence, conversation items, all questio
 
 Usage includes cached and cache-write input tokens. MultiVibe deliberately omits cost estimates for Decisions rather than applying text-generation rates: this endpoint has free output, and input pricing varies with cache policy, context and processing region. Organization admin usage reporting (`/v1/organization/usage/decisions`) remains a direct OpenAI administration API; MultiVibe does not proxy admin API keys.
 
+## Decision Spark (local middleware)
+
+MultiVibe also accepts a `decision-spark` provider account. It forwards the same typed
+contract to the local middleware on Unraid (default `http://192.0.2.10:8102/v1`,
+overridable with `DECISION_SPARK_BASE_URL`) using the single alias
+`deepseek-v4.1-flash-decision`. The middleware scores the candidate letters from the
+first output distribution of DeepSeek V4.1-Flash served by vLLM on the Spark cluster.
+
+Confidence is candidate-normalized and **not** an empirically calibrated probability.
+The Spark cluster is shared with other workloads; keep request volume low and coordinate
+before enabling this provider in production.
+
 Reviewed against the [official Decisions guide](https://developers.openai.com/api/docs/guides/decisions) and [pricing](https://developers.openai.com/api/docs/pricing) on 2026-10-28. Validation uses local mock upstreams; it does not establish live account access.

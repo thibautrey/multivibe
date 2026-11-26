@@ -246,13 +246,24 @@ export function createSdkAdapterRouter(options: {
     const timeout = setTimeout(abort, 180_000);
     try {
       const account = res.locals.sdkAccount as Account;
-      if (account.sdkProvider !== "openai") throw new SdkInputError("Decisions require an OpenAI API account");
+      const decisionSpark = account.sdkProvider === "decision-spark";
+      if (account.sdkProvider !== "openai" && !decisionSpark) {
+        throw new SdkInputError("Decisions require an OpenAI API account or a Decision Spark account");
+      }
       let model: string;
       try { model = sdkModelId(account, req.body?.model ?? ""); } catch {
         res.status(404).json({error: {message: "Model is not enabled for this provider account", type: "invalid_request_error", code: "model_not_found"}});
         return;
       }
-      if (model !== "gpt-6-luna") throw new SdkInputError("Decisions currently support gpt-6-luna only");
+      // OpenAI Decisions uses gpt-6-luna. The Unraid middleware exposes the
+      // Jev-like DeepSeek readout under its own explicit alias.
+      if (decisionSpark) {
+        if (model !== "deepseek-v4.1-flash-decision") {
+          throw new SdkInputError("Decision Spark supports deepseek-v4.1-flash-decision only");
+        }
+      } else if (model !== "gpt-6-luna") {
+        throw new SdkInputError("OpenAI Decisions currently support gpt-6-luna only");
+      }
       const {input, questions, stream} = req.body;
       if (!(typeof input === "string" ? input.trim().length : Array.isArray(input) && input.length)
         || !Array.isArray(questions) || questions.length < 1 || questions.length > 400
