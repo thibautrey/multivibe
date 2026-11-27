@@ -10,6 +10,18 @@ const catalog: Record<string, string> = {
   "Some invoices could not be loaded with this connection. Use the billing link to see all invoices.": "Certaines factures n’ont pas pu être chargées avec cette connexion. Utilisez le lien de facturation pour afficher toutes les factures.",
   "Recent invoices shown. Open billing for the full history.": "Factures récentes affichées. Ouvrez la facturation pour l’historique complet.",
   "Billing pages open in a new tab. Sign in with the account shown above.": "Les pages de facturation s’ouvrent dans un nouvel onglet. Connectez-vous avec le compte indiqué ci-dessus.",
+  "Your purchases and their Stripe invoices": "Vos achats et leurs factures Stripe",
+  "Your MultiVibe purchases": "Vos achats MultiVibe",
+  "Credit bought on this instance. Stripe hosts the invoices.": "Crédit acheté sur cette instance. Les factures sont hébergées par Stripe.",
+  "No purchases yet. Credit you buy will appear here with its Stripe invoice.": "Aucun achat pour le moment. Le crédit acheté apparaîtra ici avec sa facture Stripe.",
+  "Stripe invoices open in a new tab.": "Les factures Stripe s’ouvrent dans un nouvel onglet.",
+  "Your purchases could not be loaded. Try refreshing.": "Vos achats n’ont pas pu être chargés. Essayez d’actualiser.",
+
+  // Purchase status
+  "Paid in full": "Payé",
+  "Receipt by email": "Reçu par e-mail",
+  "Reference": "Référence",
+  "View Stripe invoice for {id}": "Voir la facture Stripe de {id}",
 
   // Invoice table
   "Date": "Date",

@@ -215,6 +215,7 @@ test("signed instance API: onboarding, checkout, idempotency and events", async 
           id: checkout.body.sessionId,
           payment_status: "paid",
           payment_intent: "pi_test_1",
+          invoice: harness.stripe.sessions.get(checkout.body.sessionId)?.invoice,
         },
       },
     };
@@ -250,6 +251,8 @@ test("signed instance API: onboarding, checkout, idempotency and events", async 
     );
     assert.equal(payment.body.payment.status, "paid");
     assert.equal(payment.body.payment.netCents, 950);
+    assert.match(String(payment.body.payment.invoiceUrl), /^https:\/\/invoice\.stripe\.test\/in_test_/);
+    assert.match(String(payment.body.payment.invoicePdf), /\.pdf$/);
 
     const other = await enroll(harness.baseUrl);
     const forbidden = await signedFetch(

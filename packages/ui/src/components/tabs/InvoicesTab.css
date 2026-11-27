@@ -9,6 +9,7 @@
 .invoice-provider-title p { overflow-wrap:anywhere; }
 .invoice-provider-heading .btn { flex-shrink:0; }
 .invoice-provider-heading .provider-setup-mark { width:42px; height:42px; flex-shrink:0; }
+.invoice-purchases-mark { width:42px; height:42px; flex-shrink:0; border-radius:11px; }
 .invoice-instruction { margin-top:13px; }
 .invoice-table-scroll { overflow-x:auto; margin-top:18px; }
 .invoice-table { width:100%; border-collapse:collapse; text-align:left; font-size:13px; }

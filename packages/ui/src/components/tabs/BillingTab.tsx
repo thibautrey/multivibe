@@ -56,7 +56,7 @@ function billingError(error: unknown, fallback: string): string {
 }
 
 function paymentStatus(tr: (key: string) => string, payment: DashboardPayment): string {
-  if (payment.status === "paid") return tr("Paid");
+  if (payment.status === "paid") return tr("Paid in full");
   if (payment.status === "open") return tr("Awaiting payment");
   if (payment.status === "expired") return tr("Expired");
   if (payment.status === "refunded") return tr("Refunded");
@@ -402,6 +402,7 @@ export function BillingTab({ api }: Props) {
                   <th>{tr("Amount")}</th>
                   <th>{tr("Credit")}</th>
                   <th>{tr("Status")}</th>
+                  <th><span className="sr-only">{tr("Invoice")}</span></th>
                 </tr>
               </thead>
               <tbody>
@@ -411,6 +412,9 @@ export function BillingTab({ api }: Props) {
                     <td>{price(payment.amountCents, payment.currency)}</td>
                     <td>{money(payment.creditUsd)}</td>
                     <td>{paymentStatus(tr, payment)}</td>
+                    <td>{payment.invoiceUrl
+                      ? <a href={payment.invoiceUrl} target="_blank" rel="noopener noreferrer" aria-label={tr("View Stripe invoice for {id}", { id: payment.paymentId })}>{tr("View invoice")} <span aria-hidden="true">↗</span></a>
+                      : <span className="muted">—</span>}</td>
                   </tr>
                 ))}
               </tbody>

@@ -24,6 +24,8 @@ export type StubPayment = {
   createdAt: number;
   paidAt?: number;
   refundedCents?: number;
+  invoiceUrl?: string;
+  invoicePdf?: string;
 };
 
 export type StubEvent = {
@@ -98,6 +100,9 @@ export async function createStubBroker(): Promise<StubBroker> {
       if (!payment) throw new Error("unknown session");
       payment.status = "paid";
       payment.paidAt = Date.now();
+      // The real broker resolves the Stripe-hosted invoice when it settles.
+      payment.invoiceUrl = `https://invoice.stripe.test/${payment.paymentId}`;
+      payment.invoicePdf = `https://invoice.stripe.test/${payment.paymentId}.pdf`;
       emit("payment.succeeded", publicPayment(payment));
       return payment;
     },

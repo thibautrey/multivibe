@@ -7,6 +7,7 @@ import type {
   StripeAccountLink,
   StripeCheckoutSession,
   StripeGateway,
+  StripeInvoice,
   StripeRefund,
 } from "./stripe.js";
 
@@ -27,6 +28,7 @@ export function signature(secret: string, method: string, path: string, body = "
 export class FakeStripe implements StripeGateway {
   accounts = new Map<string, StripeAccount>();
   sessions = new Map<string, StripeCheckoutSession>();
+  invoices = new Map<string, StripeInvoice>();
   refunds = new Map<string, StripeRefund>();
   checkoutCalls: { input: CreateCheckoutInput; account?: string }[] = [];
   refundCalls: { input: CreateRefundInput; account?: string }[] = [];
@@ -68,6 +70,13 @@ export class FakeStripe implements StripeGateway {
   ): Promise<StripeCheckoutSession> {
     this.checkoutCalls.push({ input, account: stripeAccountId });
     const id = `cs_test_${++this.counter}`;
+    const invoiceId = `in_test_${++this.counter}`;
+    this.invoices.set(invoiceId, {
+      id: invoiceId,
+      hosted_invoice_url: `https://invoice.stripe.test/${invoiceId}`,
+      invoice_pdf: `https://invoice.stripe.test/${invoiceId}.pdf`,
+      status: "draft",
+    });
     const session: StripeCheckoutSession = {
       id,
       url: `https://checkout.stripe.test/${id}`,
@@ -76,6 +85,7 @@ export class FakeStripe implements StripeGateway {
       payment_status: "unpaid",
       status: "open",
       payment_intent: `pi_test_${this.counter}`,
+      invoice: invoiceId,
       livemode: false,
     };
     this.sessions.set(id, session);
@@ -86,6 +96,12 @@ export class FakeStripe implements StripeGateway {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error("no such session");
     return structuredClone(session);
+  }
+
+  async retrieveInvoice(invoiceId: string): Promise<StripeInvoice> {
+    const invoice = this.invoices.get(invoiceId);
+    if (!invoice) throw new Error("no such invoice");
+    return structuredClone(invoice);
   }
 
   async createRefund(

@@ -61,6 +61,8 @@ export type PublicPayment = {
   createdAt: number;
   paidAt?: number;
   refundedCents?: number;
+  invoiceUrl?: string;
+  invoicePdf?: string;
 };
 
 export type MemberBilling = {
@@ -704,6 +706,11 @@ export class PaymentsService {
 }
 
 export function publicPayment(payment: BrokerPayment): PublicPayment {
+  // Receipt links are opened in the member's browser; only keep HTTPS URLs.
+  const receiptUrl = (value: string | undefined) =>
+    value && /^https:\/\//i.test(value) ? value : undefined;
+  const invoiceUrl = receiptUrl(payment.invoiceUrl);
+  const invoicePdf = receiptUrl(payment.invoicePdf);
   return {
     paymentId: payment.paymentId,
     ...(payment.sessionId ? { sessionId: payment.sessionId } : {}),
@@ -719,6 +726,8 @@ export function publicPayment(payment: BrokerPayment): PublicPayment {
     createdAt: payment.createdAt,
     ...(payment.paidAt ? { paidAt: payment.paidAt } : {}),
     ...(payment.refundedCents ? { refundedCents: payment.refundedCents } : {}),
+    ...(invoiceUrl ? { invoiceUrl } : {}),
+    ...(invoicePdf ? { invoicePdf } : {}),
   };
 }
 

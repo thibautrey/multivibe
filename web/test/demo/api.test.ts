@@ -72,6 +72,18 @@ test("demo invoice sources match configured billable providers and enforce the b
   assert.equal(createDemoApi(now, "billing")("GET", "/admin/invoices").status, 200);
 });
 
+test("demo member purchase history exposes the Stripe-hosted invoice only to members", () => {
+  const member = createDemoApi(now, "member");
+  const history = member("GET", "/admin/billing/history");
+  assert.equal(history.status, 200);
+  const payments = (history.body as any).payments;
+  assert.equal(payments.length, 1);
+  assert.match(payments[0].invoiceUrl, /^https:\/\/invoice\.stripe\.com\//);
+  assert.match(payments[0].invoicePdf, /\.pdf$/);
+  assert.equal((member("GET", "/admin/billing").body as any).payments[0].invoiceUrl, payments[0].invoiceUrl);
+  assert.equal(createDemoApi(now, "personal")("GET", "/admin/billing/history").status, 403);
+});
+
 test("demo users surface exposes roles and denies member administration", () => {
   const users = read("/admin/users").users;
   assert.ok(users.length >= 2);

@@ -804,6 +804,8 @@ export type DashboardPayment = {
   createdAt: number;
   paidAt?: number;
   refundedCents?: number;
+  invoiceUrl?: string;
+  invoicePdf?: string;
 };
 
 export type DashboardMemberBilling = {

@@ -82,6 +82,9 @@ export type PaymentView = {
   createdAt: number;
   paidAt?: number;
   refundedCents?: number;
+  /** Stripe-hosted invoice and PDF for the member's purchase. */
+  invoiceUrl?: string;
+  invoicePdf?: string;
 };
 
 const round = (value: number) => Math.round(value);
@@ -125,6 +128,8 @@ export function paymentView(payment: Payment): PaymentView {
     createdAt: payment.createdAt,
     ...(payment.paidAt ? { paidAt: payment.paidAt } : {}),
     ...(payment.refundedCents ? { refundedCents: payment.refundedCents } : {}),
+    ...(payment.invoiceUrl ? { invoiceUrl: payment.invoiceUrl } : {}),
+    ...(payment.invoicePdf ? { invoicePdf: payment.invoicePdf } : {}),
   };
 }
 
@@ -596,11 +601,27 @@ export class MarketplaceBroker {
   private async markPaid(payment: Payment, session: StripeCheckoutSession): Promise<Payment | undefined> {
     if (payment.status !== "open") return payment;
     const now = this.now();
+    // Checkout creates the invoice with the purchase. Resolve its hosted URL
+    // once so instances can link members to Stripe without extra Stripe calls.
+    let invoice: Awaited<ReturnType<StripeGateway["retrieveInvoice"]>> | undefined;
+    if (session.invoice) {
+      const account = this.store.findAccountByInstance(payment.instanceId);
+      invoice = await this.stripe
+        .retrieveInvoice(
+          session.invoice,
+          this.store.findInstance(payment.instanceId)?.chargeMode === "direct"
+            ? account?.stripeAccountId
+            : undefined,
+        )
+        .catch(() => undefined);
+    }
     const updated = await this.store.updatePayment(payment.id, {
       status: "paid",
       paidAt: now,
       ...(session.payment_intent ? { paymentIntentId: session.payment_intent } : {}),
       ...(session.subscription ? { subscriptionId: session.subscription } : {}),
+      ...(invoice?.hosted_invoice_url ? { invoiceUrl: invoice.hosted_invoice_url } : {}),
+      ...(invoice?.invoice_pdf ? { invoicePdf: invoice.invoice_pdf } : {}),
     });
     if (!updated) return undefined;
     await this.store.appendEvent(
@@ -836,6 +857,7 @@ export class MarketplaceBroker {
           ...(typeof object.subscription === "string"
             ? { subscription: object.subscription }
             : {}),
+          ...(typeof object.invoice === "string" ? { invoice: object.invoice } : {}),
         };
         await this.markPaid(payment, session);
         return { handled: true, duplicate: false };

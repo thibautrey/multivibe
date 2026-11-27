@@ -12,6 +12,17 @@ export const DEMO_READ_ONLY = "Demo instance is read-only. Provider connections,
 export function createDemoApi(now = Date.now(), workspace: "personal" | "owner" | "admin" | "member" | "billing" = "personal", hostApplication = false) {
   const fixtures = createDemoFixtures(now);
   const json = (body: unknown, status = 200) => ({ status, body });
+  // Paid marketplace purchase made by the demo member, with the Stripe-hosted
+  // document the broker resolves when the payment settles.
+  const demoMemberPayments = [
+    {
+      paymentId: "pay_demo_1", sessionId: "cs_demo_1", userRef: "demo-user-member",
+      kind: "topup", status: "paid", amountCents: 2000, feeCents: 100, netCents: 1900,
+      currency: "EUR", creditUsd: 22, createdAt: now - 20 * 86_400_000, paidAt: now - 20 * 86_400_000,
+      invoiceUrl: "https://invoice.stripe.com/demo/in_demo_1",
+      invoicePdf: "https://invoice.stripe.com/demo/in_demo_1.pdf",
+    },
+  ];
   return (method: string, input: string) => {
     const url = new URL(input, "http://demo.invalid");
     const path = url.pathname;
@@ -30,23 +41,17 @@ export function createDemoApi(now = Date.now(), workspace: "personal" | "owner" 
           { id: "pack_5", label: "5 € — 5 USD", amountCents: 500, currency: "EUR", creditUsd: 5 },
           { id: "pack_20", label: "20 € — 22 USD", amountCents: 2000, currency: "EUR", creditUsd: 20, bonusUsd: 2 },
         ],
-        payments: [
-          {
-            paymentId: "pay_demo_1", sessionId: "cs_demo_1", userRef: "demo-user-member",
-            kind: "topup", status: "paid", amountCents: 2000, feeCents: 100, netCents: 1900,
-            currency: "EUR", creditUsd: 22, createdAt: now - 20 * 86_400_000, paidAt: now - 20 * 86_400_000,
-          },
-        ],
+        payments: demoMemberPayments,
         connect: { status: "active", chargesEnabled: true, payoutsEnabled: true, requirementsDue: [] },
       });
     }
+    if (path === "/admin/billing/history") {
+      if (workspace !== "member") return json({ error: "forbidden" }, 403);
+      return json({ payments: demoMemberPayments });
+    }
     if (path === "/admin/payments") {
       if (workspace === "member") return json({ error: "forbidden" }, 403);
-      const demoPayment = {
-        paymentId: "pay_demo_1", sessionId: "cs_demo_1", userRef: "demo-user-member",
-        kind: "topup", status: "paid", amountCents: 2000, feeCents: 100, netCents: 1900,
-        currency: "EUR", creditUsd: 22, createdAt: now - 20 * 86_400_000, paidAt: now - 20 * 86_400_000,
-      };
+      const demoPayment = demoMemberPayments[0];
       return json({
         settings: {
           enabled: true,

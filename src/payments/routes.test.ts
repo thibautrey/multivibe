@@ -206,10 +206,28 @@ test("a member buys a pack, the return credits it, and only the owner sees it", 
     assert.equal(body.packs.length, 1);
     assert.equal(body.payments.length, 1);
 
+    // The invoices tab reads the same owner-scoped history and needs the
+    // Stripe-hosted document link for the member's purchase.
+    const history = await fetch(`${harness.baseUrl}/admin/billing/history`, {
+      headers: { "x-user": "usr_1" },
+    });
+    assert.equal(history.status, 200);
+    assert.equal(history.headers.get("cache-control"), "no-store");
+    const historyBody = (await history.json()) as any;
+    assert.equal(historyBody.payments.length, 1);
+    assert.match(String(historyBody.payments[0].invoiceUrl), /^https:\/\/invoice\.stripe\.test\//);
+    assert.match(String(historyBody.payments[0].invoicePdf), /\.pdf$/);
+
     const other = await fetch(`${harness.baseUrl}/admin/billing`, {
       headers: { "x-user": "usr_2" },
     });
     assert.equal(((await other.json()) as any).payments.length, 0);
+
+    const otherHistory = await fetch(`${harness.baseUrl}/admin/billing/history`, {
+      headers: { "x-user": "usr_2" },
+    });
+    assert.equal(otherHistory.status, 200);
+    assert.equal(((await otherHistory.json()) as any).payments.length, 0);
   } finally {
     await harness.close();
   }

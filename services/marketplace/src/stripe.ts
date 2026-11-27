@@ -29,8 +29,17 @@ export type StripeCheckoutSession = {
   status?: "open" | "complete" | "expired";
   payment_intent?: string;
   subscription?: string;
+  /** Invoice created by Checkout for this payment or the first subscription invoice. */
+  invoice?: string;
   live_mode?: boolean;
   livemode?: boolean;
+};
+
+export type StripeInvoice = {
+  id: string;
+  hosted_invoice_url?: string;
+  invoice_pdf?: string;
+  status?: string;
 };
 
 export type StripeRefund = {
@@ -94,6 +103,10 @@ export interface StripeGateway {
     sessionId: string,
     stripeAccountId?: string,
   ): Promise<StripeCheckoutSession>;
+  retrieveInvoice(
+    invoiceId: string,
+    stripeAccountId?: string,
+  ): Promise<StripeInvoice>;
   createRefund(
     input: CreateRefundInput,
     stripeAccountId: string | undefined,
@@ -314,6 +327,9 @@ export class StripeRestClient implements StripeGateway {
         metadata,
         ...(input.feeCents > 0 ? { application_fee_amount: input.feeCents } : {}),
       };
+      // Ask Stripe for a customer-facing invoice so members can download
+      // their receipt without an instance-side document store.
+      body.invoice_creation = { enabled: true };
     }
     const payload = await this.request<Record<string, unknown>>(
       "POST",
@@ -333,6 +349,27 @@ export class StripeRestClient implements StripeGateway {
       { stripeAccount: stripeAccountId },
     );
     return normalizeSession(payload);
+  }
+
+  async retrieveInvoice(
+    invoiceId: string,
+    stripeAccountId?: string,
+  ): Promise<StripeInvoice> {
+    const payload = await this.request<Record<string, unknown>>(
+      "GET",
+      `/v1/invoices/${encodeURIComponent(invoiceId)}`,
+      { stripeAccount: stripeAccountId },
+    );
+    return {
+      id: String(payload.id ?? invoiceId),
+      ...(typeof payload.hosted_invoice_url === "string"
+        ? { hosted_invoice_url: payload.hosted_invoice_url }
+        : {}),
+      ...(typeof payload.invoice_pdf === "string"
+        ? { invoice_pdf: payload.invoice_pdf }
+        : {}),
+      ...(typeof payload.status === "string" ? { status: payload.status } : {}),
+    };
   }
 
   async createRefund(
@@ -377,6 +414,7 @@ function normalizeSession(payload: Record<string, unknown>): StripeCheckoutSessi
       ? { payment_intent: payload.payment_intent }
       : {}),
     ...(typeof payload.subscription === "string" ? { subscription: payload.subscription } : {}),
+    ...(typeof payload.invoice === "string" ? { invoice: payload.invoice } : {}),
     livemode: Boolean(payload.livemode),
   };
 }

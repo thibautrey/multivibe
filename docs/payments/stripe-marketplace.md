@@ -662,6 +662,16 @@ quotidienne. Les onglets admin **Payments** et membre **Credit** exposent
 l'enrollment, l'onboarding Stripe, les packs, la synchronisation, les revenus,
 les remboursements et l'historique des achats.
 
+Les factures membres sont natives Stripe : le checkout top-up active
+`invoice_creation`, le broker résout `hosted_invoice_url` et `invoice_pdf` au
+moment du paiement (`payment.succeeded`), et l'instance les expose dans
+l'historique de son propre membre (`GET /admin/billing/history`, filtré par
+`userRef`). L'onglet **Invoices** du membre affiche « Your MultiVibe purchases »
+avec un lien direct vers la facture hébergée, et la ligne correspondante de
+l'historique de l'onglet **Credit** porte le même lien. Aucune facture n'est
+stockée côté instance : Stripe reste la source du document, et seules les URLs
+HTTPS sont transmises au navigateur.
+
 Reste avant une mise en production publique : un adaptateur SQL partagé (le
 store JSON est mono-processus), une identité opérateur réelle à la place de
 `MARKETPLACE_OPERATOR_TOKEN`, la vente d'abonnements depuis l'UI membre (le

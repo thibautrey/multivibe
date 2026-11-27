@@ -24,6 +24,7 @@ import type {
   ActivityView,
   ApplicationPolicy,
   ApplicationWebhook,
+  DashboardPayment,
   DashboardSession,
   DashboardUser,
   ExposedModel,
@@ -74,7 +75,7 @@ import {
 } from "./release-announcement";
 
 /** Pages a non-admin dashboard user may reach. Everything else is admin-only. */
-const MEMBER_TAB_IDS: ReadonlyArray<string> = ["overview", "models", "accounts", "tracing", "api-keys", "billing", "docs"];
+const MEMBER_TAB_IDS: ReadonlyArray<string> = ["overview", "models", "accounts", "invoices", "tracing", "api-keys", "billing", "docs"];
 
 const TAB_ITEMS: Array<{ id: Tab; label: string; description: string; group: "Operate" | "Build" | "Advanced" }> = [
   { id: "overview", label: "Overview", description: "System status and next steps", group: "Operate" },
@@ -307,6 +308,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   const mobileNavigationRef = useRef<HTMLDialogElement>(null);
   const mobileNavigationTriggerRef = useRef<HTMLButtonElement>(null);
   const [invoiceData, setInvoiceData] = useState<InvoiceOverview>({ providers: [], cloudUnavailable: false });
+  const [memberPurchases, setMemberPurchases] = useState<DashboardPayment[]>([]);
   const [invoicesLoading, setInvoicesLoading] = useState(true);
   const [invoicesError, setInvoicesError] = useState("");
   const [invoiceRefresh, setInvoiceRefresh] = useState(0);
@@ -319,10 +321,29 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
     window.isSecureContext &&
     "PublicKeyCredential" in window;
   const canManage = !isMember && (capabilities.host ? canManageWorkspace(teamWorkspace) : teamWorkspace.role === "owner" || teamWorkspace.role === "admin");
-  const canViewInvoices = !isMember && (canManage || (teamWorkspace.state === "team" && teamWorkspace.role === "billing"));
+  const canViewInvoices = isMember || canManage || (teamWorkspace.state === "team" && teamWorkspace.role === "billing");
   const invoiceAccountSignature = JSON.stringify(accounts.map(account => [account.id, account.provider, account.sdkProvider, account.email, account.multivibeCloud]));
   useEffect(() => {
     if (!baseLoaded || !authenticated || pageOverrides.invoices || pages.some(page => page.id === "invoices")) { setInvoicesLoading(false); return; }
+    if (isMember) {
+      // Members only see their own Stripe purchases; provider invoices stay
+      // with the host that owns those accounts.
+      setInvoiceData({ providers: [], cloudUnavailable: false });
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 20000);
+      let active = true;
+      setInvoicesLoading(true);
+      setInvoicesError("");
+      api("billing/history", { signal: controller.signal }).then(data => {
+        if (active) setMemberPurchases(Array.isArray(data?.payments) ? data.payments as DashboardPayment[] : []);
+      }).catch(() => {
+        if (active) setInvoicesError(t("Your purchases could not be loaded. Try refreshing."));
+      }).finally(() => {
+        window.clearTimeout(timeout);
+        if (active) setInvoicesLoading(false);
+      });
+      return () => { active = false; window.clearTimeout(timeout); controller.abort(); };
+    }
     if (!canViewInvoices) { setInvoiceData({ providers: [], cloudUnavailable: false }); setInvoicesLoading(false); return; }
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 20000);
@@ -340,14 +361,14 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
       if (active) setInvoicesLoading(false);
     });
     return () => { active = false; window.clearTimeout(timeout); controller.abort(); };
-  }, [baseLoaded, authenticated, canViewInvoices, invoiceAccountSignature, multivibeCloud.status, invoiceRefresh]);
+  }, [baseLoaded, authenticated, canViewInvoices, isMember, invoiceAccountSignature, multivibeCloud.status, invoiceRefresh]);
   const availableTabItems = allTabs.filter(item =>
     (!isMember || MEMBER_TAB_IDS.includes(item.id)) &&
     (item.id !== "users" || (capabilities.localAuthentication && canManage)) &&
     (item.id !== "updates" || (capabilities.hostUpdates && hostApplication)) &&
     (item.id !== "plugins" || capabilities.plugins) &&
     (allowedPages ? allowedPages.includes(item.id) :
-      (item.id !== "invoices" || (canViewInvoices && (Boolean(pageOverrides.invoices) || pages.some(page => page.id === "invoices") || invoiceData.providers.length > 0))) &&
+      (item.id !== "invoices" || (canViewInvoices && (isMember || Boolean(pageOverrides.invoices) || pages.some(page => page.id === "invoices") || invoiceData.providers.length > 0))) &&
       (canManage || (item.id === "invoices" && canViewInvoices) || (isMember ? MEMBER_TAB_IDS.includes(item.id) : ["overview", "models", "updates"].includes(item.id)))));
   const visibleTabItems = availableTabItems.filter(item => !("hiddenFromNavigation" in item && item.hiddenFromNavigation));
   const tab = requestedTab === "invoices" && canViewInvoices && (invoicesLoading || invoicesError) ? "invoices" : availableTabItems.some(item => item.id === requestedTab) ? requestedTab : "overview";
@@ -1908,7 +1929,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
             setTab("accounts");
           }} />}
 
-        {tab === "invoices" && <InvoicesTab sanitized={sanitized} overview={invoiceData} loading={invoicesLoading} error={invoicesError} onRefresh={() => setInvoiceRefresh(value => value + 1)} />}
+        {tab === "invoices" && <InvoicesTab sanitized={sanitized} overview={invoiceData} loading={invoicesLoading} error={invoicesError} onRefresh={() => setInvoiceRefresh(value => value + 1)} purchases={isMember ? memberPurchases : undefined} onOpenCredit={isMember ? () => setTab("billing") : undefined} />}
 
         {tab === "accounts" && (
           <AccountsTab

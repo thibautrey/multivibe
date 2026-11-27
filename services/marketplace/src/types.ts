@@ -102,6 +102,9 @@ export type Payment = {
   /** Where the broker redirects the browser once Stripe is done. */
   successUrl?: string;
   cancelUrl?: string;
+  /** Customer-facing Stripe invoice for this purchase, once known. */
+  invoiceUrl?: string;
+  invoicePdf?: string;
   idempotencyKey: string;
   livemode: boolean;
   createdAt: number;

@@ -47,6 +47,9 @@ export type BrokerPayment = {
   refundedCents?: number;
   paymentIntentId?: string;
   subscriptionId?: string;
+  /** Stripe-hosted invoice for the member's purchase. */
+  invoiceUrl?: string;
+  invoicePdf?: string;
 };
 
 export type BrokerEvent = {
