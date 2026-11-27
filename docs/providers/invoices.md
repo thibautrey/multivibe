@@ -12,6 +12,8 @@ Reviewed 2026-09-11. `src/provider-invoices.ts` is the complete capability regis
 
 Only fixed provider origins receive credentials. Billing-page links never include credentials, and server errors never return raw upstream bodies. Document links accept HTTPS Stripe document/portal hosts only. Invoices from other hosts remain accessible through the provider billing portal. Reads are bounded; pagination beyond the bound is visibly linked to the full history. Team access is checked server-side for owner/admin/billing; ordinary members and unverified contexts receive 403.
 
+Marketplace purchases are a separate surface: when members buy credit from the instance's own Stripe account, the Invoices tab calls the owner-scoped `GET /admin/billing/history` (filtered by the session's user id, with no provider credentials) and links the Stripe-hosted invoice created by Checkout. See [stripe-marketplace.md](../payments/stripe-marketplace.md). No provider invoice data is exposed to members by that path.
+
 ## Portal audit
 
 Portal-only means a billing destination is available, **not** a claim that the vendor has no billing API. Management credentials, browser sessions and organizational billing access differ from inference credentials. No browser cookies are imported or replayed. Dashboard destinations that require choosing an organization or opening account settings include short navigation guidance rather than a fabricated account ID.
