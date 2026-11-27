@@ -306,7 +306,7 @@ export function ModelBillingPanel() {
         </div>
         {error && <div className="error" role="alert">{error}</div>}
         {notice && <div className="notice" role="status">{notice}</div>}
-        <form onSubmit={(event) => { event.preventDefault(); void save(); }} className="form-grid">
+        <form onSubmit={(event) => { event.preventDefault(); void save(); }} className="pricing-grid">
           <label className="control-field">
             <span className="control-label">{t("Model")}</span>
             <input
@@ -356,6 +356,9 @@ export function ModelBillingPanel() {
               onChange={(event) => setForm((current) => ({ ...current, cachedInputPer1M: event.target.value }))}
             />
           </label>
+          {/* One label per row keeps each off-peak price under its standard
+              column instead of stretching across the whole width. */}
+          <p className="control-label pricing-grid-group">{t("Off-peak hours")}</p>
           <label className="control-field">
             <span className="control-label">{t("Off-peak input $/1M")}</span>
             <input
