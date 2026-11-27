@@ -1914,6 +1914,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
           <AccountsTab
             traceStats={filteredTraceStats}
             accounts={accounts}
+            member={isMember}
             models={models}
             multivibeCloud={multivibeCloud}
             usageCacheTtlMs={usageCacheTtlMs}

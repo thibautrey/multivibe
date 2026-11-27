@@ -36,6 +36,8 @@ const CODEX_QUOTA_RESET_FORECAST_URL = "https://www.willcodexquotareset.com/";
 type Props = {
   traceStats: TraceStats;
   accounts: Account[];
+  /** Members never manage the instance's Cloud connection. */
+  member?: boolean;
   /** Exposed catalog of the workspace, used to list what each account serves. */
   models?: ExposedModel[];
   multivibeCloud: MultivibeCloudProvider;
@@ -240,7 +242,8 @@ export function AccountsTab(props: Props) {
   const { capabilities } = useDashboardRuntime();
   const {
     traceStats,
-    accounts,
+    accounts: allAccounts,
+    member = false,
     models = [],
     multivibeCloud,
     usageCacheTtlMs,
@@ -268,6 +271,9 @@ export function AccountsTab(props: Props) {
     onSkipOnboarding,
     onRefreshModels,
   } = props;
+  // The Cloud account belongs to the instance operator. Members never see it
+  // in their provider list, even if it reaches this component.
+  const accounts = member ? allAccounts.filter((account) => account.multivibeCloud !== true) : allAccounts;
   // The routing catalog already tags every model with the account it was
   // discovered from, so these per-provider lists need no extra request.
   const modelsByAccount = React.useMemo(() => {
@@ -1265,7 +1271,7 @@ export function AccountsTab(props: Props) {
             {hasAnyProvider && <button className="btn" onClick={() => setShowAddAccount(true)}>{t("Add provider")}</button>}
           </div>
         </div>
-        {capabilities.cloudConnection && !accounts.some((account) => account.multivibeCloud) && (
+        {!member && capabilities.cloudConnection && !accounts.some((account) => account.multivibeCloud) && (
           <article className="local-worker-provider multivibe-cloud-provider" aria-labelledby="multivibe-cloud-provider-title">
             <div className="local-worker-provider-identity">
               <img className="local-worker-provider-icon" src="/assets/brand/multivibe-app-icon.svg" alt="" />
