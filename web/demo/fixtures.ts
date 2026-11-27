@@ -51,7 +51,7 @@ export function createDemoFixtures(now = Date.now()) {
   ];
   const apiKeys: ProxyApiKey[] = workloads.map((workload, index) => ({
     id: `demo-key-${index}`, application: workload.application, keyPreview: `demo-only-••••${1000 + index}`,
-    source: "dashboard", createdAt: now - (index + 3) * 24 * HOUR,
+    source: "dashboard", createdAt: now - (index + 3) * 24 * HOUR, lastUsedAt: now - (index + 1) * HOUR,
   }));
   const modules: ModuleView[] = [{
     id: "security", origin: "bundled:security", commit: "demo-fixture", enabled: true, source: "bundled", loaded: true,

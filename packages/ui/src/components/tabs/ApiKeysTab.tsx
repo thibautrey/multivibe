@@ -141,6 +141,7 @@ export function ApiKeysTab({
                 <th>Application</th>
                 <th>Key</th>
                 <th>Created</th>
+                <th>Last used</th>
                 <th>Managed by</th>
                 <th>Fairness weight</th>
                 <th />
@@ -152,6 +153,7 @@ export function ApiKeysTab({
                   <td><strong>{entry.application}</strong>{extensions?.renderKeyMetadata?.(entry)}</td>
                   <td className="mono">{entry.keyPreview}</td>
                   <td>{entry.createdAt ? new Date(entry.createdAt).toLocaleDateString() : "—"}</td>
+                  <td>{entry.lastUsedAt ? new Date(entry.lastUsedAt).toLocaleString() : "—"}</td>
                   <td>
                     <span className={entry.source === "dashboard" ? "badge badge-live" : "badge"}>
                       {entry.source === "dashboard" ? "Dashboard" : "Environment"}

@@ -584,6 +584,7 @@ export type ProxyApiKey = {
   application: string;
   keyPreview: string;
   createdAt?: number;
+  lastUsedAt?: number;
   source: "dashboard" | "environment";
 };
 

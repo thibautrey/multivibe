@@ -563,6 +563,7 @@ export const ENDPOINTS: ApiEndpoint[] = [
           id: "...",
           application: "staging-worker",
           keyPreview: "mv_••••9f2a",
+          lastUsedAt: 1764259200000,
         },
       ],
     }),

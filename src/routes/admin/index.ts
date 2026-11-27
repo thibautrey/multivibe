@@ -1067,6 +1067,32 @@ export function createAdminRouter(options: AdminRoutesOptions) {
 
   router.get("/proxy-api-keys", async (_req, res) => {
     const managed = await store.listProxyApiKeys();
+    // Trace analytics already indexes traffic by the stable API-key identity.
+    // Reuse its last activity timestamp instead of writing an extra field on
+    // every request; an unavailable index simply leaves the column empty.
+    const lastUsedAt = new Map<string, number>();
+    try {
+      if (traceManager.queryAnalytics) {
+        const report = await traceManager.queryAnalytics("usage", {});
+        for (const entry of report?.byApiKey ?? []) {
+          const at = Number(entry?.lastAt);
+          if (typeof entry?.apiKeyId === "string" && Number.isFinite(at) && at > 0) {
+            lastUsedAt.set(entry.apiKeyId, at);
+          }
+        }
+      } else {
+        for (const trace of await traceManager.readStatsHistoryRange()) {
+          if (!trace.apiKeyId || isHiddenTraceRoute(trace.route)) continue;
+          if (trace.traceKind && trace.traceKind !== "upstream-attempt") continue;
+          lastUsedAt.set(
+            trace.apiKeyId,
+            Math.max(lastUsedAt.get(trace.apiKeyId) ?? 0, trace.at),
+          );
+        }
+      }
+    } catch {
+      // Indexing/backfill can make analytics temporarily unavailable.
+    }
     res.json({
       proxyApiKeys: [
         ...configuredProxyApiKeys.map((entry) => ({
@@ -1074,6 +1100,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
           id: `configured:${entry.application}`,
           application: entry.application,
           keyPreview: proxyApiKeyPreview(entry.key),
+          lastUsedAt: lastUsedAt.get(`configured:${entry.application}`),
           source: "environment" as const,
         })),
         ...managed.map((entry) => ({
@@ -1081,6 +1108,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
           application: entry.application,
           keyPreview: proxyApiKeyPreview(entry.key),
           createdAt: entry.createdAt,
+          lastUsedAt: lastUsedAt.get(entry.id),
           source: "dashboard" as const,
         })),
       ],

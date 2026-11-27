@@ -17727,7 +17727,9 @@ async fn fallback_handler(State(state): State<EdgeState>, req: Request<Body>) ->
     }
     if req.method() == Method::GET {
         match path.as_str() {
-            "/admin/proxy-api-keys" => return dashboard::proxy_api_keys(&state).await,
+            "/admin/proxy-api-keys" => {
+                return dashboard::proxy_api_keys(&state, req.headers().clone()).await;
+            }
             "/admin/application-policies" => {
                 return dashboard::application_policies(&state).await;
             }
@@ -26471,6 +26473,18 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
             let seen_requests = seen_requests.clone();
             async move {
                 seen_requests.fetch_add(1, AtomicOrdering::Relaxed);
+                // The control plane owns the analytics index and reports the
+                // last usage it observed for each key identity.
+                if req.uri().path() == "/admin/proxy-api-keys" {
+                    return (
+                        StatusCode::OK,
+                        json!({"proxyApiKeys": [
+                            {"id": "configured:environment-app", "lastUsedAt": 1_788_803_486_000_u64},
+                            {"id": "managed-key", "lastUsedAt": 1_788_803_487_000_u64}
+                        ]})
+                        .to_string(),
+                    );
+                }
                 (StatusCode::OK, req.uri().path().to_owned())
             }
         });
@@ -26603,6 +26617,15 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         assert_eq!(keys["proxyApiKeys"][0]["id"], "configured:environment-app");
         assert_eq!(keys["proxyApiKeys"][1]["source"], "dashboard");
         assert_eq!(keys["proxyApiKeys"][1]["createdAt"], 1_788_803_484_000_u64);
+        // Last usage is joined from the control-plane analytics index.
+        assert_eq!(
+            keys["proxyApiKeys"][0]["lastUsedAt"],
+            1_788_803_486_000_u64
+        );
+        assert_eq!(
+            keys["proxyApiKeys"][1]["lastUsedAt"],
+            1_788_803_487_000_u64
+        );
         let keys_json = keys.to_string();
         assert!(!keys_json.contains("mv_environment_secret_5678"));
         assert!(!keys_json.contains("mv_managed_secret_1234"));
@@ -26622,7 +26645,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
             1_788_803_485_000_u64
         );
         assert!(!policies.to_string().contains("webhook-secret"));
-        assert_eq!(control_plane_requests.load(AtomicOrdering::Relaxed), 1);
+        assert_eq!(control_plane_requests.load(AtomicOrdering::Relaxed), 2);
 
         let rejected = client
             .get(format!("{edge_url}/admin/config"))
@@ -26630,7 +26653,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
             .await
             .unwrap();
         assert_eq!(rejected.status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(control_plane_requests.load(AtomicOrdering::Relaxed), 1);
+        assert_eq!(control_plane_requests.load(AtomicOrdering::Relaxed), 2);
 
         let forwarded = client
             .get(format!("{edge_url}/admin/config"))
@@ -26649,7 +26672,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
             };
             assert_eq!(request.send().await.unwrap().status(), StatusCode::OK);
         }
-        assert_eq!(control_plane_requests.load(AtomicOrdering::Relaxed), 4);
+        assert_eq!(control_plane_requests.load(AtomicOrdering::Relaxed), 5);
 
         let desktop: Value = client
             .post(format!("{edge_url}/admin/desktop-session"))
@@ -26722,7 +26745,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(limited.headers()[header::CACHE_CONTROL], "no-store");
         assert!(limited.headers().contains_key(header::RETRY_AFTER));
-        assert_eq!(control_plane_requests.load(AtomicOrdering::Relaxed), 4);
+        assert_eq!(control_plane_requests.load(AtomicOrdering::Relaxed), 5);
 
         control_plane_task.abort();
         let _ = control_plane_task.await;

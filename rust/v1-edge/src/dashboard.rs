@@ -312,7 +312,48 @@ pub(super) async fn desktop_session_consume(
     response
 }
 
-pub(super) async fn proxy_api_keys(state: &EdgeState) -> Response {
+/// Only admin authentication travels to the control plane; client credentials
+/// and unrelated browser headers stay on the edge.
+fn admin_forward_headers(headers: &HeaderMap) -> HeaderMap {
+    let mut forwarded = HeaderMap::new();
+    for name in [header::COOKIE, header::AUTHORIZATION] {
+        if let Some(value) = headers.get(&name) {
+            forwarded.insert(name, value.clone());
+        }
+    }
+    if let Some(value) = headers.get("x-admin-token") {
+        forwarded.insert("x-admin-token", value.clone());
+    }
+    forwarded
+}
+
+/// The control plane owns the analytics index, so it is the only process that
+/// can attach a last-usage timestamp to each key. A missing or unreachable
+/// control plane keeps the local view usable without the column.
+async fn control_plane_api_keys(state: &EdgeState, headers: &HeaderMap) -> Option<Vec<Value>> {
+    let base = trim_slashes(&state.config.node_control_plane_url);
+    if base.is_empty() {
+        return None;
+    }
+    let response = timeout(
+        Duration::from_secs(3),
+        state
+            .control_plane_client
+            .get(format!("{base}/admin/proxy-api-keys"))
+            .headers(admin_forward_headers(headers))
+            .send(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let body = response.json::<Value>().await.ok()?;
+    body.get("proxyApiKeys")?.as_array().cloned()
+}
+
+pub(super) async fn proxy_api_keys(state: &EdgeState, headers: HeaderMap) -> Response {
     let store = match state.store.snapshot().await {
         Ok(store) => store,
         Err(_) => {
@@ -348,6 +389,43 @@ pub(super) async fn proxy_api_keys(state: &EdgeState) -> Response {
         }
         value
     }));
+
+    if let Some(remote_entries) = control_plane_api_keys(state, &headers).await {
+        let remote = remote_entries
+            .iter()
+            .filter_map(|entry| {
+                let id = entry.get("id")?.as_str()?.to_owned();
+                Some((id, entry.clone()))
+            })
+            .collect::<HashMap<_, _>>();
+        for entry in &mut entries {
+            let Some(id) = entry.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            if let Some(last_used_at) =
+                remote.get(id).and_then(|value| value.get("lastUsedAt"))
+            {
+                entry["lastUsedAt"] = last_used_at.clone();
+            }
+        }
+        // Keep control-plane keys the edge snapshot does not know about yet
+        // (for example keys managed by another process) without duplicating.
+        let local_ids = entries
+            .iter()
+            .filter_map(|entry| entry.get("id").and_then(Value::as_str).map(str::to_owned))
+            .collect::<std::collections::HashSet<_>>();
+        entries.extend(
+            remote_entries
+                .into_iter()
+                .filter(|entry| {
+                    entry
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .is_some_and(|id| !local_ids.contains(id))
+                }),
+        );
+    }
+
     json_response(StatusCode::OK, json!({"proxyApiKeys": entries}))
 }
 
