@@ -2046,6 +2046,37 @@ details summary {
   color: var(--muted-strong);
 }
 
+/* Users tab: five detail sections, and the invitation link row shared by the
+   create modal and the Invitation tab. */
+.user-detail-tabs {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.user-create-modal {
+  display: grid;
+  gap: 18px;
+  width: min(780px, 100%);
+}
+
+.user-invite-modal {
+  display: grid;
+  gap: 18px;
+  width: min(560px, 100%);
+}
+
+.user-invite-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.user-invite-link input {
+  flex: 1;
+  min-width: 220px;
+}
+
 .section-heading-with-help {
   display: flex;
   align-items: flex-start;
@@ -2543,7 +2574,8 @@ details summary {
 }
 
 @media (max-width: 900px) {
-  .alias-tabs {
+  .alias-tabs,
+  .user-detail-tabs {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -3126,7 +3158,29 @@ body:has(> .modal-backdrop) {
 
 .auth-shell .btn {
   min-height: 41px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
 }
+
+.auth-shell .btn svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+
+.auth-passkey-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.auth-passkey-hint a {
+  color: var(--primary);
+  font-weight: 600;
+}
+
 
 .auth-wordmark {
   width: min(290px, 100%);

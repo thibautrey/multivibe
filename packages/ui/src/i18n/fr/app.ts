@@ -66,6 +66,8 @@ const catalog: Record<string, string> = {
   "Passkey added.": "Clé d’accès ajoutée.",
   "Passkey registration was cancelled.": "L’enregistrement de la clé d’accès a été annulé.",
   "Passkey registration failed.": "L’enregistrement de la clé d’accès a échoué.",
+  "Passkeys need the dashboard on localhost or an HTTPS domain.": "Les clés d’accès exigent que le tableau de bord soit ouvert sur localhost ou un domaine HTTPS.",
+  "Open on localhost": "Ouvrir sur localhost",
   "Add passkey": "Ajouter une clé d’accès",
   "Adding passkey…": "Ajout de la clé d’accès…",
   "Admin workspace": "Espace d’administration",

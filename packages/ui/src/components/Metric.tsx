@@ -1,5 +1,6 @@
 import React from "react";
 import { useT } from "../i18n";
+import { FitText } from "./ui/FitText";
 
 type Props = {
   widgetId?: string;
@@ -40,9 +41,9 @@ export function Metric({ title, value, detail, action, onClick, ariaLabel, loadi
         <div className="muted metric-title">{title}</div>
         {refreshing && <span className="metric-updating" role="status">{t("Updating")}</span>}
       </div>
-      <div className="value" aria-label={showSkeleton ? t("Loading {title}", { title }) : undefined}>
+      <FitText className="value" aria-label={showSkeleton ? t("Loading {title}", { title }) : undefined}>
         {showSkeleton ? <span className="metric-skeleton metric-skeleton-value" aria-hidden="true" /> : value}
-      </div>
+      </FitText>
       {detail && <div className="metric-detail">
         {showSkeleton ? <span className="metric-skeleton metric-skeleton-detail" aria-hidden="true" /> : detail}
       </div>}

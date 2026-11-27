@@ -468,6 +468,28 @@ function structuredClonePlan(plan: UserPlan): UserPlan {
   return JSON.parse(JSON.stringify(plan)) as UserPlan;
 }
 
+/**
+ * Body of every successful sign-in (password, invite acceptance, passkey).
+ *
+ * The dashboard reads `role` from this response to pick its member or admin
+ * surface *before* loading protected data. Omitting it made a member load the
+ * admin surface, collect a 403, and report the account as suspended right
+ * after a valid password or a consumed invite.
+ */
+export function sessionPayload(user: User): {
+  authenticated: true;
+  role: UserRole;
+  via: "session";
+  user: PublicUser;
+} {
+  return {
+    authenticated: true,
+    role: user.role,
+    via: "session",
+    user: publicUser(user),
+  };
+}
+
 
 export function newInvite(): { token: string; tokenHash: string; expiresAt: number } {
   const token = crypto.randomBytes(32).toString("base64url");

@@ -8,6 +8,7 @@
 .widget-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
 .widget-tile { min-width: 0; position: relative; border-radius: 20px; transition: box-shadow .18s, opacity .18s; }
 .widget-tile > .metric { height: 100%; min-height: 130px; box-sizing: border-box; border-radius: 20px; display: flex; flex-direction: column; justify-content: center; overflow-wrap: anywhere; }
+.widget-tile > .metric .value { align-self: stretch; text-align: center; }
 .widget-size-medium { grid-column: span 2; }
 .widget-size-large { grid-column: span 2; grid-row: span 2; }
 .widget-size-large > .metric { min-height: 276px; }

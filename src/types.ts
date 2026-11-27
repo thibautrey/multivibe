@@ -233,6 +233,11 @@ export type ModelAlias = {
   rules: RoutingRule[];
   enabled: boolean;
   description?: string;
+  /**
+   * Dashboard member who owns this policy. Absent for host/admin policies,
+   * which stay shared and can be granted to members as models.
+   */
+  ownerId?: string;
   defaults?: {
     priority?: PriorityClass;
     executionMode?: ExecutionMode;

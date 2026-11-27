@@ -702,6 +702,11 @@ pub struct ModelAlias {
     #[serde(default)]
     pub enabled: bool,
     pub defaults: Option<Value>,
+    /// Dashboard member who owns this policy. Absent for host policies, which
+    /// are shared and may be granted to members as models. A member-owned
+    /// policy is only visible to, and resolvable for, its owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -1389,6 +1394,61 @@ fn user_model_allowed(users: &[Value], user_id: &str, model: &str) -> bool {
         .iter()
         .filter_map(Value::as_str)
         .any(|entry| !entry.trim().is_empty() && normalize_model_key(entry) == key)
+}
+
+/// A member's own enabled alias is callable when every target it routes to is
+/// callable. This keeps `allowedModels` from silently blocking an alias the
+/// member just configured from their own accessible models.
+fn user_may_use_model(store: &StoreFile, user_id: &str, model: &str) -> bool {
+    if user_model_allowed(&store.users, user_id, model) {
+        return true;
+    }
+    let key = normalize_model_key(model);
+    let Some(alias) = store.model_aliases.iter().find(|alias| {
+        alias.enabled
+            && alias.owner_id.as_deref() == Some(user_id)
+            && normalize_model_key(&alias.id) == key
+    }) else {
+        return false;
+    };
+    let targets = alias
+        .rules
+        .iter()
+        .flat_map(|rule| rule.candidates.iter())
+        .map(|candidate| candidate.model.as_str())
+        .collect::<Vec<_>>();
+    !targets.is_empty()
+        && targets
+            .iter()
+            .all(|target| user_model_allowed(&store.users, user_id, target))
+}
+
+/// Whether a member's model list may publish this model. Member-owned aliases
+/// stay private: they are models only for their owner, never for their peers.
+fn user_can_see_model(store: &StoreFile, user_id: &str, model: &str) -> bool {
+    let key = normalize_model_key(model);
+    if key.is_empty() {
+        return false;
+    }
+    if let Some(owner) = store
+        .model_aliases
+        .iter()
+        .find(|alias| alias.enabled && normalize_model_key(&alias.id) == key)
+        .and_then(|alias| alias.owner_id.as_deref())
+    {
+        return owner == user_id && user_may_use_model(store, user_id, model);
+    }
+    user_model_allowed(&store.users, user_id, model)
+}
+
+fn member_owned_alias(store: &StoreFile, model: &str) -> bool {
+    let key = normalize_model_key(model);
+    !key.is_empty()
+        && store.model_aliases.iter().any(|alias| {
+            alias.enabled
+                && alias.owner_id.is_some()
+                && normalize_model_key(&alias.id) == key
+        })
 }
 
 fn model_not_allowed_denied(path: &str) -> Response {
@@ -2345,6 +2405,19 @@ fn routes_for_model(
     default_model: &str,
     catalog: &[Value],
 ) -> Vec<RouteCandidate> {
+    routes_for_model_as(store, model, default_model, catalog, None)
+}
+
+/// Resolve a model as a given dashboard member. Host aliases stay shared with
+/// everyone; a member-owned alias only resolves for its owner, so one member
+/// can neither shadow a model for a peer nor route through a peer's policy.
+fn routes_for_model_as(
+    store: &StoreFile,
+    model: &str,
+    default_model: &str,
+    catalog: &[Value],
+    viewer: Option<&str>,
+) -> Vec<RouteCandidate> {
     let requested = if model.trim().is_empty() {
         default_model
     } else {
@@ -2358,11 +2431,14 @@ fn routes_for_model(
             account_ids: vec![],
         }];
     }
-    if let Some(alias) = store
-        .model_aliases
-        .iter()
-        .find(|alias| alias.enabled && alias.id.eq_ignore_ascii_case(requested))
-    {
+    if let Some(alias) = store.model_aliases.iter().find(|alias| {
+        alias.enabled
+            && alias.id.eq_ignore_ascii_case(requested)
+            && alias
+                .owner_id
+                .as_deref()
+                .map_or(true, |owner| viewer == Some(owner))
+    }) {
         let routes = alias
             .rules
             .iter()
@@ -2457,7 +2533,9 @@ fn image_aware_routing_model(
     };
     let valid_model = catalog_model(catalog, override_model).is_some();
     let valid_alias = store.model_aliases.iter().any(|alias| {
-        alias.enabled && normalize_model_key(&alias.id) == normalize_model_key(override_model)
+        alias.enabled
+            && alias.owner_id.is_none()
+            && normalize_model_key(&alias.id) == normalize_model_key(override_model)
     });
     if valid_model || valid_alias {
         override_model.to_owned()
@@ -2467,10 +2545,28 @@ fn image_aware_routing_model(
 }
 
 fn alias_default(store: &StoreFile, model: &str, key: &str) -> Option<String> {
+    alias_default_for(store, model, key, None)
+}
+
+/// Alias defaults as seen by one caller: host aliases are shared, member
+/// aliases only apply to their owner.
+fn alias_default_for(
+    store: &StoreFile,
+    model: &str,
+    key: &str,
+    viewer: Option<&str>,
+) -> Option<String> {
     store
         .model_aliases
         .iter()
-        .find(|alias| alias.enabled && normalize_model_key(&alias.id) == normalize_model_key(model))
+        .find(|alias| {
+            alias.enabled
+                && normalize_model_key(&alias.id) == normalize_model_key(model)
+                && alias
+                    .owner_id
+                    .as_deref()
+                    .map_or(true, |owner| viewer == Some(owner))
+        })
         .and_then(|alias| alias.defaults.as_ref())
         .and_then(|defaults| defaults.get(key))
         .and_then(Value::as_str)
@@ -5374,11 +5470,16 @@ fn routing_headers_opted_in(headers: &HeaderMap) -> bool {
         .any(|name| header_value(headers, name).is_some_and(|value| !value.trim().is_empty()))
 }
 
-fn apply_alias_defaults(headers: &mut HeaderMap, store: &StoreFile, model: &str) {
+fn apply_alias_defaults(
+    headers: &mut HeaderMap,
+    store: &StoreFile,
+    model: &str,
+    viewer: Option<&str>,
+) {
     if routing_headers_opted_in(headers) {
         return;
     }
-    if let Some(priority) = alias_default(store, model, "priority")
+    if let Some(priority) = alias_default_for(store, model, "priority", viewer)
         && matches!(
             priority.as_str(),
             "critical" | "interactive" | "standard" | "batch"
@@ -5387,7 +5488,7 @@ fn apply_alias_defaults(headers: &mut HeaderMap, store: &StoreFile, model: &str)
     {
         headers.insert(HeaderName::from_static("x-multivibe-priority"), value);
     }
-    if let Some(execution) = alias_default(store, model, "executionMode")
+    if let Some(execution) = alias_default_for(store, model, "executionMode", viewer)
         && matches!(execution.as_str(), "sync" | "auto" | "defer")
         && let Ok(value) = HeaderValue::from_str(&execution)
     {
@@ -8168,7 +8269,7 @@ async fn proxy_inference(
         } else {
             routing_model.as_str()
         };
-        if !user_model_allowed(&store.users, user_id, access_model) {
+        if !user_can_see_model(&store, user_id, access_model) {
             return Err(model_not_allowed_denied(path));
         }
     }
@@ -8190,7 +8291,7 @@ async fn proxy_inference(
             }
         }
     } else {
-        routes_for_model(&store, &routing_model, default_model, &catalog)
+        routes_for_model_as(&store, &routing_model, default_model, &catalog, user_id)
     };
     // Embedding failover must preserve the indexed vector space.
     if embeddings_route && let Some(first) = routes.first() {
@@ -13098,7 +13199,7 @@ async fn inference_handler(State(state): State<EdgeState>, req: Request<Body>) -
             .cloned()
             .unwrap_or_default()
     });
-    apply_alias_defaults(&mut headers, &store, &model);
+    apply_alias_defaults(&mut headers, &store, &model, auth.user_id.as_deref());
     if let Err(response) = validate_routing_headers(&headers, &store, &auth.application) {
         return response;
     }
@@ -14637,17 +14738,27 @@ async fn list_models_handler(
         }
     };
     let models = exposed_models(&state, &store, query.refresh.unwrap_or(false)).await;
-    let models = match user_id.as_deref() {
+    let models: Vec<Value> = match user_id.as_deref() {
         Some(user_id) => models
             .into_iter()
             .filter(|model| {
                 model
                     .get("id")
                     .and_then(Value::as_str)
-                    .is_some_and(|id| user_model_allowed(&store.users, user_id, id))
+                    .is_some_and(|id| user_can_see_model(&store, user_id, id))
             })
             .collect(),
-        None => models,
+        // A host key has no member identity: member-owned policies are not
+        // models for the host, only for their owner.
+        None => models
+            .into_iter()
+            .filter(|model| {
+                model
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| !member_owned_alias(&store, id))
+            })
+            .collect(),
     };
     if is_claude_code_request(&headers) {
         return json_response(StatusCode::OK, claude_code_models_response(&models));
@@ -14680,17 +14791,21 @@ async fn get_model_handler(
             .and_then(Value::as_str)
             .is_some_and(|value| value == id)
     });
-    if let (Some(user_id), Some(model)) = (user_id.as_deref(), model.as_ref()) {
-        let allowed = model
-            .get("id")
-            .and_then(Value::as_str)
-            .is_some_and(|id| user_model_allowed(&store.users, user_id, id));
-        if !allowed {
-            return json_response(
-                StatusCode::NOT_FOUND,
-                json!({"error": {"message": format!("The model '{id}' does not exist"), "type": "invalid_request_error"}}),
-            );
-        }
+    let visible = match user_id.as_deref() {
+        Some(user_id) => model.as_ref().is_some_and(|model| {
+            model
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| user_can_see_model(&store, user_id, id))
+        }),
+        // Host keys never see member-owned policies as models.
+        None => !member_owned_alias(&store, &id),
+    };
+    if model.is_some() && !visible {
+        return json_response(
+            StatusCode::NOT_FOUND,
+            json!({"error": {"message": format!("The model '{id}' does not exist"), "type": "invalid_request_error"}}),
+        );
     }
     match model {
         Some(model) => json_response(StatusCode::OK, openai_model_shape(&model)),
@@ -15680,7 +15795,7 @@ async fn capacity_handler(
         );
     }
     let catalog = exposed_models(&state, &store, false).await;
-    let route = routes_for_model(&store, &model, &model, &catalog)
+    let route = routes_for_model_as(&store, &model, &model, &catalog, auth.user_id.as_deref())
         .into_iter()
         .next()
         .unwrap_or(RouteCandidate {
@@ -18829,6 +18944,45 @@ mod tests {
             .collect::<Vec<_>>();
         ids.sort();
         ids
+    }
+
+    #[test]
+    fn member_alias_is_private_to_its_owner() {
+        let mut store = StoreFile::default();
+        store.users = vec![
+            json!({"id": "usr_1"}),
+            json!({"id": "usr_2"}),
+        ];
+        store.model_aliases.push(ModelAlias {
+            id: "my-fast".to_owned(),
+            enabled: true,
+            owner_id: Some("usr_1".to_owned()),
+            rules: vec![RoutingRule {
+                id: "primary".to_owned(),
+                candidates: vec![RoutingCandidate {
+                    model: "gpt-5.4".to_owned(),
+                    provider: Some("openai".to_owned()),
+                    ..Default::default()
+                }],
+            }],
+            ..Default::default()
+        });
+
+        // The owner resolves the alias; a peer and the host do not, so a
+        // member policy can never hijack another caller's model name.
+        assert_eq!(
+            routes_for_model_as(&store, "my-fast", "default", &[], Some("usr_1")).len(),
+            1
+        );
+        assert!(
+            routes_for_model_as(&store, "my-fast", "default", &[], Some("usr_2")).is_empty()
+        );
+        assert!(routes_for_model(&store, "my-fast", "default", &[]).is_empty());
+
+        // Visibility follows the same rule even when the peer may call every
+        // model: another member's alias is not a model for them.
+        assert!(user_can_see_model(&store, "usr_1", "my-fast"));
+        assert!(!user_can_see_model(&store, "usr_2", "my-fast"));
     }
 
     #[test]

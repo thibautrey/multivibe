@@ -44,6 +44,12 @@ export function createDemoFixtures(now = Date.now()) {
       defaults: { priority: "batch", executionMode: "defer" },
       rules: [{ id: "batch", candidates: [{ model: "mistral-small-latest", provider: "mistral" }], onNoCapacity: "queue" }],
     },
+    {
+      schemaVersion: 2, id: "sam-fast", enabled: true, ownerId: "demo-user-member",
+      description: "Sam's own fast path for everyday requests.",
+      defaults: { priority: "interactive", executionMode: "sync" },
+      rules: [{ id: "primary", candidates: [{ model: "gpt-5.4", provider: "openai" }, { model: "gpt-5.4-mini", provider: "openai" }], onNoCapacity: "queue" }],
+    },
   ];
   const models: ExposedModel[] = [
     ...workloads.map(({ model, account }) => ({ id: model, owned_by: accounts[account].provider, metadata: { provider: accounts[account].provider } })),

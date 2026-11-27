@@ -99,6 +99,10 @@ const STATUS_LABEL: Record<string, string> = {
   disputed: "Disputed",
 };
 
+/** Public docs: where the broker operator token lives (fragment is stable). */
+const OPERATOR_TOKEN_DOC_URL =
+  "https://github.com/thibautrey/multivibe/blob/main/docs/payments/stripe-marketplace.md#operator-token";
+
 /**
  * Admin marketplace panel: enroll this instance with the MultiVibe broker,
  * connect the admin's own Stripe account once, then sell credit packs.
@@ -344,7 +348,7 @@ export function PaymentsPanel({ api }: Props) {
               })}
             </p>
           </div>
-          <button className="btn btn-secondary" type="button" disabled={loading} onClick={() => void load()}>
+          <button className="btn secondary" type="button" disabled={loading} onClick={() => void load()}>
             {loading ? tr("Refreshing…") : tr("Refresh")}
           </button>
         </div>
@@ -357,6 +361,14 @@ export function PaymentsPanel({ api }: Props) {
             <span>
               {tr("Create a marketplace ticket, approve it on the marketplace site, then come back to finish the connection.")}
             </span>
+            <p className="field-help">
+              {tr("The enrollment link opens the marketplace's /enroll page, which asks for its operator token: the MARKETPLACE_OPERATOR_TOKEN value in services/marketplace/.env on the host that runs the marketplace. It is not an instance admin token.")}
+            </p>
+            <p className="field-help">
+              <a href={OPERATOR_TOKEN_DOC_URL} target="_blank" rel="noreferrer">
+                {tr("Where do I find it? ↗")}
+              </a>
+            </p>
             {enrollment ? (
               <div className="tab-stack">
                 <p>
@@ -414,13 +426,13 @@ export function PaymentsPanel({ api }: Props) {
               <button className="btn" type="button" disabled={Boolean(busy)} onClick={() => void connectStripe()}>
                 {connect?.accountId ? tr("Continue Stripe onboarding") : tr("Connect Stripe")}
               </button>
-              <button className="btn btn-secondary" type="button" disabled={Boolean(busy)} onClick={() => void refreshConnect()}>
+              <button className="btn secondary" type="button" disabled={Boolean(busy)} onClick={() => void refreshConnect()}>
                 {tr("Refresh Stripe status")}
               </button>
-              <button className="btn btn-secondary" type="button" disabled={Boolean(busy) || !connected} onClick={() => void openDashboard()}>
+              <button className="btn secondary" type="button" disabled={Boolean(busy) || !connected} onClick={() => void openDashboard()}>
                 {tr("Open Stripe dashboard")}
               </button>
-              <button className="btn btn-secondary" type="button" disabled={Boolean(busy)} onClick={() => void sync()}>
+              <button className="btn secondary" type="button" disabled={Boolean(busy)} onClick={() => void sync()}>
                 {busy === "sync" ? tr("Synchronizing…") : tr("Sync payments now")}
               </button>
               <button className="btn danger" type="button" disabled={Boolean(busy)} onClick={disconnect}>
@@ -542,7 +554,7 @@ export function PaymentsPanel({ api }: Props) {
             </table>
           </div>
           <div className="inline wrap">
-            <button className="btn btn-secondary" type="button" disabled={Boolean(busy)} onClick={addPack}>
+            <button className="btn secondary" type="button" disabled={Boolean(busy)} onClick={addPack}>
               {tr("Add pack")}
             </button>
             <button className="btn" type="button" disabled={Boolean(busy)} onClick={() => void savePacks()}>

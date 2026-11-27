@@ -484,6 +484,8 @@ export type ModelAlias = {
   rules: RoutingRule[];
   enabled: boolean;
   description?: string;
+  /** Dashboard member who owns this policy; absent for shared host policies. */
+  ownerId?: string;
   defaults?: {
     priority?: PriorityClass;
     executionMode?: "sync" | "auto" | "defer";

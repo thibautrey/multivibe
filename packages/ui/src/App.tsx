@@ -75,7 +75,7 @@ import {
 } from "./release-announcement";
 
 /** Pages a non-admin dashboard user may reach. Everything else is admin-only. */
-const MEMBER_TAB_IDS: ReadonlyArray<string> = ["overview", "models", "accounts", "invoices", "tracing", "api-keys", "billing", "docs"];
+const MEMBER_TAB_IDS: ReadonlyArray<string> = ["overview", "models", "accounts", "invoices", "aliases", "tracing", "api-keys", "billing", "docs"];
 
 const TAB_ITEMS: Array<{ id: Tab; label: string; description: string; group: "Operate" | "Build" | "Advanced" }> = [
   { id: "overview", label: "Overview", description: "System status and next steps", group: "Operate" },
@@ -173,7 +173,26 @@ function LockIcon() {
 }
 
 function PasskeyIcon() {
-  return <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="9" r="4"/><path d="M12.5 12.5 20 20m-4-4 2-2m-4 0 2-2"/></svg>;
+  // Presentation attributes keep the glyph at the icon scale outside the
+  // sidebar (e.g. in the auth buttons), where no sizing rule applies.
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="9" cy="9" r="4"/>
+      <path d="M12.5 12.5 20 20m-4-4 2-2m-4 0 2-2"/>
+    </svg>
+  );
+}
+
+/**
+ * WebAuthn only accepts a registrable domain or `localhost` as the RP ID, so
+ * an origin addressed by an IP literal (127.0.0.1, [::1], a LAN address) can
+ * never complete a passkey ceremony. The browser rejects the options with
+ * `SecurityError: The RP ID "..." is invalid for this domain`.
+ */
+const RP_ID_HOST_PATTERN = /^(?:localhost|(?:(?:xn--[a-z0-9-]+|[a-z0-9]+(?:-[a-z0-9]+)*)\.)+(?:[a-z]{2,}|xn--[a-z0-9-]+))$/i;
+
+function passkeyHostSupported(): boolean {
+  return typeof window !== "undefined" && RP_ID_HOST_PATTERN.test(window.location.hostname);
 }
 
 function activeModelBlockCount(account: Account) {
@@ -270,6 +289,15 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
     setSessionRole(role);
     setSessionUser(session?.user ?? null);
   };
+  /**
+   * Sign-in responses must carry the role so the dashboard loads the member or
+   * admin surface immediately. Older servers (or a cached bundle) only return
+   * the user record, so ask /admin/me rather than defaulting to admin and
+   * tripping 403s on member-unsafe endpoints.
+   */
+  const applyAuthSession = async (session: DashboardSession | null) => {
+    applySession(session?.role ? session : ((await api("me")) as DashboardSession));
+  };
   const refreshIdentity = async () => {
     try {
       applySession((await api("me")) as DashboardSession);
@@ -314,12 +342,21 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   const [invoiceRefresh, setInvoiceRefresh] = useState(0);
   const cloudConnected = multivibeCloud.status === "connected";
   const isMember = sessionRole === "member";
-  const passkeysSupported =
+  const passkeyRpIdSupported = passkeyHostSupported();
+  const passkeyContextSupported =
     !demo &&
     capabilities.localAuthentication &&
     typeof window !== "undefined" &&
     window.isSecureContext &&
     "PublicKeyCredential" in window;
+  const passkeysSupported = passkeyContextSupported && passkeyRpIdSupported;
+  // The dashboard is served on 127.0.0.1 by default, which cannot be a WebAuthn
+  // RP ID; the same listener also answers on localhost, where passkeys work.
+  const passkeyLocalhostUrl = (() => {
+    if (typeof window === "undefined" || !passkeyContextSupported || passkeyRpIdSupported) return "";
+    const { protocol, port, pathname, search } = window.location;
+    return `${protocol}//localhost${port ? `:${port}` : ""}${pathname}${search}`;
+  })();
   const canManage = !isMember && (capabilities.host ? canManageWorkspace(teamWorkspace) : teamWorkspace.role === "owner" || teamWorkspace.role === "admin");
   const canViewInvoices = isMember || canManage || (teamWorkspace.state === "team" && teamWorkspace.role === "billing");
   const invoiceAccountSignature = JSON.stringify(accounts.map(account => [account.id, account.provider, account.sdkProvider, account.email, account.multivibeCloud]));
@@ -498,6 +535,13 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   const invalidateLocalRuntimeDiscovery = () => {
   };
 
+  /**
+   * A sign-in route answers 403 only for `user_suspended`. Any other 403 — a
+   * proxy, or a dashboard load — is not a suspended account.
+   */
+  const signInSuspended = (err: any) =>
+    err instanceof ApiError && err.status === 403 && /user_suspended/.test(err.message);
+
   const handleError = (e: any) => {
     if (e instanceof ApiError && e.status === 401) {
       invalidateLocalRuntimeDiscovery();
@@ -617,7 +661,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
         : api("cloud").catch(() => ({ status: "unavailable", topupUrl: "https://app.multivibe.cloud/billing" })),
       api("config").catch(() => ({})),
       fetch(modelsUrl).then((r) => r.json()),
-      member ? Promise.resolve({ modelAliases: [] }) : api("model-aliases").catch(() => ({ modelAliases: [] })),
+      api("model-aliases").catch(() => ({ modelAliases: [] })),
       api("settings").catch(() => ({ settings: {} })),
       api("proxy-api-keys"),
       member
@@ -869,14 +913,15 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   const login = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginBusy(true);
+    setError("");
+    let signedIn = false;
     try {
-      setError("");
       if (loginMode === "password") {
         const session = await api("auth/login", {
           method: "POST",
           body: JSON.stringify({ email: loginEmail, password: loginPassword }),
         });
-        applySession(session as DashboardSession);
+        await applyAuthSession(session as DashboardSession);
         setLoginPassword("");
       } else {
         await api("session", {
@@ -886,15 +931,15 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
         setLoginToken("");
         applySession({ role: "admin", via: "token" });
       }
+      signedIn = true;
       setAuthenticated(true);
-      await Promise.all([loadBase(), loadTraceStats(traceRangeRef.current)]);
     } catch (err: any) {
       const message =
         err instanceof ApiError && err.status === 401
           ? loginMode === "password"
             ? t("Invalid email or password.")
             : t("Invalid admin token.")
-          : err instanceof ApiError && err.status === 403
+          : signInSuspended(err)
             ? t("This account is suspended.")
             : err?.message ?? String(err);
       setError(message);
@@ -902,12 +947,21 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
     } finally {
       setLoginBusy(false);
     }
+    if (!signedIn) return;
+    // The session is established. A failing dashboard load is a load error, not
+    // a rejected sign-in, so it must never report the account as suspended.
+    try {
+      await Promise.all([loadBase(), loadTraceStats(traceRangeRef.current)]);
+    } catch (err) {
+      handleError(err);
+    }
   };
 
   const signInWithPasskey = async () => {
     setLoginBusy(true);
+    setError("");
+    let signedIn = false;
     try {
-      setError("");
       const { startAuthentication } = await import("@simplewebauthn/browser");
       const start = await api("auth/passkey/options", {
         method: "POST",
@@ -918,22 +972,30 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
         method: "POST",
         body: JSON.stringify({ flowId: start.flowId, response }),
       });
-      applySession(session as DashboardSession);
+      await applyAuthSession(session as DashboardSession);
+      signedIn = true;
       setAuthenticated(true);
-      await Promise.all([loadBase(), loadTraceStats(traceRangeRef.current)]);
     } catch (err: any) {
       const message =
-        err instanceof ApiError && err.status === 403
+        signInSuspended(err)
           ? t("This account is suspended.")
           : err instanceof ApiError && err.status === 401
             ? t("That passkey is not recognised.")
             : err?.name === "NotAllowedError"
               ? t("Passkey sign-in was cancelled.")
-              : err?.message ?? t("Passkey sign-in failed.");
+              : err?.name === "SecurityError" || err?.code === "ERROR_INVALID_RP_ID" || err?.code === "ERROR_INVALID_DOMAIN"
+                ? t("Passkeys need the dashboard on localhost or an HTTPS domain.")
+                : err?.message ?? t("Passkey sign-in failed.");
       setError(message);
       setAuthenticated(false);
     } finally {
       setLoginBusy(false);
+    }
+    if (!signedIn) return;
+    try {
+      await Promise.all([loadBase(), loadTraceStats(traceRangeRef.current)]);
+    } catch (err) {
+      handleError(err);
     }
   };
 
@@ -996,8 +1058,9 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   const acceptInvite = async (e: React.FormEvent) => {
     e.preventDefault();
     setInviteBusy(true);
+    setError("");
+    let accepted = false;
     try {
-      setError("");
       const session = await api("auth/invite/accept", {
         method: "POST",
         body: JSON.stringify({
@@ -1006,7 +1069,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
           ...(inviteName.trim() ? { name: inviteName.trim() } : {}),
         }),
       });
-      applySession(session as DashboardSession);
+      await applyAuthSession(session as DashboardSession);
       setInviteToken("");
       setInvitePassword("");
       const url = new URL(window.location.href);
@@ -1014,7 +1077,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
       window.history.replaceState({}, "", url.toString());
       setLocationSearch(url.search);
       setAuthenticated(true);
-      await Promise.all([loadBase(), loadTraceStats(traceRangeRef.current)]);
+      accepted = true;
     } catch (err: any) {
       setError(
         err instanceof ApiError && (err.status === 404 || err.status === 410)
@@ -1025,6 +1088,15 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
       );
     } finally {
       setInviteBusy(false);
+    }
+    // The invite is consumed and the password is stored: a failing dashboard
+    // load must not read as an expired link, or the member retries with a
+    // password that was actually saved.
+    if (!accepted) return;
+    try {
+      await Promise.all([loadBase(), loadTraceStats(traceRangeRef.current)]);
+    } catch (err) {
+      handleError(err);
     }
   };
 
@@ -1532,7 +1604,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
               type="button"
               role="tab"
               aria-selected={loginMode === "password"}
-              className={loginMode === "password" ? "btn" : "btn btn-secondary"}
+              className={loginMode === "password" ? "btn" : "btn secondary"}
               onClick={() => { setLoginMode("password"); setError(""); }}
             >
               {t("Email & password")}
@@ -1541,7 +1613,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
               type="button"
               role="tab"
               aria-selected={loginMode === "token"}
-              className={loginMode === "token" ? "btn" : "btn btn-secondary"}
+              className={loginMode === "token" ? "btn" : "btn secondary"}
               onClick={() => { setLoginMode("token"); setError(""); }}
             >
               {t("Admin token")}
@@ -1596,7 +1668,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
           </button>
           {loginMode === "password" && passkeysSupported && (
             <button
-              className="btn btn-secondary"
+              className="btn secondary"
               type="button"
               disabled={loginBusy}
               onClick={() => void signInWithPasskey()}
@@ -1604,6 +1676,12 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
               <PasskeyIcon />
               <span>{loginBusy ? t("Waiting for passkey...") : t("Sign in with a passkey")}</span>
             </button>
+          )}
+          {loginMode === "password" && !passkeysSupported && passkeyLocalhostUrl && (
+            <p className="auth-passkey-hint muted">
+              {t("Passkeys need the dashboard on localhost or an HTTPS domain.")}{" "}
+              <a href={passkeyLocalhostUrl}>{t("Open on localhost")}</a>
+            </p>
           )}
         </form>
       </div>
@@ -1974,6 +2052,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
             aliases={aliases}
             models={models}
             settings={settings}
+            member={isMember}
             saveAlias={saveAlias}
             patchAlias={patchAlias}
             deleteAlias={deleteAlias}

@@ -482,6 +482,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     const path = req.path.replace(/^\/+/, "");
     const isRead = req.method === "GET" || req.method === "HEAD";
     if (isRead) {
+      if (path === "model-aliases") return true;
       if (path === "config" || path === "provider-catalog") return true;
       if (path === "models/recommendations" || path === "modules/models") return true;
       if (path === "settings") return true;
@@ -493,6 +494,9 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     }
     if (path === "accounts" || path.startsWith("accounts/")) return true;
     if (path === "proxy-api-keys" || /^proxy-api-keys\/[^/]+$/.test(path)) return true;
+    // Members own their routing policies; handlers scope every read and write
+    // to `alias.ownerId` so host policies stay invisible.
+    if (path === "model-aliases" || /^model-aliases\/[^/]+$/.test(path)) return true;
     if (path === "usage/refresh" || path === "usage/refresh-stale") return true;
     if (
       path === "oauth/start" ||
@@ -1851,9 +1855,46 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     }
   });
 
-  router.get("/model-aliases", async (_req, res) =>
-    res.json({ modelAliases: await store.listModelAliases() }),
-  );
+  /**
+   * A member policy may only route to models that member can already call.
+   * Without this check an alias would bypass the per-user `allowedModels`
+   * restriction at inference time.
+   */
+  const memberAliasModelsDenied = async (
+    userId: string,
+    alias: ModelAlias,
+  ): Promise<string[] | null> => {
+    const user = await store.findUser(userId);
+    if (!user || user.status !== "active") return null;
+    const allowed = (user.allowedModels ?? [])
+      .map(normalizeModelLookupKey)
+      .filter(Boolean);
+    if (!allowed.length) return [];
+    const keys = new Set(allowed);
+    return [
+      ...new Set(
+        alias.rules
+          .flatMap((rule) => rule.candidates.map((candidate) => candidate.model))
+          .filter((model) => !keys.has(normalizeModelLookupKey(model))),
+      ),
+    ];
+  };
+
+  const aliasOwnerId = (req: express.Request): string | undefined => {
+    const auth = getAuth(req);
+    return auth && auth.role !== "admin" ? auth.userId : undefined;
+  };
+
+  router.get("/model-aliases", async (req, res) => {
+    const auth = getAuth(req);
+    const aliases = await store.listModelAliases();
+    res.json({
+      modelAliases:
+        auth && auth.role !== "admin"
+          ? aliases.filter((alias) => alias.ownerId === auth.userId)
+          : aliases,
+    });
+  });
 
   router.post("/model-aliases/simulate", (req, res) => {
     if (!smartRouting) return res.status(503).json({ error: "smart routing is unavailable" });
@@ -1898,6 +1939,11 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     const body = req.body ?? {};
     const id = sanitizeAliasId(body.id);
     if (!id) return res.status(400).json({ error: "id required" });
+    const auth = getAuth(req);
+    const owner = aliasOwnerId(req);
+    if (auth && auth.role !== "admin" && !owner) {
+      return res.status(403).json({ error: "forbidden" });
+    }
 
     if (typeof body.targets !== "undefined") {
       const targets = normalizeAliasTargets(body.targets);
@@ -1908,8 +1954,47 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       body.targets = targets;
     }
     const alias = migrateModelAlias({ ...body, id });
+    if (owner) {
+      // Policy names are global because inference resolves them by name. A
+      // member never takes over an existing policy or model, host or peer.
+      const aliases = await store.listModelAliases();
+      if (aliases.some((entry) => entry.id === id)) {
+        return res.status(409).json({ error: "alias_exists" });
+      }
+      const catalog = await discoverModels(
+        store,
+        openaiBaseUrl,
+        mistralBaseUrl,
+        zaiBaseUrl,
+      ).catch(() => []);
+      const taken = new Set(
+        catalog.map((entry) => normalizeModelLookupKey(entry.id)).filter(Boolean),
+      );
+      // A restricted member may hold an explicit grant for a model that is
+      // temporarily missing from discovery; never let a private policy shadow
+      // that name.
+      const granted = await store.listUsers();
+      for (const user of granted) {
+        for (const model of user.allowedModels ?? []) {
+          taken.add(normalizeModelLookupKey(model));
+        }
+      }
+      if (taken.has(normalizeModelLookupKey(id))) {
+        return res.status(409).json({ error: "alias_conflicts_with_model" });
+      }
+      alias.ownerId = owner;
+    } else {
+      delete alias.ownerId;
+    }
     const errors = validateSmartAlias(alias);
     if (errors.length) return res.status(400).json({ error: errors[0], errors });
+    if (owner) {
+      const denied = await memberAliasModelsDenied(owner, alias);
+      if (denied === null) return res.status(403).json({ error: "inactive_user" });
+      if (denied.length) {
+        return res.status(403).json({ error: "models_not_allowed", models: denied });
+      }
+    }
     await store.upsertModelAlias(alias);
     res.json({ ok: true, modelAlias: alias });
   });
@@ -1920,6 +2005,9 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       (alias) => alias.id === req.params.id,
     );
     if (!current) return res.status(404).json({ error: "not found" });
+    if (!ownsResource(req, current.ownerId)) {
+      return res.status(403).json({ error: "forbidden" });
+    }
     const patch: Partial<ModelAlias> = {};
 
     if (typeof body.enabled !== "undefined") patch.enabled = Boolean(body.enabled);
@@ -1943,11 +2031,25 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     const candidate = migrateModelAlias({ ...current, ...patch, id: current.id });
     const errors = validateSmartAlias(candidate);
     if (errors.length) return res.status(400).json({ error: errors[0], errors });
+    if (current.ownerId) {
+      const denied = await memberAliasModelsDenied(current.ownerId, candidate);
+      if (denied === null) return res.status(403).json({ error: "inactive_user" });
+      if (denied.length) {
+        return res.status(403).json({ error: "models_not_allowed", models: denied });
+      }
+    }
     const updated = await store.patchModelAlias(req.params.id, patch);
     res.json({ ok: true, modelAlias: updated });
   });
 
   router.delete("/model-aliases/:id", async (req, res) => {
+    const current = (await store.listModelAliases()).find(
+      (alias) => alias.id === req.params.id,
+    );
+    if (!current) return res.status(404).json({ error: "not found" });
+    if (!ownsResource(req, current.ownerId)) {
+      return res.status(403).json({ error: "forbidden" });
+    }
     const ok = await store.deleteModelAlias(req.params.id);
     if (!ok) return res.status(404).json({ error: "not found" });
     res.json({ ok: true });

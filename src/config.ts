@@ -369,3 +369,26 @@ export const MARKETPLACE_REQUEST_TIMEOUT_MS = Math.max(
   2_000,
   Number(process.env.MULTIVIBE_MARKETPLACE_REQUEST_TIMEOUT_MS ?? 15_000),
 );
+
+// --- Transactional email (SMTP) --------------------------------------------
+/**
+ * Account emails are opt-in and configured only through the environment.
+ * Missing settings keep the notifier a silent no-op, so a billing hook can
+ * call it without guarding every configuration combination.
+ */
+export const MULTIVIBE_SMTP_ENABLED =
+  (process.env.MULTIVIBE_SMTP_ENABLED ?? "").trim().toLowerCase() === "true";
+export const SMTP_HOST = process.env.SMTP_HOST?.trim() || undefined;
+export const SMTP_PORT = Math.min(
+  65_535,
+  finiteAtLeast(process.env.SMTP_PORT, 587, 1),
+);
+/** true = implicit TLS (usually 465); false = STARTTLS is required. */
+export const SMTP_SECURE =
+  (process.env.SMTP_SECURE ?? "").trim().toLowerCase() === "true";
+export const SMTP_USER = process.env.SMTP_USER?.trim() || undefined;
+/** Secret. Never logged; empty keeps unauthenticated local relays usable. */
+export const SMTP_PASSWORD = process.env.SMTP_PASSWORD || undefined;
+export const SMTP_FROM =
+  process.env.SMTP_FROM?.trim() || "MultiVibe <no-reply@multivibe.cloud>";
+export const SMTP_REPLY_TO = process.env.SMTP_REPLY_TO?.trim() || undefined;

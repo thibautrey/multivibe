@@ -278,6 +278,16 @@ const catalog: Record<string, string> = {
   "Cloud model": "Modèle Cloud",
   "Only cloud accounts exposing this model are eligible for overflow.":
     "Seuls les comptes Cloud exposant ce modèle sont éligibles au débordement.",
+  "Your routing policies are private. Models shared with you appear in the model catalog, not here.":
+    "Vos politiques de routage sont privées. Les modèles partagés avec vous apparaissent dans le catalogue de modèles, pas ici.",
+  "This alias already exists. Choose another name.":
+    "Cet alias existe déjà. Choisissez un autre nom.",
+  "This name is already used by a model. Choose another name.":
+    "Ce nom est déjà utilisé par un modèle. Choisissez un autre nom.",
+  "This policy routes to models your account cannot use.":
+    "Cette politique route vers des modèles que votre compte ne peut pas utiliser.",
+  "The policy could not be saved. Try again.":
+    "La politique n’a pas pu être enregistrée. Réessayez.",
 };
 
 export default catalog;

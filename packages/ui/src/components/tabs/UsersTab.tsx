@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import ModalPortal from "../ModalPortal";
 import { ApiError } from "../../lib/api";
 import { copyTextToClipboard } from "../../lib/clipboard";
 import { activeLocale, t, useT } from "../../i18n";
@@ -69,6 +70,16 @@ const EMPTY_DRAFT = {
   quota: { period: "month", creditUsd: "", maxTokens: "", maxRequests: "" } as QuotaDraft,
   plan: DEFAULT_PLAN,
 };
+
+const DETAIL_TABS = [
+  { id: "identity", label: "Identity" },
+  { id: "quota", label: "Quota & plan" },
+  { id: "models", label: "Models & access" },
+  { id: "credits", label: "Credits" },
+  { id: "invitation", label: "Invitation" },
+] as const;
+
+type DetailTab = (typeof DETAIL_TABS)[number]["id"];
 
 function quotaDraft(quota: DashboardUserQuota): QuotaDraft {
   return {
@@ -178,6 +189,58 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : t("The action could not be completed.");
 }
 
+/**
+ * Accessible viewport dialog built on the shared modal classes. Closes on
+ * Escape and on a backdrop click, and keeps the title association for screen
+ * readers. The close handler is read through a ref so an inline callback does
+ * not re-bind the document listener on every keystroke.
+ */
+function Dialog({
+  labelledBy,
+  className,
+  onClose,
+  children,
+}: {
+  labelledBy: string;
+  className?: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      closeRef.current();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  return (
+    <ModalPortal>
+      <div
+        className="modal-backdrop"
+        role="presentation"
+        onMouseDown={(event) => {
+          if (event.target === event.currentTarget) closeRef.current();
+        }}
+      >
+        <div
+          className={`modal panel${className ? ` ${className}` : ""}`}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby={labelledBy}
+        >
+          {children}
+        </div>
+      </div>
+    </ModalPortal>
+  );
+}
+
 function ModelAccessPicker({
   catalog,
   value,
@@ -263,9 +326,12 @@ export function UsersTab({ api, readOnly = false }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createdInvite, setCreatedInvite] = useState<{ email: string; url: string } | null>(null);
   const [createDraft, setCreateDraft] = useState(EMPTY_DRAFT);
   const [creating, setCreating] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [detailTab, setDetailTab] = useState<DetailTab>("identity");
   const [editEmail, setEditEmail] = useState("");
   const [editName, setEditName] = useState("");
   const [editRole, setEditRole] = useState<DashboardUserRole>("member");
@@ -281,6 +347,8 @@ export function UsersTab({ api, readOnly = false }: Props) {
   const [busy, setBusy] = useState(false);
   const [inviteLink, setInviteLink] = useState("");
   const [copied, setCopied] = useState(false);
+  const addUserButtonRef = useRef<HTMLButtonElement | null>(null);
+  const createEmailRef = useRef<HTMLInputElement | null>(null);
 
   const selected = useMemo(
     () => users.find((user) => user.id === selectedId) ?? null,
@@ -309,6 +377,11 @@ export function UsersTab({ api, readOnly = false }: Props) {
       .then((result) => setCatalog(Array.isArray(result?.data) ? result.data : []))
       .catch(() => setCatalog([]));
   }, []);
+
+  useEffect(() => {
+    if (!createOpen) return;
+    createEmailRef.current?.focus();
+  }, [createOpen]);
 
   useEffect(() => {
     if (!selectedId) {
@@ -341,8 +414,14 @@ export function UsersTab({ api, readOnly = false }: Props) {
     setCreditAmount("");
     setWalletAmount("");
     setWalletNote("");
-    setInviteLink("");
   }, [selectedId, users]);
+
+  // A generated invite link must survive the `users` refresh that follows it,
+  // so it is cleared only when the admin selects another user.
+  useEffect(() => {
+    setInviteLink("");
+    setCopied(false);
+  }, [selectedId]);
 
   const run = async (action: () => Promise<void>) => {
     if (readOnly) return;
@@ -361,8 +440,22 @@ export function UsersTab({ api, readOnly = false }: Props) {
   const inviteUrl = (path: string | undefined) =>
     path ? `${window.location.origin}${path}` : "";
 
+  const closeCreate = () => {
+    if (creating) return;
+    setCreateOpen(false);
+    setCreateDraft(EMPTY_DRAFT);
+    addUserButtonRef.current?.focus();
+  };
+
+  const closeCreatedInvite = () => {
+    setCreatedInvite(null);
+    setCopied(false);
+    window.requestAnimationFrame(() => addUserButtonRef.current?.focus());
+  };
+
   const create = (event: React.FormEvent) => {
     event.preventDefault();
+    const email = createDraft.email;
     void run(async () => {
       setCreating(true);
       const result = await api("users", {
@@ -378,11 +471,12 @@ export function UsersTab({ api, readOnly = false }: Props) {
         }),
       });
       setCreateDraft(EMPTY_DRAFT);
+      setCreateOpen(false);
+      setNotice(tr("User created."));
       if (result?.invitePath) {
-        setInviteLink(inviteUrl(result.invitePath));
-        setNotice(tr("User created. Copy the invite link and share it securely."));
+        setCreatedInvite({ email, url: inviteUrl(result.invitePath) });
       } else {
-        setNotice(tr("User created."));
+        window.requestAnimationFrame(() => addUserButtonRef.current?.focus());
       }
       await refresh();
     }).finally(() => setCreating(false));
@@ -526,12 +620,33 @@ export function UsersTab({ api, readOnly = false }: Props) {
     });
   };
 
-  const copyInvite = async () => {
-    if (!inviteLink) return;
-    await copyTextToClipboard(inviteLink);
+  const copyInvite = async (value: string) => {
+    if (!value) return;
+    await copyTextToClipboard(value);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1500);
   };
+
+  const openInvitation = (id: string) => {
+    setSelectedId(id);
+    setDetailTab("invitation");
+  };
+
+  const toggleSelected = (id: string) => {
+    if (selectedId === id) {
+      setSelectedId(null);
+      return;
+    }
+    setSelectedId(id);
+    setDetailTab("identity");
+  };
+
+  const statusMessages = (
+    <>
+      {error && <div className="error" role="alert">{error}</div>}
+      {notice && <div className="notice" role="status">{notice}</div>}
+    </>
+  );
 
   return (
     <div className="tab-stack">
@@ -543,23 +658,26 @@ export function UsersTab({ api, readOnly = false }: Props) {
               {tr("Each user signs in with their own account and only sees their own providers, keys, activity and quota.")}
             </p>
           </div>
+          <button
+            ref={addUserButtonRef}
+            className="btn"
+            type="button"
+            disabled={readOnly}
+            aria-haspopup="dialog"
+            aria-expanded={createOpen}
+            onClick={() => setCreateOpen(true)}
+          >
+            {tr("Add user")}
+          </button>
         </div>
         {error && <div className="error">{error}</div>}
         {notice && <div className="notice">{notice}</div>}
-        {inviteLink && (
-          <div className="inline" style={{ gap: 8, flexWrap: "wrap" }}>
-            <code className="mono" style={{ wordBreak: "break-all" }}>{inviteLink}</code>
-            <button className="btn btn-secondary" type="button" onClick={() => void copyInvite()}>
-              {copied ? tr("Copied") : tr("Copy invite link")}
-            </button>
-          </div>
-        )}
         {loading ? (
           <p className="muted">{tr("Loading users…")}</p>
         ) : users.length === 0 ? (
           <div className="compact-empty-state">
             <strong>{tr("No users yet")}</strong>
-            <span>{tr("Create the first account below. The admin token still works as a fallback.")}</span>
+            <span>{tr("Create the first account with the Add user button. The admin token still works as a fallback.")}</span>
           </div>
         ) : (
           <div className="table-wrap">
@@ -617,13 +735,23 @@ export function UsersTab({ api, readOnly = false }: Props) {
                       )}
                     </td>
                     <td>
-                      <button
-                        className="btn btn-secondary"
-                        type="button"
-                        onClick={() => setSelectedId(selectedId === user.id ? null : user.id)}
-                      >
-                        {selectedId === user.id ? tr("Close") : tr("Manage")}
-                      </button>
+                      <div className="inline" style={{ gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                        <button
+                          className="btn ghost"
+                          type="button"
+                          aria-label={tr("Manage invitation for {email}", { email: user.email })}
+                          onClick={() => openInvitation(user.id)}
+                        >
+                          {tr("Invite")}
+                        </button>
+                        <button
+                          className="btn secondary"
+                          type="button"
+                          onClick={() => toggleSelected(user.id)}
+                        >
+                          {selectedId === user.id ? tr("Close") : tr("Manage")}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -634,7 +762,7 @@ export function UsersTab({ api, readOnly = false }: Props) {
       </section>
 
       {selected && (
-        <section className="panel">
+        <section className="panel" role="region" aria-label={tr("Manage {email}", { email: selected.email })}>
           <div className="section-split-header">
             <div>
               <h2>{selected.name || selected.email}</h2>
@@ -648,630 +776,803 @@ export function UsersTab({ api, readOnly = false }: Props) {
                   : ""}
               </p>
             </div>
-          </div>
-          <div className="form-grid">
-            <label className="control-field">
-              <span className="control-label">{tr("Email")}</span>
-              <input
-                type="email"
-                value={editEmail}
-                disabled={readOnly || busy}
-                onChange={(event) => setEditEmail(event.target.value)}
-              />
-            </label>
-            <label className="control-field">
-              <span className="control-label">{tr("Name")}</span>
-              <input
-                value={editName}
-                disabled={readOnly || busy}
-                onChange={(event) => setEditName(event.target.value)}
-              />
-            </label>
-            <label className="control-field">
-              <span className="control-label">{tr("Role")}</span>
-              <select
-                value={editRole}
-                disabled={readOnly || busy}
-                onChange={(event) => setEditRole(event.target.value as DashboardUserRole)}
-              >
-                <option value="member">{tr("Member")}</option>
-                <option value="admin">{tr("Admin")}</option>
-              </select>
-            </label>
-            <label className="control-field">
-              <span className="control-label">{tr("Status")}</span>
-              <select
-                value={editStatus}
-                disabled={readOnly || busy}
-                onChange={(event) => setEditStatus(event.target.value as DashboardUserStatus)}
-              >
-                <option value="active">{tr("Active")}</option>
-                <option value="suspended">{tr("Suspended")}</option>
-              </select>
-            </label>
-            <label className="control-field">
-              <span className="control-label">{tr("New password")}</span>
-              <input
-                type="password"
-                value={editPassword}
-                disabled={readOnly || busy}
-                placeholder={tr("Leave blank to keep current")}
-                autoComplete="new-password"
-                onChange={(event) => setEditPassword(event.target.value)}
-              />
-            </label>
-            <label className="control-field">
-              <span className="control-label">{tr("Quota period")}</span>
-              <select
-                value={editQuota.period}
-                disabled={readOnly || busy}
-                onChange={(event) =>
-                  setEditQuota((current) => ({ ...current, period: event.target.value as QuotaDraft["period"] }))
-                }
-              >
-                <option value="day">{tr("Daily")}</option>
-                <option value="month">{tr("Monthly")}</option>
-                <option value="total">{tr("Total")}</option>
-              </select>
-            </label>
-            <label className="control-field">
-              <span className="control-label">{tr("Credit cap (USD)")}</span>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={editQuota.creditUsd}
-                disabled={readOnly || busy}
-                placeholder={tr("Unlimited")}
-                onChange={(event) => setEditQuota((current) => ({ ...current, creditUsd: event.target.value }))}
-              />
-            </label>
-            <label className="control-field">
-              <span className="control-label">{tr("Token cap")}</span>
-              <input
-                type="number"
-                min="0"
-                step="1"
-                value={editQuota.maxTokens}
-                disabled={readOnly || busy}
-                placeholder={tr("Unlimited")}
-                onChange={(event) => setEditQuota((current) => ({ ...current, maxTokens: event.target.value }))}
-              />
-            </label>
-            <label className="control-field">
-              <span className="control-label">{tr("Request cap")}</span>
-              <input
-                type="number"
-                min="0"
-                step="1"
-                value={editQuota.maxRequests}
-                disabled={readOnly || busy}
-                placeholder={tr("Unlimited")}
-                onChange={(event) => setEditQuota((current) => ({ ...current, maxRequests: event.target.value }))}
-              />
-            </label>
-          </div>
-          <div className="section-split-header" style={{ marginTop: 18 }}>
-            <div>
-              <h3>{tr("Billing")}</h3>
-              <p className="muted">
-                {tr("Subscription windows are enforced on top of the usage quota. Leave a cap blank for unlimited.")}
-              </p>
+            <div className="inline wrap" style={{ justifyContent: "flex-end" }}>
+              <button className="btn" type="button" disabled={readOnly || busy} onClick={save}>
+                {busy ? tr("Saving…") : tr("Save changes")}
+              </button>
+              <button className="btn secondary" type="button" disabled={readOnly || busy} onClick={resetUsage}>
+                {tr("Reset usage")}
+              </button>
+              <button className="btn danger" type="button" disabled={readOnly || busy} onClick={remove}>
+                {tr("Delete user")}
+              </button>
             </div>
           </div>
-          <div className="form-grid">
-            <label className="control-field">
-              <span className="control-label">{tr("Billing mode")}</span>
-              <select
-                value={editPlan.mode}
-                disabled={readOnly || busy}
-                onChange={(event) => setPlanMode(event.target.value as PlanDraft["mode"])}
+          {statusMessages}
+
+          <div className="alias-tabs user-detail-tabs" role="tablist" aria-label={tr("User sections")}>
+            {DETAIL_TABS.map((tab) => (
+              <button
+                key={tab.id}
+                className={`alias-tab${detailTab === tab.id ? " active" : ""}`}
+                type="button"
+                role="tab"
+                id={`user-tab-${tab.id}`}
+                aria-selected={detailTab === tab.id}
+                aria-controls={`user-panel-${tab.id}`}
+                onClick={() => setDetailTab(tab.id)}
               >
-                <option value="usage">{tr("Pay-as-you-go")}</option>
-                <option value="subscription">{tr("Subscription")}</option>
-              </select>
-            </label>
-            {editPlan.mode === "subscription" && (
-              <>
+                <span className="alias-tab-label">{tr(tab.label)}</span>
+              </button>
+            ))}
+          </div>
+
+          {detailTab === "identity" && (
+            <div
+              className="tab-stack"
+              role="tabpanel"
+              id="user-panel-identity"
+              aria-labelledby="user-tab-identity"
+              style={{ marginTop: 15 }}
+            >
+              <div className="form-grid">
                 <label className="control-field">
-                  <span className="control-label">{tr("Plan name")}</span>
+                  <span className="control-label">{tr("Email")}</span>
                   <input
-                    value={editPlan.name}
+                    type="email"
+                    value={editEmail}
                     disabled={readOnly || busy}
-                    placeholder={tr("Pro")}
-                    onChange={(event) => setEditPlan((current) => ({ ...current, name: event.target.value }))}
+                    onChange={(event) => setEditEmail(event.target.value)}
                   />
                 </label>
                 <label className="control-field">
-                  <span className="control-label">{tr("Monthly price (USD)")}</span>
+                  <span className="control-label">{tr("Name")}</span>
                   <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={editPlan.priceUsd}
+                    value={editName}
                     disabled={readOnly || busy}
-                    placeholder="20"
-                    onChange={(event) => setEditPlan((current) => ({ ...current, priceUsd: event.target.value }))}
+                    onChange={(event) => setEditName(event.target.value)}
                   />
                 </label>
-              </>
-            )}
-          </div>
-          {editPlan.mode === "subscription" && (
-            <>
-              {editPlan.windows.length === 0 ? (
-                <div className="compact-empty-state">
-                  <strong>{tr("No windows yet")}</strong>
-                  <span>{tr("Add a window or start from the 5 h + weekly preset.")}</span>
-                </div>
-              ) : (
-                <div className="table-wrap" style={{ marginTop: 12 }}>
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>{tr("Window")}</th>
-                        <th>{tr("Period")}</th>
-                        <th>{tr("Credit cap (USD)")}</th>
-                        <th>{tr("Token cap")}</th>
-                        <th>{tr("Request cap")}</th>
-                        <th>{tr("Current usage")}</th>
-                        <th />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {editPlan.windows.map((window) => {
-                        const live = selected.quotaWindows?.find((entry) => entry.id === window.id);
-                        return (
-                          <tr key={window.id}>
-                            <td>
-                              <input
-                                value={window.label}
-                                disabled={readOnly || busy}
-                                placeholder={windowPeriodLabel(window.period)}
-                                onChange={(event) => updateWindow(window.id, { label: event.target.value })}
-                              />
-                            </td>
-                            <td>
-                              <select
-                                value={window.period}
-                                disabled={readOnly || busy}
-                                onChange={(event) =>
-                                  updateWindow(window.id, {
-                                    period: event.target.value as DashboardUserQuotaWindowPeriod,
-                                  })
-                                }
-                              >
-                                {WINDOW_PERIODS.map((entry) => (
-                                  <option key={entry.value} value={entry.value}>
-                                    {windowPeriodLabel(entry.value)}
-                                  </option>
-                                ))}
-                              </select>
-                            </td>
-                            <td>
-                              <input
-                                type="number"
-                                min="0"
-                                step="0.01"
-                                value={window.creditUsd}
-                                disabled={readOnly || busy}
-                                placeholder={tr("Unlimited")}
-                                onChange={(event) => updateWindow(window.id, { creditUsd: event.target.value })}
-                              />
-                            </td>
-                            <td>
-                              <input
-                                type="number"
-                                min="0"
-                                step="1"
-                                value={window.maxTokens}
-                                disabled={readOnly || busy}
-                                placeholder={tr("Unlimited")}
-                                onChange={(event) => updateWindow(window.id, { maxTokens: event.target.value })}
-                              />
-                            </td>
-                            <td>
-                              <input
-                                type="number"
-                                min="0"
-                                step="1"
-                                value={window.maxRequests}
-                                disabled={readOnly || busy}
-                                placeholder={tr("Unlimited")}
-                                onChange={(event) => updateWindow(window.id, { maxRequests: event.target.value })}
-                              />
-                            </td>
-                            <td className="muted">
-                              {live ? (
-                                <>
-                                  {count(live.usage.requests)} {tr("req")} · {count(live.usage.tokens)}{" "}
-                                  {tr("tokens")} · {money(live.usage.costUsd)}
-                                  {live.blocked && <div><span className="badge">{tr("Limit reached")}</span></div>}
-                                </>
-                              ) : (
-                                tr("Not started")
-                              )}
-                            </td>
-                            <td>
-                              <button
-                                className="btn ghost"
-                                type="button"
-                                disabled={readOnly || busy}
-                                onClick={() => removeWindow(window.id)}
-                              >
-                                {tr("Remove")}
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-              <div className="inline" style={{ gap: 8, flexWrap: "wrap", marginTop: 12 }}>
-                <button className="btn btn-secondary" type="button" disabled={readOnly || busy} onClick={addWindow}>
-                  {tr("Add window")}
-                </button>
-                <button
-                  className="btn btn-secondary"
-                  type="button"
-                  disabled={readOnly || busy}
-                  onClick={() =>
-                    setEditPlan((current) => ({
-                      ...current,
-                      windows: SUBSCRIPTION_PRESET.map((window) => ({ ...window })),
-                    }))
-                  }
-                >
-                  {tr("Use 5 h + weekly preset")}
-                </button>
-              </div>
-            </>
-          )}
-          <div className="section-split-header" style={{ marginTop: 18 }}>
-            <div>
-              <h3>{tr("Passkeys")}</h3>
-              <p className="muted">{tr("Registered on the user's own devices. Remove one if it is lost.")}</p>
-            </div>
-          </div>
-          {selected.passkeys.length === 0 ? (
-            <p className="muted">{tr("No passkeys registered.")}</p>
-          ) : (
-            <div className="inline" style={{ gap: 8, flexWrap: "wrap" }}>
-              {selected.passkeys.map((passkey) => (
-                <span
-                  key={passkey.id}
-                  className="badge"
-                  style={{ display: "inline-flex", gap: 6, alignItems: "center" }}
-                >
-                  {passkey.name || tr("Passkey")}
-                  <button
-                    className="btn ghost"
-                    type="button"
+                <label className="control-field">
+                  <span className="control-label">{tr("Role")}</span>
+                  <select
+                    value={editRole}
                     disabled={readOnly || busy}
-                    onClick={() => removePasskey(passkey.id)}
+                    onChange={(event) => setEditRole(event.target.value as DashboardUserRole)}
                   >
-                    {tr("Remove")}
-                  </button>
-                </span>
-              ))}
+                    <option value="member">{tr("Member")}</option>
+                    <option value="admin">{tr("Admin")}</option>
+                  </select>
+                </label>
+                <label className="control-field">
+                  <span className="control-label">{tr("Status")}</span>
+                  <select
+                    value={editStatus}
+                    disabled={readOnly || busy}
+                    onChange={(event) => setEditStatus(event.target.value as DashboardUserStatus)}
+                  >
+                    <option value="active">{tr("Active")}</option>
+                    <option value="suspended">{tr("Suspended")}</option>
+                  </select>
+                </label>
+                <label className="control-field">
+                  <span className="control-label">{tr("New password")}</span>
+                  <input
+                    type="password"
+                    value={editPassword}
+                    disabled={readOnly || busy}
+                    placeholder={tr("Leave blank to keep current")}
+                    autoComplete="new-password"
+                    onChange={(event) => setEditPassword(event.target.value)}
+                  />
+                </label>
+              </div>
+              <div>
+                <h3>{tr("Passkeys")}</h3>
+                <p className="muted">{tr("Registered on the user's own devices. Remove one if it is lost.")}</p>
+                {selected.passkeys.length === 0 ? (
+                  <p className="muted">{tr("No passkeys registered.")}</p>
+                ) : (
+                  <div className="inline" style={{ gap: 8, flexWrap: "wrap" }}>
+                    {selected.passkeys.map((passkey) => (
+                      <span
+                        key={passkey.id}
+                        className="badge"
+                        style={{ display: "inline-flex", gap: 6, alignItems: "center" }}
+                      >
+                        {passkey.name || tr("Passkey")}
+                        <button
+                          className="btn ghost"
+                          type="button"
+                          disabled={readOnly || busy}
+                          onClick={() => removePasskey(passkey.id)}
+                        >
+                          {tr("Remove")}
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           )}
-          <div className="section-split-header" style={{ marginTop: 18 }}>
-            <div>
-              <h3>{tr("Model access")}</h3>
-              <p className="muted">
-                {tr("Choose the models this user may call. Leave all unchecked to allow every model.")}
-              </p>
+
+          {detailTab === "quota" && (
+            <div
+              className="tab-stack"
+              role="tabpanel"
+              id="user-panel-quota"
+              aria-labelledby="user-tab-quota"
+              style={{ marginTop: 15 }}
+            >
+              <div>
+                <h3>{tr("Usage quota")}</h3>
+                <p className="muted">{tr("Caps apply per period. Leave a cap blank for unlimited.")}</p>
+                <div className="form-grid">
+                  <label className="control-field">
+                    <span className="control-label">{tr("Quota period")}</span>
+                    <select
+                      value={editQuota.period}
+                      disabled={readOnly || busy}
+                      onChange={(event) =>
+                        setEditQuota((current) => ({ ...current, period: event.target.value as QuotaDraft["period"] }))
+                      }
+                    >
+                      <option value="day">{tr("Daily")}</option>
+                      <option value="month">{tr("Monthly")}</option>
+                      <option value="total">{tr("Total")}</option>
+                    </select>
+                  </label>
+                  <label className="control-field">
+                    <span className="control-label">{tr("Credit cap (USD)")}</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={editQuota.creditUsd}
+                      disabled={readOnly || busy}
+                      placeholder={tr("Unlimited")}
+                      onChange={(event) => setEditQuota((current) => ({ ...current, creditUsd: event.target.value }))}
+                    />
+                  </label>
+                  <label className="control-field">
+                    <span className="control-label">{tr("Token cap")}</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={editQuota.maxTokens}
+                      disabled={readOnly || busy}
+                      placeholder={tr("Unlimited")}
+                      onChange={(event) => setEditQuota((current) => ({ ...current, maxTokens: event.target.value }))}
+                    />
+                  </label>
+                  <label className="control-field">
+                    <span className="control-label">{tr("Request cap")}</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={editQuota.maxRequests}
+                      disabled={readOnly || busy}
+                      placeholder={tr("Unlimited")}
+                      onChange={(event) => setEditQuota((current) => ({ ...current, maxRequests: event.target.value }))}
+                    />
+                  </label>
+                </div>
+              </div>
+              <div>
+                <h3>{tr("Billing")}</h3>
+                <p className="muted">
+                  {tr("Subscription windows are enforced on top of the usage quota. Leave a cap blank for unlimited.")}
+                </p>
+                <div className="form-grid">
+                  <label className="control-field">
+                    <span className="control-label">{tr("Billing mode")}</span>
+                    <select
+                      value={editPlan.mode}
+                      disabled={readOnly || busy}
+                      onChange={(event) => setPlanMode(event.target.value as PlanDraft["mode"])}
+                    >
+                      <option value="usage">{tr("Pay-as-you-go")}</option>
+                      <option value="subscription">{tr("Subscription")}</option>
+                    </select>
+                  </label>
+                  {editPlan.mode === "subscription" && (
+                    <>
+                      <label className="control-field">
+                        <span className="control-label">{tr("Plan name")}</span>
+                        <input
+                          value={editPlan.name}
+                          disabled={readOnly || busy}
+                          placeholder={tr("Pro")}
+                          onChange={(event) => setEditPlan((current) => ({ ...current, name: event.target.value }))}
+                        />
+                      </label>
+                      <label className="control-field">
+                        <span className="control-label">{tr("Monthly price (USD)")}</span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={editPlan.priceUsd}
+                          disabled={readOnly || busy}
+                          placeholder="20"
+                          onChange={(event) => setEditPlan((current) => ({ ...current, priceUsd: event.target.value }))}
+                        />
+                      </label>
+                    </>
+                  )}
+                </div>
+                {editPlan.mode === "subscription" && (
+                  <>
+                    {editPlan.windows.length === 0 ? (
+                      <div className="compact-empty-state" style={{ marginTop: 12 }}>
+                        <strong>{tr("No windows yet")}</strong>
+                        <span>{tr("Add a window or start from the 5 h + weekly preset.")}</span>
+                      </div>
+                    ) : (
+                      <div className="table-wrap" style={{ marginTop: 12 }}>
+                        <table className="data-table">
+                          <thead>
+                            <tr>
+                              <th>{tr("Window")}</th>
+                              <th>{tr("Period")}</th>
+                              <th>{tr("Credit cap (USD)")}</th>
+                              <th>{tr("Token cap")}</th>
+                              <th>{tr("Request cap")}</th>
+                              <th>{tr("Current usage")}</th>
+                              <th />
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {editPlan.windows.map((window) => {
+                              const live = selected.quotaWindows?.find((entry) => entry.id === window.id);
+                              return (
+                                <tr key={window.id}>
+                                  <td>
+                                    <input
+                                      value={window.label}
+                                      disabled={readOnly || busy}
+                                      placeholder={windowPeriodLabel(window.period)}
+                                      onChange={(event) => updateWindow(window.id, { label: event.target.value })}
+                                    />
+                                  </td>
+                                  <td>
+                                    <select
+                                      value={window.period}
+                                      disabled={readOnly || busy}
+                                      onChange={(event) =>
+                                        updateWindow(window.id, {
+                                          period: event.target.value as DashboardUserQuotaWindowPeriod,
+                                        })
+                                      }
+                                    >
+                                      {WINDOW_PERIODS.map((entry) => (
+                                        <option key={entry.value} value={entry.value}>
+                                          {windowPeriodLabel(entry.value)}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </td>
+                                  <td>
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      step="0.01"
+                                      value={window.creditUsd}
+                                      disabled={readOnly || busy}
+                                      placeholder={tr("Unlimited")}
+                                      onChange={(event) => updateWindow(window.id, { creditUsd: event.target.value })}
+                                    />
+                                  </td>
+                                  <td>
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      step="1"
+                                      value={window.maxTokens}
+                                      disabled={readOnly || busy}
+                                      placeholder={tr("Unlimited")}
+                                      onChange={(event) => updateWindow(window.id, { maxTokens: event.target.value })}
+                                    />
+                                  </td>
+                                  <td>
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      step="1"
+                                      value={window.maxRequests}
+                                      disabled={readOnly || busy}
+                                      placeholder={tr("Unlimited")}
+                                      onChange={(event) => updateWindow(window.id, { maxRequests: event.target.value })}
+                                    />
+                                  </td>
+                                  <td className="muted">
+                                    {live ? (
+                                      <>
+                                        {count(live.usage.requests)} {tr("req")} · {count(live.usage.tokens)}{" "}
+                                        {tr("tokens")} · {money(live.usage.costUsd)}
+                                        {live.blocked && <div><span className="badge">{tr("Limit reached")}</span></div>}
+                                      </>
+                                    ) : (
+                                      tr("Not started")
+                                    )}
+                                  </td>
+                                  <td>
+                                    <button
+                                      className="btn ghost"
+                                      type="button"
+                                      disabled={readOnly || busy}
+                                      onClick={() => removeWindow(window.id)}
+                                    >
+                                      {tr("Remove")}
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                    <div className="inline" style={{ gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+                      <button className="btn secondary" type="button" disabled={readOnly || busy} onClick={addWindow}>
+                        {tr("Add window")}
+                      </button>
+                      <button
+                        className="btn secondary"
+                        type="button"
+                        disabled={readOnly || busy}
+                        onClick={() =>
+                          setEditPlan((current) => ({
+                            ...current,
+                            windows: SUBSCRIPTION_PRESET.map((window) => ({ ...window })),
+                          }))
+                        }
+                      >
+                        {tr("Use 5 h + weekly preset")}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
-          </div>
-          <ModelAccessPicker
-            catalog={catalog}
-            value={editAllowedModels}
-            disabled={readOnly || busy}
-            onChange={setEditAllowedModels}
-          />
-          <div className="inline" style={{ gap: 8, flexWrap: "wrap", marginTop: 12 }}>
-            <button className="btn" type="button" disabled={readOnly || busy} onClick={save}>
-              {busy ? tr("Saving…") : tr("Save changes")}
-            </button>
-            <button className="btn btn-secondary" type="button" disabled={readOnly || busy} onClick={invite}>
-              {tr("Generate invite")}
-            </button>
-            <button className="btn btn-secondary" type="button" disabled={readOnly || busy} onClick={resetUsage}>
-              {tr("Reset usage")}
-            </button>
-            <button className="btn danger" type="button" disabled={readOnly || busy} onClick={remove}>
-              {tr("Delete user")}
-            </button>
-          </div>
-          <div className="inline" style={{ gap: 8, flexWrap: "wrap", marginTop: 12 }}>
-            <label className="control-field" style={{ maxWidth: 220 }}>
-              <span className="control-label">{tr("Add allowance (USD)")}</span>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={creditAmount}
-                disabled={readOnly || busy}
-                placeholder="10"
-                onChange={(event) => setCreditAmount(event.target.value)}
-              />
-            </label>
-            <button
-              className="btn"
-              type="button"
-              disabled={readOnly || busy || !(Number(creditAmount) > 0)}
-              onClick={credit}
+          )}
+
+          {detailTab === "models" && (
+            <div
+              className="tab-stack"
+              role="tabpanel"
+              id="user-panel-models"
+              aria-labelledby="user-tab-models"
+              style={{ marginTop: 15 }}
             >
-              {tr("Grant allowance")}
-            </button>
-          </div>
-          <div className="section-split-header" style={{ marginTop: 18 }}>
-            <div>
-              <h3>{tr("Prepaid balance")}</h3>
-              <p className="muted">
-                {tr("Purchased credit that never expires with the period. It is spent after the period allowance.")}
-              </p>
+              <div>
+                <h3>{tr("Model access")}</h3>
+                <p className="muted">
+                  {tr("Choose the models this user may call. Leave all unchecked to allow every model.")}
+                </p>
+                <ModelAccessPicker
+                  catalog={catalog}
+                  value={editAllowedModels}
+                  disabled={readOnly || busy}
+                  onChange={setEditAllowedModels}
+                />
+              </div>
             </div>
-            <strong>{money(selected.walletUsd ?? 0)}</strong>
-          </div>
-          <div className="inline" style={{ gap: 8, flexWrap: "wrap" }}>
-            <label className="control-field" style={{ maxWidth: 180 }}>
-              <span className="control-label">{tr("Amount (USD)")}</span>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={walletAmount}
-                disabled={readOnly || busy}
-                placeholder="20"
-                onChange={(event) => setWalletAmount(event.target.value)}
-              />
-            </label>
-            <label className="control-field" style={{ minWidth: 200, flex: 1 }}>
-              <span className="control-label">{tr("Note (optional)")}</span>
-              <input
-                value={walletNote}
-                disabled={readOnly || busy}
-                maxLength={200}
-                placeholder={tr("Pack Starter, goodwill, refund…")}
-                onChange={(event) => setWalletNote(event.target.value)}
-              />
-            </label>
-            <button
-              className="btn"
-              type="button"
-              disabled={readOnly || busy || !(Math.abs(Number(walletAmount)) > 0)}
-              onClick={() => adjustWallet(1)}
+          )}
+
+          {detailTab === "credits" && (
+            <div
+              className="tab-stack"
+              role="tabpanel"
+              id="user-panel-credits"
+              aria-labelledby="user-tab-credits"
+              style={{ marginTop: 15 }}
             >
-              {tr("Top up")}
-            </button>
-            <button
-              className="btn btn-secondary"
-              type="button"
-              disabled={readOnly || busy || !(Math.abs(Number(walletAmount)) > 0)}
-              onClick={() => adjustWallet(-1)}
+              <div>
+                <h3>{tr("Allowance")}</h3>
+                <p className="muted">{tr("One-off credit added on top of the current period allowance.")}</p>
+                <div className="inline wrap">
+                  <label className="control-field" style={{ maxWidth: 220 }}>
+                    <span className="control-label">{tr("Add allowance (USD)")}</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={creditAmount}
+                      disabled={readOnly || busy}
+                      placeholder="10"
+                      onChange={(event) => setCreditAmount(event.target.value)}
+                    />
+                  </label>
+                  <button
+                    className="btn"
+                    type="button"
+                    disabled={readOnly || busy || !(Number(creditAmount) > 0)}
+                    onClick={credit}
+                  >
+                    {tr("Grant allowance")}
+                  </button>
+                </div>
+              </div>
+              <div>
+                <div className="section-split-header">
+                  <div>
+                    <h3>{tr("Prepaid balance")}</h3>
+                    <p className="muted">
+                      {tr("Purchased credit that never expires with the period. It is spent after the period allowance.")}
+                    </p>
+                  </div>
+                  <strong>{money(selected.walletUsd ?? 0)}</strong>
+                </div>
+                <div className="inline wrap">
+                  <label className="control-field" style={{ maxWidth: 180 }}>
+                    <span className="control-label">{tr("Amount (USD)")}</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={walletAmount}
+                      disabled={readOnly || busy}
+                      placeholder="20"
+                      onChange={(event) => setWalletAmount(event.target.value)}
+                    />
+                  </label>
+                  <label className="control-field" style={{ minWidth: 200, flex: 1 }}>
+                    <span className="control-label">{tr("Note (optional)")}</span>
+                    <input
+                      value={walletNote}
+                      disabled={readOnly || busy}
+                      maxLength={200}
+                      placeholder={tr("Pack Starter, goodwill, refund…")}
+                      onChange={(event) => setWalletNote(event.target.value)}
+                    />
+                  </label>
+                  <button
+                    className="btn"
+                    type="button"
+                    disabled={readOnly || busy || !(Math.abs(Number(walletAmount)) > 0)}
+                    onClick={() => adjustWallet(1)}
+                  >
+                    {tr("Top up")}
+                  </button>
+                  <button
+                    className="btn secondary"
+                    type="button"
+                    disabled={readOnly || busy || !(Math.abs(Number(walletAmount)) > 0)}
+                    onClick={() => adjustWallet(-1)}
+                  >
+                    {tr("Debit")}
+                  </button>
+                </div>
+                {ledger.length > 0 ? (
+                  <div className="table-wrap" style={{ marginTop: 12 }}>
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>{tr("When")}</th>
+                          <th>{tr("Movement")}</th>
+                          <th>{tr("Amount")}</th>
+                          <th>{tr("Balance")}</th>
+                          <th>{tr("Note")}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {ledger.slice(0, 8).map((entry) => (
+                          <tr key={entry.id}>
+                            <td>{new Date(entry.at).toLocaleString(activeLocale())}</td>
+                            <td>{creditKindLabel(tr, entry.kind)}</td>
+                            <td>
+                              {entry.amountUsd > 0 ? "+" : ""}
+                              {money(entry.amountUsd)}
+                            </td>
+                            <td>{money(entry.balanceAfterUsd)}</td>
+                            <td className="muted">{entry.note || "—"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p className="muted" style={{ marginTop: 12 }}>{tr("No credit movements yet.")}</p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {detailTab === "invitation" && (
+            <div
+              className="tab-stack"
+              role="tabpanel"
+              id="user-panel-invitation"
+              aria-labelledby="user-tab-invitation"
+              style={{ marginTop: 15 }}
             >
-              {tr("Debit")}
-            </button>
-          </div>
-          {ledger.length > 0 && (
-            <div className="table-wrap" style={{ marginTop: 12 }}>
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>{tr("When")}</th>
-                    <th>{tr("Movement")}</th>
-                    <th>{tr("Amount")}</th>
-                    <th>{tr("Balance")}</th>
-                    <th>{tr("Note")}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {ledger.slice(0, 8).map((entry) => (
-                    <tr key={entry.id}>
-                      <td>{new Date(entry.at).toLocaleString(activeLocale())}</td>
-                      <td>{creditKindLabel(tr, entry.kind)}</td>
-                      <td>
-                        {entry.amountUsd > 0 ? "+" : ""}
-                        {money(entry.amountUsd)}
-                      </td>
-                      <td>{money(entry.balanceAfterUsd)}</td>
-                      <td className="muted">{entry.note || "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <div>
+                <div className="section-split-header">
+                  <div>
+                    <h3>{tr("Invitation link")}</h3>
+                    <p className="muted">
+                      {tr("The invitation link is single-use and is only displayed when it is generated. Generating a new link invalidates the previous one.")}
+                    </p>
+                  </div>
+                  {selected.invitePending ? (
+                    <span className="badge">{tr("Invite pending")}</span>
+                  ) : (
+                    <span className="badge">{tr("No pending invite")}</span>
+                  )}
+                </div>
+                {selected.invitePending && typeof selected.inviteExpiresAt === "number" && (
+                  <p className="muted">
+                    {tr("Expires {date}.", {
+                      date: new Date(selected.inviteExpiresAt).toLocaleString(activeLocale()),
+                    })}
+                  </p>
+                )}
+                <div className="inline wrap">
+                  <button className="btn" type="button" disabled={readOnly || busy} onClick={invite}>
+                    {selected.invitePending ? tr("Regenerate invite link") : tr("Generate invite link")}
+                  </button>
+                </div>
+                {inviteLink ? (
+                  <div className="user-invite-link">
+                    <input
+                      readOnly
+                      value={inviteLink}
+                      aria-label={tr("Invitation link")}
+                      onFocus={(event) => event.currentTarget.select()}
+                    />
+                    <button className="btn secondary" type="button" onClick={() => void copyInvite(inviteLink)}>
+                      {copied ? tr("Copied") : tr("Copy")}
+                    </button>
+                  </div>
+                ) : (
+                  <p className="muted" style={{ marginTop: 10 }}>
+                    {tr("No link generated in this session. Generate one to display it here.")}
+                  </p>
+                )}
+              </div>
             </div>
           )}
         </section>
       )}
 
-      <section className="panel">
-        <div className="section-split-header">
-          <div>
-            <h2>{tr("Create user")}</h2>
-            <p className="muted">
-              {tr("Set a password to create the account immediately, or leave it blank to send an invite.")}
-            </p>
+      {createOpen && (
+        <Dialog labelledBy="create-user-title" className="user-create-modal" onClose={closeCreate}>
+          <div className="section-split-header">
+            <div>
+              <h2 id="create-user-title">{tr("Create user")}</h2>
+              <p className="muted">
+                {tr("Set a password to create the account immediately, or leave it blank to send an invite.")}
+              </p>
+            </div>
+            <button
+              className="btn ghost"
+              type="button"
+              disabled={creating}
+              aria-label={tr("Close")}
+              onClick={closeCreate}
+            >
+              ×
+            </button>
           </div>
-        </div>
-        <form onSubmit={create}>
-          <div className="form-grid">
-            <label className="control-field">
-              <span className="control-label">{tr("Email")}</span>
-              <input
-                type="email"
-                required
-                value={createDraft.email}
-                disabled={readOnly || creating}
-                onChange={(event) => setCreateDraft((current) => ({ ...current, email: event.target.value }))}
-              />
-            </label>
-            <label className="control-field">
-              <span className="control-label">{tr("Name")}</span>
-              <input
-                value={createDraft.name}
-                disabled={readOnly || creating}
-                onChange={(event) => setCreateDraft((current) => ({ ...current, name: event.target.value }))}
-              />
-            </label>
-            <label className="control-field">
-              <span className="control-label">{tr("Role")}</span>
-              <select
-                value={createDraft.role}
-                disabled={readOnly || creating}
-                onChange={(event) =>
-                  setCreateDraft((current) => ({ ...current, role: event.target.value as DashboardUserRole }))
-                }
-              >
-                <option value="member">{tr("Member")}</option>
-                <option value="admin">{tr("Admin")}</option>
-              </select>
-            </label>
-            <label className="control-field">
-              <span className="control-label">{tr("Password")}</span>
-              <input
-                type="password"
-                value={createDraft.password}
-                disabled={readOnly || creating}
-                placeholder={tr("Optional — invite instead")}
-                autoComplete="new-password"
-                onChange={(event) => setCreateDraft((current) => ({ ...current, password: event.target.value }))}
-              />
-            </label>
-            <label className="control-field">
-              <span className="control-label">{tr("Quota period")}</span>
-              <select
-                value={createDraft.quota.period}
-                disabled={readOnly || creating}
-                onChange={(event) =>
-                  setCreateDraft((current) => ({
-                    ...current,
-                    quota: { ...current.quota, period: event.target.value as QuotaDraft["period"] },
-                  }))
-                }
-              >
-                <option value="month">{tr("Monthly")}</option>
-                <option value="day">{tr("Daily")}</option>
-                <option value="total">{tr("Total")}</option>
-              </select>
-            </label>
-            <label className="control-field">
-              <span className="control-label">{tr("Credit cap (USD)")}</span>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={createDraft.quota.creditUsd}
-                disabled={readOnly || creating}
-                placeholder={tr("Unlimited")}
-                onChange={(event) =>
-                  setCreateDraft((current) => ({
-                    ...current,
-                    quota: { ...current.quota, creditUsd: event.target.value },
-                  }))
-                }
-              />
-            </label>
-            <label className="control-field">
-              <span className="control-label">{tr("Token cap")}</span>
-              <input
-                type="number"
-                min="0"
-                step="1"
-                value={createDraft.quota.maxTokens}
-                disabled={readOnly || creating}
-                placeholder={tr("Unlimited")}
-                onChange={(event) =>
-                  setCreateDraft((current) => ({
-                    ...current,
-                    quota: { ...current.quota, maxTokens: event.target.value },
-                  }))
-                }
-              />
-            </label>
-            <label className="control-field">
-              <span className="control-label">{tr("Request cap")}</span>
-              <input
-                type="number"
-                min="0"
-                step="1"
-                value={createDraft.quota.maxRequests}
-                disabled={readOnly || creating}
-                placeholder={tr("Unlimited")}
-                onChange={(event) =>
-                  setCreateDraft((current) => ({
-                    ...current,
-                    quota: { ...current.quota, maxRequests: event.target.value },
-                  }))
-                }
-              />
-            </label>
-            <label className="control-field">
-              <span className="control-label">{tr("Billing mode")}</span>
-              <select
-                value={createDraft.plan.mode}
-                disabled={readOnly || creating}
-                onChange={(event) =>
-                  setCreateDraft((current) => {
-                    const mode = event.target.value as PlanDraft["mode"];
-                    return {
-                      ...current,
-                      plan: {
-                        ...current.plan,
-                        mode,
-                        windows:
-                          mode === "subscription" && current.plan.windows.length === 0
-                            ? SUBSCRIPTION_PRESET.map((window) => ({ ...window }))
-                            : current.plan.windows,
-                      },
-                    };
-                  })
-                }
-              >
-                <option value="usage">{tr("Pay-as-you-go")}</option>
-                <option value="subscription">{tr("Subscription")}</option>
-              </select>
-            </label>
-            {createDraft.plan.mode === "subscription" && (
+          {error && <div className="error" role="alert">{error}</div>}
+          <form onSubmit={create}>
+            <div className="form-grid">
               <label className="control-field">
-                <span className="control-label">{tr("Plan name")}</span>
+                <span className="control-label">{tr("Email")}</span>
                 <input
-                  value={createDraft.plan.name}
+                  ref={createEmailRef}
+                  type="email"
+                  required
+                  value={createDraft.email}
                   disabled={readOnly || creating}
-                  placeholder={tr("Pro")}
+                  onChange={(event) => setCreateDraft((current) => ({ ...current, email: event.target.value }))}
+                />
+              </label>
+              <label className="control-field">
+                <span className="control-label">{tr("Name")}</span>
+                <input
+                  value={createDraft.name}
+                  disabled={readOnly || creating}
+                  onChange={(event) => setCreateDraft((current) => ({ ...current, name: event.target.value }))}
+                />
+              </label>
+              <label className="control-field">
+                <span className="control-label">{tr("Role")}</span>
+                <select
+                  value={createDraft.role}
+                  disabled={readOnly || creating}
+                  onChange={(event) =>
+                    setCreateDraft((current) => ({ ...current, role: event.target.value as DashboardUserRole }))
+                  }
+                >
+                  <option value="member">{tr("Member")}</option>
+                  <option value="admin">{tr("Admin")}</option>
+                </select>
+              </label>
+              <label className="control-field">
+                <span className="control-label">{tr("Password")}</span>
+                <input
+                  type="password"
+                  value={createDraft.password}
+                  disabled={readOnly || creating}
+                  placeholder={tr("Optional — invite instead")}
+                  autoComplete="new-password"
+                  onChange={(event) => setCreateDraft((current) => ({ ...current, password: event.target.value }))}
+                />
+              </label>
+              <label className="control-field">
+                <span className="control-label">{tr("Quota period")}</span>
+                <select
+                  value={createDraft.quota.period}
+                  disabled={readOnly || creating}
                   onChange={(event) =>
                     setCreateDraft((current) => ({
                       ...current,
-                      plan: { ...current.plan, name: event.target.value },
+                      quota: { ...current.quota, period: event.target.value as QuotaDraft["period"] },
+                    }))
+                  }
+                >
+                  <option value="month">{tr("Monthly")}</option>
+                  <option value="day">{tr("Daily")}</option>
+                  <option value="total">{tr("Total")}</option>
+                </select>
+              </label>
+              <label className="control-field">
+                <span className="control-label">{tr("Credit cap (USD)")}</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={createDraft.quota.creditUsd}
+                  disabled={readOnly || creating}
+                  placeholder={tr("Unlimited")}
+                  onChange={(event) =>
+                    setCreateDraft((current) => ({
+                      ...current,
+                      quota: { ...current.quota, creditUsd: event.target.value },
                     }))
                   }
                 />
               </label>
-            )}
-          </div>
-          <div className="section-split-header" style={{ marginTop: 18 }}>
-            <div>
+              <label className="control-field">
+                <span className="control-label">{tr("Token cap")}</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={createDraft.quota.maxTokens}
+                  disabled={readOnly || creating}
+                  placeholder={tr("Unlimited")}
+                  onChange={(event) =>
+                    setCreateDraft((current) => ({
+                      ...current,
+                      quota: { ...current.quota, maxTokens: event.target.value },
+                    }))
+                  }
+                />
+              </label>
+              <label className="control-field">
+                <span className="control-label">{tr("Request cap")}</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={createDraft.quota.maxRequests}
+                  disabled={readOnly || creating}
+                  placeholder={tr("Unlimited")}
+                  onChange={(event) =>
+                    setCreateDraft((current) => ({
+                      ...current,
+                      quota: { ...current.quota, maxRequests: event.target.value },
+                    }))
+                  }
+                />
+              </label>
+              <label className="control-field">
+                <span className="control-label">{tr("Billing mode")}</span>
+                <select
+                  value={createDraft.plan.mode}
+                  disabled={readOnly || creating}
+                  onChange={(event) =>
+                    setCreateDraft((current) => {
+                      const mode = event.target.value as PlanDraft["mode"];
+                      return {
+                        ...current,
+                        plan: {
+                          ...current.plan,
+                          mode,
+                          windows:
+                            mode === "subscription" && current.plan.windows.length === 0
+                              ? SUBSCRIPTION_PRESET.map((window) => ({ ...window }))
+                              : current.plan.windows,
+                        },
+                      };
+                    })
+                  }
+                >
+                  <option value="usage">{tr("Pay-as-you-go")}</option>
+                  <option value="subscription">{tr("Subscription")}</option>
+                </select>
+              </label>
+              {createDraft.plan.mode === "subscription" && (
+                <label className="control-field">
+                  <span className="control-label">{tr("Plan name")}</span>
+                  <input
+                    value={createDraft.plan.name}
+                    disabled={readOnly || creating}
+                    placeholder={tr("Pro")}
+                    onChange={(event) =>
+                      setCreateDraft((current) => ({
+                        ...current,
+                        plan: { ...current.plan, name: event.target.value },
+                      }))
+                    }
+                  />
+                </label>
+              )}
+            </div>
+            <div style={{ marginTop: 18 }}>
               <h3>{tr("Model access")}</h3>
               <p className="muted">
                 {tr("Choose the models this user may call. Leave all unchecked to allow every model.")}
               </p>
+              <ModelAccessPicker
+                catalog={catalog}
+                value={createDraft.allowedModels}
+                disabled={readOnly || creating}
+                onChange={(models) => setCreateDraft((current) => ({ ...current, allowedModels: models }))}
+              />
             </div>
+            <div className="inline wrap" style={{ marginTop: 16 }}>
+              <button className="btn" type="submit" disabled={readOnly || creating || !createDraft.email.trim()}>
+                {creating ? tr("Creating…") : tr("Create user")}
+              </button>
+              <button className="btn secondary" type="button" disabled={creating} onClick={closeCreate}>
+                {tr("Cancel")}
+              </button>
+            </div>
+          </form>
+        </Dialog>
+      )}
+
+      {createdInvite && (
+        <Dialog labelledBy="created-invite-title" className="user-invite-modal" onClose={closeCreatedInvite}>
+          <div>
+            <span className="badge badge-live">{tr("User created")}</span>
+            <h2 id="created-invite-title">{tr("Send the invitation link")}</h2>
+            <p className="muted">
+              {tr("This link is single-use: it stops working once {email} sets a password.", {
+                email: createdInvite.email,
+              })}
+            </p>
           </div>
-          <ModelAccessPicker
-            catalog={catalog}
-            value={createDraft.allowedModels}
-            disabled={readOnly || creating}
-            onChange={(models) => setCreateDraft((current) => ({ ...current, allowedModels: models }))}
-          />
-          <button className="btn" type="submit" disabled={readOnly || creating || !createDraft.email.trim()}>
-            {creating ? tr("Creating…") : tr("Create user")}
-          </button>
-        </form>
-      </section>
+          <div className="user-invite-link">
+            <input
+              readOnly
+              value={createdInvite.url}
+              aria-label={tr("Invitation link")}
+              onFocus={(event) => event.currentTarget.select()}
+            />
+            <button
+              className="btn secondary"
+              type="button"
+              autoFocus
+              onClick={() => void copyInvite(createdInvite.url)}
+            >
+              {copied ? tr("Copied") : tr("Copy")}
+            </button>
+          </div>
+          <div className="inline wrap">
+            <button className="btn" type="button" onClick={closeCreatedInvite}>
+              {tr("Done")}
+            </button>
+          </div>
+        </Dialog>
+      )}
     </div>
   );
 }

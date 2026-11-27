@@ -21,6 +21,7 @@ import {
   isValidPassword,
   normalizeEmail,
   publicUser,
+  sessionPayload,
   signSession,
   verifyPassword,
   verifySession,
@@ -905,7 +906,7 @@ app.post(
       expiresAt: Date.now() + USER_SESSION_MAX_AGE_MS,
     });
     res.setHeader("cache-control", "no-store");
-    res.json({ authenticated: true, user: publicUser(updated) });
+    res.json(sessionPayload(updated));
   },
 );
 
@@ -930,7 +931,7 @@ app.post(
       expiresAt: Date.now() + USER_SESSION_MAX_AGE_MS,
     });
     res.setHeader("cache-control", "no-store");
-    res.json({ authenticated: true, user: publicUser(updated ?? user) });
+    res.json(sessionPayload(updated ?? user));
   },
 );
 
@@ -997,7 +998,7 @@ app.post(
         expiresAt: Date.now() + USER_SESSION_MAX_AGE_MS,
       });
       res.setHeader("cache-control", "no-store");
-      res.json({ authenticated: true, user: publicUser(updated ?? result.user) });
+      res.json(sessionPayload(updated ?? result.user));
     } catch (error) {
       passkeyFailure(res, error);
     }

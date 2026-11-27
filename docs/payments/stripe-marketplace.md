@@ -582,6 +582,66 @@ Le secret d'instance n'est pas dans `accounts.json` : fichier
 - Prod : deux endpoints webhook (compte + comptes connectés), clés live,
   alerte sur les événements en échec.
 
+<a id="operator-token"></a>
+
+### Où trouver le jeton opérateur
+
+La page `/enroll` du broker — celle que l'instance ouvre depuis **Réglages →
+Paiements** — demande un « Jeton opérateur » en plus du code d'enrôlement. Ce
+n'est ni le jeton d'administration de l'instance (`ADMIN_TOKEN`) ni le code
+d'enrôlement : c'est le secret que l'exploitant de la place de marché a
+configuré dans le broker.
+
+- **Génération** (une seule fois, puis on le conserve) :
+
+  ```sh
+  openssl rand -hex 32
+  ```
+
+- **Stockage** : la valeur est affectée à `MARKETPLACE_OPERATOR_TOKEN=` dans
+  `services/marketplace/.env`, sur l'hôte qui exécute le broker. Sur Unraid :
+  `/mnt/user/appdata/multivibe/services/marketplace/.env`, mode `0600`,
+  git-ignoré. Ce fichier ne doit jamais être copié dans le dépôt, un ticket, une
+  capture d'écran ou un message.
+
+- **Lecture sur Unraid sans fuite** : depuis la copie du dépôt sur l'hôte,
+
+  ```sh
+  cd /mnt/user/appdata/multivibe/services/marketplace
+  docker compose exec marketplace printenv MARKETPLACE_OPERATOR_TOKEN
+  ```
+
+  Si le conteneur est arrêté :
+
+  ```sh
+  sed -n 's/^MARKETPLACE_OPERATOR_TOKEN=//p' \
+    /mnt/user/appdata/multivibe/services/marketplace/.env
+  ```
+
+  La valeur s'affiche dans le terminal : ne la redirigez pas vers un fichier et
+  ne la collez pas dans un log, un ticket ou une conversation. Seule la commande
+  reste dans l'historique du shell, jamais la valeur. Après toute modification du
+  `.env`, recréer le conteneur (`docker compose up -d`) : l'environnement est lu
+  au démarrage.
+
+- **Valeur vide** : sans `MARKETPLACE_OPERATOR_TOKEN`, l'API opérateur est
+  désactivée (`/api/*` et `POST /v1/enrollments/:code/claim` répondent
+  `503 operator_disabled`) et `/enroll` n'exige plus de jeton. À réserver au
+  développement local : une place de marché en production doit toujours en avoir
+  un.
+
+- **À ne pas confondre** :
+  - `ADMIN_TOKEN` : jeton d'administration de l'instance MultiVibe (tableau de
+    bord du self-hoster), stocké dans le `.env` de l'instance, sans rapport avec
+    le broker ;
+  - le **code d'enrôlement** (`ABCD-EFGH`) : code court, à usage unique, affiché
+    dans Réglages → Paiements et valable quelques minutes ;
+  - le **jeton opérateur** : secret durable du broker, partagé uniquement avec
+    les personnes qui exploitent la place de marché.
+
+Le broker ne renvoie jamais ce jeton : il se saisit à la main sur `/enroll`, ou
+s'envoie en `Authorization: Bearer` sur `/api/*`.
+
 ## 15. Sécurité
 
 - Aucune clé Stripe chez les self-hosters ; le broker est le seul à parler à

@@ -173,6 +173,12 @@ in without a password. WebAuthn binds a credential to the dashboard hostname,
 so behind a proxy set `MULTIVIBE_PUBLIC_ORIGIN` (and, when the RP ID differs
 from that hostname, `MULTIVIBE_WEBAUTHN_RP_ID`) to the public origin.
 
+Transactional account emails (low balance, successful top-up and spend limit)
+are opt-in over SMTP. Set `MULTIVIBE_SMTP_ENABLED=true` plus `SMTP_HOST`, and
+see [`docs/notifications/email.md`](./docs/notifications/email.md) and
+[`.env.example`](./.env.example) for the full configuration, event API and
+security notes. A disabled or incomplete configuration is a silent no-op.
+
 </details>
 
 ### Find your way

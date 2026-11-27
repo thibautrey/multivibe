@@ -204,7 +204,7 @@ export function BillingTab({ api }: Props) {
             </p>
           </div>
           <button
-            className="btn btn-secondary"
+            className="btn secondary"
             type="button"
             disabled={loading}
             onClick={() => {

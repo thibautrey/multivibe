@@ -40,6 +40,8 @@ type Props = {
   aliases: ModelAlias[];
   models: ExposedModel[];
   settings: StoreSettings;
+  /** Members only manage their own policies; host settings stay admin-only. */
+  member?: boolean;
   saveAlias: (body: ModelAlias) => Promise<void>;
   patchAlias: (id: string, body: Partial<ModelAlias>) => Promise<void>;
   deleteAlias: (id: string) => Promise<void>;
@@ -68,6 +70,7 @@ export function AliasesTab({
   aliases,
   models,
   settings,
+  member = false,
   saveAlias,
   patchAlias,
   deleteAlias,
@@ -85,6 +88,7 @@ export function AliasesTab({
   const [jsonDraft, setJsonDraft] = useState(JSON.stringify(blankAlias(), null, 2));
   const [jsonError, setJsonError] = useState<string>();
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string>();
   const [simulation, setSimulation] = useState<any>();
   const [simulationRequest, setSimulationRequest] = useState({
     application: "simulation",
@@ -96,6 +100,10 @@ export function AliasesTab({
   const [capacity, setCapacity] = useState<any>();
   const [capacityPriority, setCapacityPriority] = useState<PriorityClass>("interactive");
   const availableModels = useMemo(() => models, [models]);
+  const sections = useMemo(
+    () => (member ? ALIAS_SECTIONS.filter((section) => section.id !== "settings") : ALIAS_SECTIONS),
+    [member],
+  );
 
   const selectDraft = (alias?: ModelAlias) => {
     const next = alias ? structuredClone(alias) : blankAlias();
@@ -108,6 +116,7 @@ export function AliasesTab({
     setJsonError(undefined);
     setSimulation(undefined);
     setCapacity(undefined);
+    setSaveError(undefined);
   };
 
   const chooseCreationScenario = (scenario: AliasCreationScenario) => {
@@ -215,12 +224,23 @@ export function AliasesTab({
       || draft.rules.some((rule) => !rule.candidates.length || rule.candidates.some((candidate) => !candidate.model.trim()))
     ) return;
     setSaving(true);
+    setSaveError(undefined);
     try {
       const normalized = { ...draft, id: draft.id.trim() };
       if (originalId) await patchAlias(originalId, normalized);
       else await saveAlias(normalized);
       selectDraft();
       setActiveSection("policies");
+    } catch (error: any) {
+      const raw = String(error?.message ?? "");
+      const message = raw.includes("alias_exists")
+        ? t("This alias already exists. Choose another name.")
+        : raw.includes("alias_conflicts_with_model")
+          ? t("This name is already used by a model. Choose another name.")
+          : raw.includes("models_not_allowed")
+            ? t("This policy routes to models your account cannot use.")
+            : t("The policy could not be saved. Try again.");
+      setSaveError(message);
     } finally {
       setSaving(false);
     }
@@ -253,7 +273,7 @@ export function AliasesTab({
           {originalId && <span className="badge badge-live">{t("Editing")} <span className="mono">{originalId}</span></span>}
         </div>
         <div className="alias-tabs" role="tablist" aria-label={t("Alias workspace sections")}>
-          {ALIAS_SECTIONS.map((section) => (
+          {sections.map((section) => (
             <button
               key={section.id}
               className={`alias-tab ${activeSection === section.id ? "active" : ""}`}
@@ -274,6 +294,7 @@ export function AliasesTab({
         <div className="section-split-header">
           <div>
             <h2>{t("Smart routing policies")}</h2>
+            {member && <p className="muted">{t("Your routing policies are private. Models shared with you appear in the model catalog, not here.")}</p>}
           </div>
           <button className="btn" type="button" onClick={() => { selectDraft(); setActiveSection("editor"); }} title={t("Start a new routing policy")}>{t("New policy")}</button>
         </div>
@@ -416,6 +437,7 @@ export function AliasesTab({
           <button className="btn" type="button" disabled={saving || Boolean(jsonError) || !draftComplete} onClick={() => void save()} title={t("Save this policy and return to the policy list")}>{saving ? t("Saving…") : originalId ? t("Save policy") : t("Create policy")}</button>
           <button className="btn ghost" type="button" onClick={() => selectDraft()} title={t("Discard unsaved changes and start over")}>{t("Reset")}</button>
         </div>
+        {saveError && <p className="field-error inline-notice">{saveError}</p>}
         </>}
       </section>}
 
@@ -443,7 +465,7 @@ export function AliasesTab({
         </div>
       </section>}
 
-      {activeSection === "settings" && <section className="panel alias-routing-panel" id="alias-panel-settings" role="tabpanel">
+      {!member && activeSection === "settings" && <section className="panel alias-routing-panel" id="alias-panel-settings" role="tabpanel">
         <div className="section-heading-with-help"><div><h2>{t("Image request model")}</h2><p className="muted">{t("Optionally route image requests to a specific model instead of the default.")}</p></div><HelpTooltip text={t("This override only affects image requests. Leave it empty to use the normal model selection.")} /></div>
         <div className="grid alias-grid"><label><span className="field-label">{t("Override model")} <HelpTooltip text={t("The model that will handle image requests when an override is configured.")} /></span><ModelSelector models={availableModels} value={settings.imageRequestModelOverride ?? ""} onChange={(model) => void patchSettings({ imageRequestModelOverride: model || undefined })} /></label><button className="btn ghost" type="button" disabled={!settings.imageRequestModelOverride} onClick={() => void patchSettings({ imageRequestModelOverride: undefined })} title={t("Remove the image model override")}>{t("Clear override")}</button></div>
       </section>}

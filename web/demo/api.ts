@@ -168,13 +168,30 @@ export function createDemoApi(now = Date.now(), workspace: "personal" | "owner" 
       if (path === "/admin/model-billing" || path.startsWith("/admin/model-billing/")) {
         return json({ error: "forbidden" }, 403);
       }
+      if (path === "/admin/model-aliases") {
+        // Member policies stay private; host aliases granted through the model
+        // configuration surface as models instead.
+        const memberId = fixtures.users[1]?.id;
+        return json({ modelAliases: fixtures.aliases.filter((alias) => alias.ownerId === memberId) });
+      }
       if (path === "/v1/models" || path === "/admin/dashboard/models") {
         const allowed = (fixtures.users[1]?.allowedModels ?? []).map((id) => id.replace(/^[^/]+\//, "").toLowerCase());
-        const data = allowed.length
-          ? fixtures.models.filter((model) => allowed.includes(model.id.replace(/^[^/]+\//, "").toLowerCase()))
-          : fixtures.models;
+        const own = fixtures.aliases
+          .filter((alias) => alias.ownerId === fixtures.users[1]?.id)
+          .map((alias) => alias.id.toLowerCase());
+        const data = fixtures.models.filter((model) => {
+          const key = model.id.replace(/^[^/]+\//, "").toLowerCase();
+          return own.includes(key) || !allowed.length || allowed.includes(key);
+        });
         return json({ object: "list", data });
       }
+    }
+    if (workspace !== "member" && (path === "/v1/models" || path === "/admin/dashboard/models")) {
+      // Member-owned policies are private models, never part of the host catalog.
+      const memberOwned = new Set(
+        fixtures.aliases.filter((alias) => alias.ownerId).map((alias) => alias.id),
+      );
+      return json({ object: "list", data: fixtures.models.filter((model) => !memberOwned.has(model.id)) });
     }
     if (Object.hasOwn(reads, path)) return json(reads[path]);
     if (path === "/admin/traces/export.zip") return json({ error: DEMO_READ_ONLY }, 403);

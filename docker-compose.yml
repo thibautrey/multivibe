@@ -25,6 +25,15 @@ services:
       - MULTIVIBE_MARKETPLACE_URL=${MULTIVIBE_MARKETPLACE_URL:-https://marketplace.multivibe.cloud}
       - MULTIVIBE_MARKETPLACE_SECRET_PATH=${MULTIVIBE_MARKETPLACE_SECRET_PATH:-/data/payments-credentials.json}
       - MULTIVIBE_MARKETPLACE_POLL_INTERVAL_MS=${MULTIVIBE_MARKETPLACE_POLL_INTERVAL_MS:-60000}
+      # Optional transactional email. Disabled unless MULTIVIBE_SMTP_ENABLED=true.
+      - MULTIVIBE_SMTP_ENABLED=${MULTIVIBE_SMTP_ENABLED:-false}
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_SECURE=${SMTP_SECURE:-false}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - "SMTP_FROM=${SMTP_FROM:-MultiVibe <no-reply@multivibe.cloud>}"
+      - SMTP_REPLY_TO=${SMTP_REPLY_TO:-}
       - STORE_PATH=/data/accounts.json
       - MODULES_PATH=/data/modules
       - OAUTH_STATE_PATH=/data/oauth-state.json

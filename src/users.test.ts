@@ -15,6 +15,7 @@ import {
   quotaWindows,
   rollUsagePeriod,
   rollUserWindows,
+  sessionPayload,
   signSession,
   verifyPassword,
   verifySession,
@@ -186,6 +187,25 @@ test("public user exposes quota, usage and the remaining credit without secrets"
   assert.equal((view.usage as Record<string, unknown>).grantedCostUsd, undefined);
   assert.equal(view.walletUsd, 4);
   assert.equal((view.quota as Record<string, unknown>).period, "month");
+});
+
+test("every sign-in payload names the role before the dashboard loads data", () => {
+  // Regression: sign-in used to return only `{ authenticated, user }`, so the
+  // dashboard treated a member as an admin, hit a 403, and reported the account
+  // as suspended right after a valid password or an accepted invite.
+  for (const role of ["member", "admin"] as const) {
+    const payload = sessionPayload(
+      makeUser({
+        role,
+        password: { algo: "scrypt", salt: "s", hash: "h", updatedAt: NOW },
+      }),
+    );
+    assert.equal(payload.authenticated, true);
+    assert.equal(payload.role, role);
+    assert.equal(payload.via, "session");
+    assert.equal(payload.user.role, role);
+    assert.equal((payload.user as unknown as Record<string, unknown>).password, undefined);
+  }
 });
 
 test("plans normalize rolling windows and ignore empty caps", () => {

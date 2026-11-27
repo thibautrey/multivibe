@@ -178,6 +178,7 @@ export function createMarketplaceApp(options: MarketplaceAppOptions): express.Ex
   <input id="currency" name="currency" value="EUR" maxlength="3">
   <label for="operatorToken">Jeton opérateur</label>
   <input id="operatorToken" name="operatorToken" type="password" required>
+  <p class="muted">Jeton fourni par la personne qui exploite la place de marché : valeur <code>MARKETPLACE_OPERATOR_TOKEN</code> de son fichier <code>.env</code>. Ce n'est pas le jeton d'administration de l'instance.</p>
   <button type="submit">Approuver</button>
 </form>
 <p class="muted">En production, cette page est protégée par l'identité MultiVibe Cloud de l'opérateur.</p>`,

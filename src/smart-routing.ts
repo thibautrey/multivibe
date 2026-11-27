@@ -47,6 +47,9 @@ export function migrateModelAlias(raw: ModelAlias | LegacyModelAlias | any): Mod
       id: String(raw.id ?? ""),
       enabled: raw.enabled !== false,
       description: typeof raw.description === "string" ? raw.description : undefined,
+      ...(typeof raw.ownerId === "string" && raw.ownerId.trim()
+        ? { ownerId: raw.ownerId.trim() }
+        : {}),
       defaults: raw.defaults,
       rules: raw.rules.map((rule: RoutingRule, index: number) => ({
         ...rule,
@@ -95,6 +98,9 @@ export function migrateModelAlias(raw: ModelAlias | LegacyModelAlias | any): Mod
     rules,
     enabled: raw?.enabled !== false,
     description: typeof raw?.description === "string" ? raw.description : undefined,
+    ...(typeof raw?.ownerId === "string" && raw.ownerId.trim()
+      ? { ownerId: raw.ownerId.trim() }
+      : {}),
   };
 }
 

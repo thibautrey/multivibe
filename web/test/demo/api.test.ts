@@ -72,6 +72,21 @@ test("demo invoice sources match configured billable providers and enforce the b
   assert.equal(createDemoApi(now, "billing")("GET", "/admin/invoices").status, 200);
 });
 
+test("demo member policies stay private while shared aliases remain models", () => {
+  const member = createDemoApi(now, "member");
+  const memberAliases = (member("GET", "/admin/model-aliases").body as any).modelAliases;
+  assert.deepEqual(memberAliases.map((alias: any) => alias.id), ["sam-fast"]);
+  const memberModels = (member("GET", "/v1/models").body as any).data.map((model: any) => model.id);
+  assert.ok(memberModels.includes("coding"), "a host alias shared through allowedModels is a model");
+  assert.ok(memberModels.includes("sam-fast"), "the member's own policy is a model for them");
+  assert.ok(!memberModels.includes("background"), "a host alias not granted to the member stays hidden");
+
+  const adminAliases = read("/admin/model-aliases").modelAliases.map((alias: any) => alias.id);
+  assert.deepEqual(adminAliases.sort(), ["background", "coding", "sam-fast"]);
+  const hostModels = read("/v1/models").data.map((model: any) => model.id);
+  assert.ok(!hostModels.includes("sam-fast"), "a member policy is not a host model");
+});
+
 test("demo member purchase history exposes the Stripe-hosted invoice only to members", () => {
   const member = createDemoApi(now, "member");
   const history = member("GET", "/admin/billing/history");

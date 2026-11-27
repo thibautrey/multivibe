@@ -237,6 +237,8 @@ const catalog: Record<string, string> = {
   "The marketplace has not approved this instance yet.": "La place de marché n’a pas encore approuvé cette instance.",
   "The marketplace request failed.": "La requête à la place de marché a échoué.",
   "The marketplace settings could not be loaded.": "Les paramètres de la place de marché n’ont pas pu être chargés.",
+  "The enrollment link opens the marketplace's /enroll page, which asks for its operator token: the MARKETPLACE_OPERATOR_TOKEN value in services/marketplace/.env on the host that runs the marketplace. It is not an instance admin token.": "Le lien d’enrôlement ouvre la page /enroll de la place de marché, qui demande son jeton opérateur : la valeur MARKETPLACE_OPERATOR_TOKEN dans services/marketplace/.env sur l’hôte qui exécute la place de marché. Ce n’est pas un jeton d’administration d’instance.",
+  "Where do I find it? ↗": "Où le trouver ? ↗",
   "This instance is disconnected. Members can no longer buy credit.": "Cette instance est déconnectée. Les membres ne peuvent plus acheter de crédit.",
   "This instance is not enrolled": "Cette instance n’est pas enrôlée",
   "This instance is now connected to the marketplace.": "Cette instance est maintenant connectée à la place de marché.",
@@ -244,6 +246,37 @@ const catalog: Record<string, string> = {
   "{count} paid checkouts": "{count} paiements validés",
   "The Stripe onboarding link expired. Start a new one from Connect Stripe.": "Le lien d’intégration Stripe a expiré. Relancez-en un avec « Connecter Stripe ».",
   "Stripe onboarding finished. Refresh the status to see the new capabilities.": "L’intégration Stripe est terminée. Actualisez le statut pour voir les nouvelles capacités.",
+  "Add user": "Ajouter un utilisateur",
+  "Create the first account with the Add user button. The admin token still works as a fallback.":
+    "Créez le premier compte avec le bouton Ajouter un utilisateur. Le jeton d’administration fonctionne toujours comme solution de repli.",
+  "Manage {email}": "Gérer {email}",
+  "User sections": "Sections de l’utilisateur",
+  "Identity": "Identité",
+  "Quota & plan": "Quota et offre",
+  "Models & access": "Modèles et accès",
+  "Credits": "Crédits",
+  "Invitation": "Invitation",
+  "Usage quota": "Quota d’utilisation",
+  "Caps apply per period. Leave a cap blank for unlimited.":
+    "Les plafonds s’appliquent par période. Laissez un plafond vide pour un usage illimité.",
+  "One-off credit added on top of the current period allowance.":
+    "Crédit ponctuel ajouté en plus de l’allocation de la période en cours.",
+  "No credit movements yet.": "Aucun mouvement de crédit pour l’instant.",
+  "Invitation link": "Lien d’invitation",
+  "The invitation link is single-use and is only displayed when it is generated. Generating a new link invalidates the previous one.":
+    "Le lien d’invitation est à usage unique et ne s’affiche qu’au moment où il est généré. Générer un nouveau lien invalide le précédent.",
+  "No pending invite": "Aucune invitation en attente",
+  "Expires {date}.": "Expire le {date}.",
+  "Generate invite link": "Générer le lien d’invitation",
+  "Regenerate invite link": "Régénérer le lien d’invitation",
+  "No link generated in this session. Generate one to display it here.":
+    "Aucun lien généré dans cette session. Générez-en un pour l’afficher ici.",
+  "Invite": "Inviter",
+  "Manage invitation for {email}": "Gérer l’invitation de {email}",
+  "User created": "Utilisateur créé",
+  "Send the invitation link": "Envoyer le lien d’invitation",
+  "This link is single-use: it stops working once {email} sets a password.":
+    "Ce lien est à usage unique : il cesse de fonctionner dès que {email} définit un mot de passe.",
 };
 
 export default catalog;
