@@ -314,6 +314,15 @@ export type StoreSettings = {
   };
 };
 
+export type StoredProxyApiKeyCloudflareAccess = {
+  accountId: string;
+  applicationId: string;
+  policyId?: string;
+  serviceTokenId: string;
+  clientId: string;
+  expiresAt?: string;
+};
+
 export type StoredProxyApiKey = {
   id: string;
   application: string;
@@ -324,6 +333,8 @@ export type StoredProxyApiKey = {
     id: string;
     name?: string;
   };
+  /** Cloudflare Access service token provisioned with this key, if opted in. */
+  cloudflareAccess?: StoredProxyApiKeyCloudflareAccess;
 };
 
 export type ApplicationWebhook = {

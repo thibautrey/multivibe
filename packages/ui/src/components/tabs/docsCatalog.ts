@@ -618,6 +618,11 @@ export const ENDPOINTS: ApiEndpoint[] = [
     responseExample: json({
       ok: true,
       oauthRedirectUri: "https://proxy.example/auth/callback",
+      cloudflareAccess: {
+        provisioningEnabled: false,
+        configured: false,
+        applications: [],
+      },
       storage: { persistenceLikelyEnabled: true },
     }),
   },

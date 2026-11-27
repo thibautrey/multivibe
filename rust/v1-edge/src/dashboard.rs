@@ -387,6 +387,9 @@ pub(super) async fn proxy_api_keys(state: &EdgeState, headers: HeaderMap) -> Res
         if let Some(created_at) = entry.created_at {
             value["createdAt"] = json!(created_at);
         }
+        if let Some(cloudflare_access) = &entry.cloudflare_access {
+            value["cloudflareAccess"] = cloudflare_access.clone();
+        }
         value
     }));
 
@@ -399,13 +402,26 @@ pub(super) async fn proxy_api_keys(state: &EdgeState, headers: HeaderMap) -> Res
             })
             .collect::<HashMap<_, _>>();
         for entry in &mut entries {
-            let Some(id) = entry.get("id").and_then(Value::as_str) else {
+            let Some(id) = entry
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+            else {
                 continue;
             };
             if let Some(last_used_at) =
-                remote.get(id).and_then(|value| value.get("lastUsedAt"))
+                remote.get(&id).and_then(|value| value.get("lastUsedAt"))
             {
                 entry["lastUsedAt"] = last_used_at.clone();
+            }
+            // The control plane owns the Cloudflare Access association. Carry
+            // it through so the dashboard can show the linked token and warn
+            // before revoking it, even when the edge snapshot is older.
+            if let Some(cloudflare_access) = remote
+                .get(&id)
+                .and_then(|value| value.get("cloudflareAccess"))
+            {
+                entry["cloudflareAccess"] = cloudflare_access.clone();
             }
         }
         // Keep control-plane keys the edge snapshot does not know about yet

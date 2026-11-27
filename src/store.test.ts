@@ -110,6 +110,42 @@ test("dashboard API keys are persisted and can be revoked", async () => {
   await fs.rm(directory, { recursive: true, force: true });
 });
 
+test("Cloudflare Access metadata survives a reload and is found before revocation", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-store-"));
+  const filePath = path.join(directory, "accounts.json");
+  const store = new AccountStore(filePath);
+  await store.init();
+
+  const cloudflareAccess = {
+    accountId: "0123456789abcdef0123456789abcdef",
+    applicationId: "access-app-id",
+    policyId: "policy-id",
+    serviceTokenId: "token-id",
+    clientId: "client-id.access",
+    expiresAt: "2027-01-01T00:00:00Z",
+  };
+  await store.addProxyApiKey({
+    id: "key-cf",
+    application: "staging-worker",
+    key: "mv_secret",
+    createdAt: 1_700_000_000_000,
+    cloudflareAccess,
+  });
+
+  const reloaded = new AccountStore(filePath);
+  await reloaded.init();
+  assert.deepEqual(await reloaded.findProxyApiKey("key-cf"), {
+    id: "key-cf",
+    application: "staging-worker",
+    key: "mv_secret",
+    createdAt: 1_700_000_000_000,
+    cloudflareAccess,
+  });
+  assert.equal(await reloaded.findProxyApiKey("missing"), undefined);
+
+  await fs.rm(directory, { recursive: true, force: true });
+});
+
 test("an admission share survives the round trip the edge reads", async () => {
   // The admin API writes these fields and the Rust edge reads them from the same
   // file. A silent drop on either side would leave the fair share at its default

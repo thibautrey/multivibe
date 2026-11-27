@@ -89,7 +89,14 @@ import {
   MULTIVIBE_CLOUD_REDIRECT_URI,
   MULTIVIBE_CLOUD_PRIVACY_MODE,
   MULTIVIBE_CONFIDENTIAL_INFERENCE_TRUST_POLICY,
+  CLOUDFLARE_ACCESS_APPS,
+  CLOUDFLARE_ACCESS_APPS_ERROR,
+  CLOUDFLARE_ACCESS_PROVISIONING,
+  CLOUDFLARE_ACCESS_TOKEN_DURATION,
+  CLOUDFLARE_ACCOUNT_ID,
+  CLOUDFLARE_API_TOKEN,
 } from "./config.js";
+import { createCloudflareAccessProvisioner } from "./cloudflare-access.js";
 import { ModuleManager } from "./module-manager.js";
 import { createBodyParserMiddleware } from "./middleware/decompression.js";
 import http from "node:http";
@@ -465,6 +472,22 @@ app.use(
 
 const liveModelCatalog = new LiveModelCatalog({ cachePath: SDK_LIVE_MODEL_CACHE_PATH });
 
+// Minting service tokens delegates real access to the Cloudflare API, so it is
+// opt-in, requires an admin boundary, and never runs implicitly for a key.
+const cloudflareAccess = CLOUDFLARE_ACCESS_PROVISIONING
+  ? createCloudflareAccessProvisioner({
+      enabled: true,
+      apiToken: CLOUDFLARE_API_TOKEN,
+      defaultAccountId: CLOUDFLARE_ACCOUNT_ID,
+      tokenDuration: CLOUDFLARE_ACCESS_TOKEN_DURATION,
+      applications: CLOUDFLARE_ACCESS_APPS,
+      error:
+        CLOUDFLARE_ACCESS_APPS_ERROR ??
+        (!ADMIN_TOKEN || ADMIN_TOKEN === "change-me"
+          ? "ADMIN_TOKEN must be set to a non-placeholder value before Cloudflare Access provisioning can be enabled."
+          : undefined),
+    })
+  : undefined;
 
 const adminRouter = createAdminRouter({
   store,
@@ -495,6 +518,7 @@ const adminRouter = createAdminRouter({
   appVersion,
   liveModelCatalog,
   modelsDevCatalog,
+  cloudflareAccess,
   storagePaths: {
     accountsPath: STORE_PATH,
     oauthStatePath: OAUTH_STATE_PATH,

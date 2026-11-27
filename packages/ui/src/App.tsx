@@ -237,6 +237,12 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   const [releaseModalVersion, setReleaseModalVersion] = useState<string | null>(null);
   const [usageCacheTtlMs, setUsageCacheTtlMs] = useState(300_000);
   const [oauthRedirectUri, setOauthRedirectUri] = useState("");
+  const [cloudflareAccess, setCloudflareAccess] = useState<{
+    provisioningEnabled: boolean;
+    configured: boolean;
+    applications: string[];
+    error?: string;
+  }>({ provisioningEnabled: false, configured: false, applications: [] });
   const [error, setError] = useState("");
   const [expandedTraceId, setExpandedTraceId] = useState<string | null>(null);
   const [expandedTrace, setExpandedTrace] = useState<Trace | null>(null);
@@ -537,6 +543,19 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
       setUsageCacheTtlMs(Number(cfg.usageCacheTtlMs));
     }
     setOauthRedirectUri(String(cfg.oauthRedirectUri ?? ""));
+    const cloudflareConfig = cfg.cloudflareAccess;
+    if (cloudflareConfig && typeof cloudflareConfig === "object") {
+      setCloudflareAccess({
+        provisioningEnabled: Boolean(cloudflareConfig.provisioningEnabled),
+        configured: Boolean(cloudflareConfig.configured),
+        applications: Array.isArray(cloudflareConfig.applications)
+          ? cloudflareConfig.applications.map(String)
+          : [],
+        ...(typeof cloudflareConfig.error === "string" && cloudflareConfig.error
+          ? { error: cloudflareConfig.error }
+          : {}),
+      });
+    }
     setModels((mdl.data ?? []) as ExposedModel[]);
     setAliases((aliasRes.modelAliases ?? []) as ModelAlias[]);
     setSettings((settingsRes.settings ?? {}) as StoreSettings);
@@ -1103,8 +1122,15 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   };
 
   const deleteProxyApiKey = async (id: string) => {
-    await api(`proxy-api-keys/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const result = (await api(`proxy-api-keys/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    })) as { warning?: unknown } | undefined;
     await loadBase();
+    // Revocation can succeed while leaving Cloudflare cleanup incomplete; the
+    // operator needs to know before assuming the credential is fully gone.
+    if (typeof result?.warning === "string" && result.warning) {
+      window.alert(result.warning);
+    }
   };
 
   const setApplicationWeight = async (application: string, fairnessWeight: number) => {
@@ -1613,6 +1639,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
             extensions={apiKeyExtensions}
             apiKeys={proxyApiKeys}
             policies={applicationPolicies}
+            cloudflareAccess={cloudflareAccess}
             createApiKey={createProxyApiKey}
             deleteApiKey={deleteProxyApiKey}
             setApplicationWeight={setApplicationWeight}

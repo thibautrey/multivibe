@@ -66,6 +66,13 @@ services:
       - EXCLUDED_PROVIDER_MODELS=openai-compatible:gpt-5.5,mistral:mistral-medium-latest
       - ADMIN_TOKEN=${ADMIN_TOKEN:-change-me}
       - PROXY_API_KEY=${PROXY_API_KEY:-}
+      # Optional: let the admin mint/revoke Cloudflare Access service tokens
+      # with dashboard API keys. Disabled unless explicitly opted in.
+      - CLOUDFLARE_ACCESS_PROVISIONING=${CLOUDFLARE_ACCESS_PROVISIONING:-false}
+      - CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:-}
+      - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:-}
+      - CLOUDFLARE_ACCESS_APPS=${CLOUDFLARE_ACCESS_APPS:-}
+      - CLOUDFLARE_ACCESS_TOKEN_DURATION=${CLOUDFLARE_ACCESS_TOKEN_DURATION:-8760h}
       - CLAUDE_CODE_MODEL=${CLAUDE_CODE_MODEL:-gpt-5.6-luna}
       - CLAUDE_CODE_FAST_MODEL=${CLAUDE_CODE_FAST_MODEL:-gpt-5.4-mini}
       - OAUTH_CLIENT_ID=app_EMoamEEZ73f0CkXaXp7hrann

@@ -1,5 +1,9 @@
 import os from "node:os";
 import path from "node:path";
+import {
+  DEFAULT_TOKEN_DURATION,
+  parseCloudflareAccessApplications,
+} from "./cloudflare-access.js";
 
 function finiteAtLeast(
   value: string | undefined,
@@ -234,6 +238,21 @@ export const INFERENCE_IDEMPOTENCY_MAX_RESPONSE_BYTES = finiteAtLeast(
 );
 export const PROXY_API_KEY = process.env.PROXY_API_KEY ?? "";
 export const PROXY_API_KEYS = process.env.PROXY_API_KEYS ?? "";
+/** Opt-in: only an explicit "true" lets the admin mint Access credentials. */
+export const CLOUDFLARE_ACCESS_PROVISIONING =
+  (process.env.CLOUDFLARE_ACCESS_PROVISIONING ?? "").trim().toLowerCase() ===
+  "true";
+export const CLOUDFLARE_ACCOUNT_ID =
+  process.env.CLOUDFLARE_ACCOUNT_ID?.trim() || undefined;
+export const CLOUDFLARE_API_TOKEN =
+  process.env.CLOUDFLARE_API_TOKEN?.trim() || undefined;
+export const CLOUDFLARE_ACCESS_TOKEN_DURATION =
+  process.env.CLOUDFLARE_ACCESS_TOKEN_DURATION?.trim() || DEFAULT_TOKEN_DURATION;
+const cloudflareAccessApps = parseCloudflareAccessApplications(
+  process.env.CLOUDFLARE_ACCESS_APPS,
+);
+export const CLOUDFLARE_ACCESS_APPS = cloudflareAccessApps.applications;
+export const CLOUDFLARE_ACCESS_APPS_ERROR = cloudflareAccessApps.error;
 export const CLAUDE_CODE_MODEL =
   process.env.CLAUDE_CODE_MODEL ?? "gpt-5.6-luna";
 export const CLAUDE_CODE_FAST_MODEL =

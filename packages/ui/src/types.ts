@@ -576,6 +576,14 @@ export type MarketplaceModule = {
   manifest: NonNullable<ModuleView["manifest"]>;
 };
 
+export type ProxyApiKeyCloudflareAccess = {
+  applicationId: string;
+  clientId: string;
+  serviceTokenId: string;
+  policyId?: string;
+  expiresAt?: string;
+};
+
 export type ProxyApiKey = {
   scopes?: string[];
   expiresAt?: string | null;
@@ -586,11 +594,13 @@ export type ProxyApiKey = {
   createdAt?: number;
   lastUsedAt?: number;
   source: "dashboard" | "environment";
+  cloudflareAccess?: ProxyApiKeyCloudflareAccess;
 };
 
 export type CreatedProxyApiKey = ProxyApiKey & {
   warning?: string;
   key: string;
+  cloudflareAccess?: ProxyApiKeyCloudflareAccess & { clientSecret: string };
 };
 
 export type HostHarness = {

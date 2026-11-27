@@ -174,3 +174,8 @@ The enrollment gap is the real blocker: a machine must exchange its code *before
 it holds any token, so that one path cannot be gated by the same policy. The code
 is complete; the Access configuration described above has not been verified as
 applied.
+
+For dashboard API keys, the admin can optionally mint and revoke a service token
+with the key itself. That flow, its environment variables and its failure
+semantics are documented in
+[`docs/proxy-api-keys-cloudflare-access.md`](proxy-api-keys-cloudflare-access.md).

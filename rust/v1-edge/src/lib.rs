@@ -707,6 +707,11 @@ pub struct StoredProxyApiKey {
     pub application: String,
     pub key: String,
     pub created_at: Option<u64>,
+    /// Opaque Cloudflare Access metadata; the control plane owns its schema.
+    /// Keeping it here prevents an edge rewrite from dropping the identifiers
+    /// needed to revoke the service token later.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloudflare_access: Option<Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -943,6 +948,7 @@ impl AccountStore {
             application: application.to_owned(),
             key: key.to_owned(),
             created_at: Some(now_ms()),
+            cloudflare_access: None,
         });
         if !data
             .application_policies
@@ -19163,6 +19169,7 @@ mod tests {
             application: "harness-opencode".to_owned(),
             key: "mv_stored_key_value_1234".to_owned(),
             created_at: Some(1_788_803_484_000),
+            cloudflare_access: None,
         });
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -19183,6 +19190,41 @@ mod tests {
         let anonymous = authorize(&HeaderMap::new(), "/v1/responses", &open, &bare_config).unwrap();
         assert_eq!(anonymous.application, "default");
         assert!(anonymous.api_key.is_none());
+    }
+
+    #[test]
+    fn cloudflare_access_metadata_survives_an_edge_store_rewrite() {
+        let mut store = StoreFile::default();
+        store.proxy_api_keys.push(StoredProxyApiKey {
+            id: "managed-key".to_owned(),
+            application: "desktop".to_owned(),
+            key: "mv_managed_secret_1234".to_owned(),
+            created_at: Some(1_788_803_484_000),
+            cloudflare_access: Some(json!({
+                "applicationId": "access-app-id",
+                "clientId": "client.access",
+                "serviceTokenId": "token-id"
+            })),
+        });
+
+        let serialized = serde_json::to_string(&store).unwrap();
+        let parsed: StoreFile = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(
+            parsed.proxy_api_keys[0].cloudflare_access.as_ref().unwrap()
+                ["clientId"],
+            "client.access"
+        );
+
+        // Keys created without the opt-in remain byte-compatible.
+        let plain = serde_json::to_value(StoredProxyApiKey {
+            id: "plain".to_owned(),
+            application: "desktop".to_owned(),
+            key: "mv_plain_secret_1234".to_owned(),
+            created_at: None,
+            cloudflare_access: None,
+        })
+        .unwrap();
+        assert!(plain.get("cloudflareAccess").is_none());
     }
 
     #[test]
@@ -26480,7 +26522,8 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                         StatusCode::OK,
                         json!({"proxyApiKeys": [
                             {"id": "configured:environment-app", "lastUsedAt": 1_788_803_486_000_u64},
-                            {"id": "managed-key", "lastUsedAt": 1_788_803_487_000_u64}
+                            {"id": "managed-key", "lastUsedAt": 1_788_803_487_000_u64,
+                             "cloudflareAccess": {"applicationId": "access-app-id", "clientId": "client.access", "serviceTokenId": "token-id"}}
                         ]})
                         .to_string(),
                     );
@@ -26498,6 +26541,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 application: "desktop".to_owned(),
                 key: "mv_managed_secret_1234".to_owned(),
                 created_at: Some(1_788_803_484_000),
+                cloudflare_access: None,
             }],
             application_policies: vec![ApplicationPolicy {
                 application: "desktop".to_owned(),
@@ -26625,6 +26669,12 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         assert_eq!(
             keys["proxyApiKeys"][1]["lastUsedAt"],
             1_788_803_487_000_u64
+        );
+        // The Cloudflare Access association must survive the edge merge so the
+        // dashboard can show and revoke the linked service token.
+        assert_eq!(
+            keys["proxyApiKeys"][1]["cloudflareAccess"]["clientId"],
+            "client.access"
         );
         let keys_json = keys.to_string();
         assert!(!keys_json.contains("mv_environment_secret_5678"));

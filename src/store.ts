@@ -648,6 +648,19 @@ export class AccountStore {
     return this.getCachedProxyApiKeys();
   }
 
+  /**
+   * Reads a key after adopting anything the Rust edge wrote to disk, so a
+   * revocation never deletes the local entry without first seeing the
+   * Cloudflare metadata attached to it.
+   */
+  async findProxyApiKey(id: string): Promise<StoredProxyApiKey | undefined> {
+    await withStoreLock(this.filePath, async () => {
+      await this.mergeUnmanagedCollections();
+    });
+    const entry = this.inMemoryProxyApiKeys.find((candidate) => candidate.id === id);
+    return entry ? { ...entry } : undefined;
+  }
+
   async addProxyApiKey(entry: StoredProxyApiKey): Promise<StoredProxyApiKey> {
     // A re-created application owns its identity again; clear any tombstone so
     // the merge path does not filter it back out.

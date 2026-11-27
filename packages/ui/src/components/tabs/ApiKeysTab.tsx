@@ -16,10 +16,17 @@ export type ApiKeyExtensions = {
   renderCreatedKeyMetadata?: (key: CreatedProxyApiKey) => React.ReactNode;
   emptyDescription?: string;
 };
+export type CloudflareAccessConfig = {
+  provisioningEnabled: boolean;
+  configured: boolean;
+  applications: string[];
+  error?: string;
+};
 type Props = {
   extensions?: ApiKeyExtensions;
   apiKeys: ProxyApiKey[];
   policies: ApplicationPolicy[];
+  cloudflareAccess?: CloudflareAccessConfig;
   createApiKey: (application: string, extras?: Record<string, unknown>) => Promise<CreatedProxyApiKey>;
   deleteApiKey: (id: string) => Promise<void>;
   setApplicationWeight: (application: string, weight: number) => Promise<void>;
@@ -31,6 +38,7 @@ type Props = {
 export function ApiKeysTab({
   apiKeys,
   policies,
+  cloudflareAccess,
   createApiKey,
   deleteApiKey,
   setApplicationWeight,
@@ -48,6 +56,7 @@ export function ApiKeysTab({
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [createdKey, setCreatedKey] = useState<CreatedProxyApiKey | null>(null);
   const [copied, setCopied] = useState(false);
+  const [cloudflareCopied, setCloudflareCopied] = useState(false);
   const [webhookApplication, setWebhookApplication] = useState("");
   const [webhookUrl, setWebhookUrl] = useState("");
   const [createdWebhook, setCreatedWebhook] = useState<ApplicationWebhook | null>(null);
@@ -66,18 +75,29 @@ export function ApiKeysTab({
     setIsCreating(true);
     setError("");
     try {
-      const result = await createApiKey(name, extraFields);
+      const extras = { ...extraFields };
+      if (
+        extras.provisionCloudflareAccess === true &&
+        !cloudflareAccess?.applications.includes(name)
+      ) {
+        delete extras.provisionCloudflareAccess;
+      }
+      const result = await createApiKey(name, extras);
       setCreatedKey(result);
       setApplication("");
       setExtraFields({});
       setCopied(false);
+      setCloudflareCopied(false);
     } catch (error) { showError(error); } finally {
       setIsCreating(false);
     }
   };
 
   const revoke = async (entry: ProxyApiKey) => {
-    if (!confirm(`Revoke the API key for ${entry.application}? Clients using it will immediately lose access.`)) return;
+    const linked = entry.cloudflareAccess
+      ? ` This also deletes its Cloudflare Access service token (${entry.cloudflareAccess.clientId}).`
+      : "";
+    if (!confirm(`Revoke the API key for ${entry.application}? Clients using it will immediately lose access.${linked}`)) return;
     setDeletingId(entry.id);
     setError("");
     try {
@@ -92,6 +112,23 @@ export function ApiKeysTab({
     await copyTextToClipboard(createdKey.key);
     setCopied(true);
   };
+
+  const copyCloudflareCredentials = async () => {
+    const credential = createdKey?.cloudflareAccess;
+    if (!credential) return;
+    await copyTextToClipboard(
+      `CF-Access-Client-Id: ${credential.clientId}\nCF-Access-Client-Secret: ${credential.clientSecret}`,
+    );
+    setCloudflareCopied(true);
+  };
+
+  const cloudflareMapped = Boolean(
+    application.trim() &&
+      cloudflareAccess?.applications.includes(application.trim()),
+  );
+  const showCloudflareField = Boolean(
+    cloudflareAccess?.provisioningEnabled || cloudflareAccess?.error,
+  );
 
   return (
     <>
@@ -117,6 +154,33 @@ export function ApiKeysTab({
             />
           </label>
           {extensions?.renderCreateFields?.({value:extraFields,onChange:setExtraFields})}
+          {showCloudflareField && (
+            <label className="inline">
+              <input
+                type="checkbox"
+                checked={cloudflareMapped && extraFields.provisionCloudflareAccess === true}
+                disabled={!cloudflareAccess?.configured || !cloudflareMapped}
+                onChange={(event) =>
+                  setExtraFields((current) => ({
+                    ...current,
+                    provisionCloudflareAccess: event.target.checked,
+                  }))
+                }
+              />
+              <span>
+                Also create a Cloudflare Access service token
+                <small className="muted">
+                  {cloudflareAccess?.error
+                    ? ` — ${cloudflareAccess.error}`
+                    : !cloudflareAccess?.configured
+                      ? " — Cloudflare Access provisioning is not configured."
+                      : application.trim() && !cloudflareMapped
+                        ? ` — No Access application is mapped for “${application.trim()}”.`
+                        : " — One token per key, scoped to the mapped application."}
+                </small>
+              </span>
+            </label>
+          )}
           <button className="btn" type="submit" disabled={isCreating || !application.trim()}>
             {isCreating ? "Creating..." : "Create secret key"}
           </button>
@@ -150,7 +214,21 @@ export function ApiKeysTab({
             <tbody>
               {apiKeys.map((entry) => (
                 <tr key={entry.id}>
-                  <td><strong>{entry.application}</strong>{extensions?.renderKeyMetadata?.(entry)}</td>
+                  <td>
+                    <strong>{entry.application}</strong>
+                    {entry.cloudflareAccess && (
+                      <div className="muted" style={{ fontSize: 11 }}>
+                        <span
+                          className="badge"
+                          title={`Cloudflare Access application ${entry.cloudflareAccess.applicationId}`}
+                        >
+                          Cloudflare Access
+                        </span>{" "}
+                        <span className="mono">{entry.cloudflareAccess.clientId}</span>
+                      </div>
+                    )}
+                    {extensions?.renderKeyMetadata?.(entry)}
+                  </td>
                   <td className="mono">{entry.keyPreview}</td>
                   <td>{entry.createdAt ? new Date(entry.createdAt).toLocaleDateString() : "—"}</td>
                   <td>{entry.lastUsedAt ? new Date(entry.lastUsedAt).toLocaleString() : "—"}</td>
@@ -249,6 +327,31 @@ export function ApiKeysTab({
                 {copied ? "Copied" : "Copy"}
               </button>
             </div>
+            {createdKey.cloudflareAccess && (
+              <div>
+                <span className="badge">Cloudflare Access</span>
+                <p className="muted">
+                  Service token for application{" "}
+                  <strong className="mono">{createdKey.cloudflareAccess.applicationId}</strong>.
+                  The client secret is shown only once.
+                  {createdKey.cloudflareAccess.expiresAt
+                    ? ` Expires ${new Date(createdKey.cloudflareAccess.expiresAt).toLocaleDateString()}.`
+                    : ""}
+                </p>
+                <div className="api-key-secret">
+                  <code>CF-Access-Client-Id: {createdKey.cloudflareAccess.clientId}</code>
+                </div>
+                <div className="api-key-secret">
+                  <code>CF-Access-Client-Secret: {createdKey.cloudflareAccess.clientSecret}</code>
+                </div>
+                <button
+                  className="btn secondary"
+                  onClick={() => void copyCloudflareCredentials()}
+                >
+                  {cloudflareCopied ? "Copied" : "Copy both headers"}
+                </button>
+              </div>
+            )}
             <div className="inline wrap">
               <button className="btn" onClick={() => setCreatedKey(null)}>I have saved this key</button>
             </div>

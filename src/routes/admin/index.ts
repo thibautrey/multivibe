@@ -27,7 +27,10 @@ import type {
   ApplicationPolicy,
   UpstreamMode,
   StoreSettings,
+  StoredProxyApiKey,
+  StoredProxyApiKeyCloudflareAccess,
 } from "../../types.js";
+import type { CloudflareAccessProvisioner } from "../../cloudflare-access.js";
 import type { AnonymousUsageSharingController } from "../../anonymous-usage-sharing.js";
 import {
   isUsageRefreshNeeded,
@@ -160,11 +163,27 @@ export type AdminRoutesOptions = {
   appVersion?: string;
   liveModelCatalog?: LiveModelCatalogSource;
   modelsDevCatalog?: ModelsDevCatalog;
+  /** Present only when the operator opted into Cloudflare Access provisioning. */
+  cloudflareAccess?: CloudflareAccessProvisioner;
 };
 
 function proxyApiKeyPreview(key: string): string {
   if (key.length <= 12) return `${key.slice(0, 4)}••••`;
   return `${key.slice(0, 8)}••••${key.slice(-4)}`;
+}
+
+function publicCloudflareAccess(credential: StoredProxyApiKeyCloudflareAccess) {
+  return {
+    applicationId: credential.applicationId,
+    clientId: credential.clientId,
+    serviceTokenId: credential.serviceTokenId,
+    ...(credential.policyId ? { policyId: credential.policyId } : {}),
+    ...(credential.expiresAt ? { expiresAt: credential.expiresAt } : {}),
+  };
+}
+
+function cloudflareAccessMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function normalizeApplicationName(value: unknown): string | null {
@@ -1110,6 +1129,9 @@ export function createAdminRouter(options: AdminRoutesOptions) {
           createdAt: entry.createdAt,
           lastUsedAt: lastUsedAt.get(entry.id),
           source: "dashboard" as const,
+          ...(entry.cloudflareAccess
+            ? { cloudflareAccess: publicCloudflareAccess(entry.cloudflareAccess) }
+            : {}),
         })),
       ],
     });
@@ -1122,6 +1144,32 @@ export function createAdminRouter(options: AdminRoutesOptions) {
         error: "application must contain only letters, numbers, dots, underscores, or hyphens",
       });
     }
+    // Provisioning is strictly opt-in per key. A missing flag keeps the exact
+    // pre-existing behaviour, even when the operator enabled the feature.
+    const provisionCloudflareAccess =
+      req.body?.provisionCloudflareAccess === true;
+    if (provisionCloudflareAccess) {
+      const capability = options.cloudflareAccess?.describe();
+      if (!options.cloudflareAccess || !capability?.provisioningEnabled) {
+        return res.status(503).json({
+          error:
+            capability?.error ??
+            "Cloudflare Access provisioning is disabled. Set CLOUDFLARE_ACCESS_PROVISIONING=true to enable it.",
+        });
+      }
+      if (!capability.configured) {
+        return res.status(503).json({
+          error:
+            capability.error ??
+            "Cloudflare Access provisioning is not configured.",
+        });
+      }
+      if (!options.cloudflareAccess.canManage(application)) {
+        return res.status(400).json({
+          error: `No Cloudflare Access application is mapped for "${application}" in CLOUDFLARE_ACCESS_APPS.`,
+        });
+      }
+    }
     const existing = [
       ...configuredProxyApiKeys,
       ...store.getCachedProxyApiKeys(),
@@ -1129,13 +1177,39 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     if (existing.some((entry) => entry.application === application)) {
       return res.status(409).json({ error: "An API key already exists for this application" });
     }
-    const entry = {
+    const entry: StoredProxyApiKey = {
       id: randomUUID(),
       application,
       key: `mv_${randomBytes(32).toString("base64url")}`,
       createdAt: Date.now(),
     };
-    await store.addProxyApiKey(entry);
+    let clientSecret: string | undefined;
+    if (provisionCloudflareAccess) {
+      try {
+        const provisioned = await options.cloudflareAccess!.provision(
+          application,
+          `multivibe-${application}-${entry.id}`,
+        );
+        entry.cloudflareAccess = provisioned.credential;
+        clientSecret = provisioned.clientSecret;
+      } catch (error) {
+        return res.status(502).json({
+          error: `Cloudflare Access provisioning failed: ${cloudflareAccessMessage(error)}`,
+        });
+      }
+    }
+    try {
+      await store.addProxyApiKey(entry);
+    } catch (error) {
+      // Never leave a live Cloudflare credential behind a key that was not
+      // persisted, otherwise the operator has no surface left to revoke it.
+      if (entry.cloudflareAccess) {
+        await options.cloudflareAccess
+          ?.revoke(entry.cloudflareAccess)
+          .catch(() => undefined);
+      }
+      throw error;
+    }
     res.status(201).json({
       proxyApiKey: {
         id: entry.id,
@@ -1144,14 +1218,58 @@ export function createAdminRouter(options: AdminRoutesOptions) {
         keyPreview: proxyApiKeyPreview(entry.key),
         createdAt: entry.createdAt,
         source: "dashboard",
+        ...(entry.cloudflareAccess
+          ? {
+              cloudflareAccess: {
+                ...publicCloudflareAccess(entry.cloudflareAccess),
+                clientSecret,
+              },
+            }
+          : {}),
       },
     });
   });
 
   router.delete("/proxy-api-keys/:id", async (req, res) => {
-    const deleted = await store.deleteProxyApiKey(String(req.params.id));
+    const id = String(req.params.id);
+    const entry =
+      typeof store.findProxyApiKey === "function"
+        ? await store.findProxyApiKey(id)
+        : store.getCachedProxyApiKeys().find((candidate) => candidate.id === id);
+    let warning: string | undefined;
+    if (entry?.cloudflareAccess) {
+      const provisioner = options.cloudflareAccess;
+      const capability = provisioner?.describe();
+      if (!provisioner || !capability?.provisioningEnabled || !capability.configured) {
+        const force =
+          req.query.force === "1" || req.query.force === "true";
+        if (!force) {
+          const reason = capability?.error
+            ? `Cloudflare Access provisioning is unavailable: ${capability.error}`
+            : "Cloudflare Access provisioning is disabled.";
+          return res.status(503).json({
+            error: `${reason} This API key is linked to a Cloudflare Access service token. Fix the configuration to revoke the token, or delete it in Cloudflare and retry with ?force=true to remove only the local key.`,
+          });
+        }
+        warning =
+          "The local key was deleted without revoking its Cloudflare Access service token. Delete that token in Cloudflare if it is still active.";
+      } else {
+        try {
+          const result = await provisioner.revoke(entry.cloudflareAccess);
+          if (!result.policyDeleted) {
+            warning =
+              "The Cloudflare service token was deleted, but its Access policy could not be cleaned up.";
+          }
+        } catch (error) {
+          return res.status(502).json({
+            error: `Cloudflare Access revocation failed: ${cloudflareAccessMessage(error)}. The local key was kept so access is not silently left valid.`,
+          });
+        }
+      }
+    }
+    const deleted = await store.deleteProxyApiKey(id);
     if (!deleted) return res.status(404).json({ error: "API key not found" });
-    res.json({ ok: true });
+    res.json({ ok: true, ...(warning ? { warning } : {}) });
   });
 
   router.get("/application-policies", (_req, res) => {
@@ -1274,6 +1392,12 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       xaiAuthPath: XAI_AUTH_PATH,
       usageCacheTtlMs: USAGE_CACHE_TTL_MS,
       usageRefreshIntervalMs: USAGE_REFRESH_INTERVAL_MS,
+      cloudflareAccess:
+        options.cloudflareAccess?.describe() ?? {
+          provisioningEnabled: false,
+          configured: false,
+          applications: [],
+        },
       storage: {
         accountsPath: storagePaths.accountsPath,
         oauthStatePath: storagePaths.oauthStatePath,
