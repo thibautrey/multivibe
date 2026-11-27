@@ -36,3 +36,11 @@ services:
       options:
         max-size: 10m
         max-file: "2"
+
+# A fixed subnet keeps the broker startable on hosts whose default Docker
+# address pools are exhausted (Unraid here, with dozens of projects).
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 10.248.88.0/24
