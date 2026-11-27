@@ -345,8 +345,16 @@ export const MODEL_NOT_FOUND_BLOCK_DURATION_MS = Math.max(
 );
 
 // --- Marketplace billing ----------------------------------------------------
-/** Broker base URL; empty means the marketplace integration is off. */
-export const MARKETPLACE_URL = (process.env.MULTIVIBE_MARKETPLACE_URL ?? "").replace(/\/+$/, "");
+/**
+ * Official marketplace broker. The integration stays inert until an admin
+ * enrolls the instance, so a default URL costs nothing: it only pre-fills the
+ * enrollment target. Point `MULTIVIBE_MARKETPLACE_URL` at a self-hosted broker
+ * or at an empty value to disable marketplace enrollment entirely.
+ */
+export const DEFAULT_MARKETPLACE_URL = "https://marketplace.multivibe.cloud";
+export const MARKETPLACE_URL = (
+  process.env.MULTIVIBE_MARKETPLACE_URL?.trim() || DEFAULT_MARKETPLACE_URL
+).replace(/\/+$/, "");
 /** Instance credentials (instance id + secret), mode 0600, never in accounts.json. */
 export const MARKETPLACE_SECRET_PATH =
   process.env.MULTIVIBE_MARKETPLACE_SECRET_PATH ??

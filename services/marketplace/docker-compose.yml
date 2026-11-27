@@ -1,0 +1,38 @@
+# Marketplace broker. Run from this directory:
+#   docker compose up -d --build
+#
+# `.env` (mode 0600) holds the operator token, the encryption key and the
+# Stripe keys; `./data/marketplace.json` is the durable store. Neither is
+# tracked by git.
+services:
+  marketplace:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: multivibe-marketplace:latest
+    container_name: multivibe-marketplace
+    restart: unless-stopped
+    env_file:
+      # Optional so a fresh checkout can still start (the broker logs which
+      # secrets are missing, and checkout stays unavailable until they exist).
+      - path: ./.env
+        required: false
+    environment:
+      - PORT=1460
+      - MARKETPLACE_DATA_PATH=/data/marketplace.json
+      # Public base URL of this broker: enrollment links and browser returns
+      # are built from it, so it must be the HTTPS name instances reach.
+      - MARKETPLACE_PUBLIC_URL=${MARKETPLACE_PUBLIC_URL:-https://marketplace.multivibe.cloud}
+      - MARKETPLACE_COMMISSION_BPS=${MARKETPLACE_COMMISSION_BPS:-500}
+      - STRIPE_API_VERSION=${STRIPE_API_VERSION:-2026-11-18.preview}
+    ports:
+      # LAN-only by default: put the Cloudflare tunnel or a reverse proxy in
+      # front of it for public HTTPS.
+      - "${MARKETPLACE_BIND:-0.0.0.0:1460}:1460"
+    volumes:
+      - ./data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "2"

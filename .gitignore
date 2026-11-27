@@ -38,3 +38,6 @@ plugins/dsh-multivibe/*.tgz
 
 # Incremental TypeScript build state
 *.tsbuildinfo
+
+# Marketplace broker runtime state (secrets live in .env, data in data/).
+services/marketplace/data/

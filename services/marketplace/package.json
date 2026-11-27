@@ -5,7 +5,9 @@
   "type": "module",
   "description": "MultiVibe marketplace broker: Stripe Connect onboarding, checkout, events outbox.",
   "scripts": {
-    "start": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
     "test": "tsx --test src/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

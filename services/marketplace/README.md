@@ -10,17 +10,46 @@ commission (5% by default), snapshotted on every payment.
 
 ## Run
 
+Locally, against the repository's `node_modules`:
+
 ```sh
 cd services/marketplace
-npm install # only when the workspace has no root node_modules
-STRIPE_SECRET_KEY=sk_test_… \
-STRIPE_WEBHOOK_SECRET=whsec_… \
-STRIPE_CONNECT_WEBHOOK_SECRET=whsec_… \
-MARKETPLACE_PUBLIC_URL=https://marketplace.example.com \
-MARKETPLACE_OPERATOR_TOKEN=… \
-MARKETPLACE_ENCRYPTION_KEY=$(openssl rand -hex 32) \
-npm start
+npm test          # suite only, no Stripe call
+npm run dev       # tsx, no build step
 ```
+
+With Docker (the supported deployment):
+
+```sh
+cd services/marketplace
+cp .env.example .env    # then fill it in; chmod 600 .env
+mkdir -p data && chown 1000:1000 data
+docker compose up -d --build
+curl -s http://127.0.0.1:1460/health
+```
+
+`.env` (never committed, mode 0600):
+
+```sh
+MARKETPLACE_OPERATOR_TOKEN=$(openssl rand -base64 32)   # approves enrollments
+MARKETPLACE_ENCRYPTION_KEY=$(openssl rand -hex 32)      # seals instance secrets
+MARKETPLACE_PUBLIC_URL=https://marketplace.multivibe.cloud
+STRIPE_SECRET_KEY=sk_live_…            # leave empty to run without checkout
+STRIPE_WEBHOOK_SECRET=whsec_…          # platform endpoint
+STRIPE_CONNECT_WEBHOOK_SECRET=whsec_…  # connect endpoint (direct charges)
+MARKETPLACE_COMMISSION_BPS=500
+```
+
+The container runs as `node` (uid 1000) and writes `data/marketplace.json`; keep
+that directory owned by 1000. The host port is LAN-only by default — put the
+Cloudflare tunnel or a reverse proxy in front of it and publish it as
+`MARKETPLACE_PUBLIC_URL`, because Stripe must reach `/webhooks/stripe` and
+`/webhooks/stripe/connect` over public HTTPS.
+
+`GET /health` returns `{"ok":true}` without authentication. The operator API
+(`/api/*`) takes `Authorization: Bearer $MARKETPLACE_OPERATOR_TOKEN`, and the
+human enrollment page is `/enroll`.
+
 
 | Variable | Default | Purpose |
 | --- | --- | --- |

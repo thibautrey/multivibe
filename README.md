@@ -116,15 +116,27 @@ direct charge on the admin's own Stripe account, MultiVibe keeps a per-instance
 commission (5% by default), and refunds are issued from the same panel.
 
 The marketplace broker is a separate service in `services/marketplace`; see its
-README for deployment. This instance only needs:
+README for deployment. The default broker is
+`https://marketplace.multivibe.cloud`, and enrollment stays inert until an
+admin asks for it, so a stock instance never talks to the marketplace on its
+own. Override or disable it with:
 
 ```sh
-MULTIVIBE_MARKETPLACE_URL=https://marketplace.example.com
+# Use a self-hosted broker instead of the default marketplace:
+MULTIVIBE_MARKETPLACE_URL=https://payments.example.com
+# Disable marketplace enrollment entirely:
+MULTIVIBE_MARKETPLACE_URL=
 # Optional: default is data/payments-credentials.json (mode 0600)
 MULTIVIBE_MARKETPLACE_SECRET_PATH=/data/payments-credentials.json
 # Optional: outbox polling interval, 60 s by default
 MULTIVIBE_MARKETPLACE_POLL_INTERVAL_MS=60000
 ```
+
+To run the broker yourself, `cd services/marketplace`, create `.env` from
+`.env.example`, and `docker compose up -d --build`; the container exposes
+`:1460`, stores its state in `services/marketplace/data/marketplace.json`, and
+serves `/health`, the operator enrollment page `/enroll` and the two Stripe
+webhook endpoints.
 
 Enrollment uses a short code, never an OAuth redirect, so an instance behind
 NAT or plain HTTP still works: the admin approves the code on the marketplace,
