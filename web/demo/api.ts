@@ -109,6 +109,7 @@ export function createDemoApi(now = Date.now(), workspace: "personal" | "owner" 
       "/admin/accounts": { accounts: fixtures.accounts },
       "/admin/invoices": { providers: workspace === "member" ? [] : configuredInvoiceProviders(fixtures.accounts), cloudUnavailable: false },
       "/admin/cloud/models": { models: [{ id: "hf:demo/cloud-model", name: "Demo Cloud model", aliases: [], availability: "unknown", network: false }] },
+      "/admin/cloud/accessible-models": { status: "available", modelIds: ["hf:demo/cloud-model"], checkedAt: new Date(now).toISOString() },
       "/admin/cloud": { status: "disconnected", topupUrl: "https://app.multivibe.cloud/billing" },
       "/admin/config": { hostApplication, usageCacheTtlMs: 86400000, oauthRedirectUri: "http://localhost:4173/auth/callback", cloudflareAccess: { provisioningEnabled: false, configured: false, applications: [] } },
       "/v1/models": { object: "list", data: fixtures.models },

@@ -2,36 +2,60 @@ import { useDashboardApi, useDashboardRuntime } from "../../adapter";
 import { useEffect, useMemo, useState } from 'react';
 import type { Account, ExposedModel } from '../../types';
 
-import { aggregateModels, filterCatalog, mergeCloudModelPage, type CloudModel, type ModelRoute } from '../../lib/modelCatalog';
+import { aggregateModels, filterCatalog, memberCatalog, mergeCloudModelPage, type CloudModel, type ModelRoute } from '../../lib/modelCatalog';
 import type { CloudProvider } from '../ProviderPicker';
 import './ModelsTab.css';
 import { verifiedCloudCatalog, type CloudAccess } from '../../lib/modelGuidance';
 import { activeLocale, useI18n } from '../../i18n';
-import { ModelBillingPanel } from '../ModelBillingPanel';
+import { ModelPricingPanel, OffPeakPanel } from '../ModelBillingPanel';
 
 const coreSources = [{ id: 'all', label: 'All sources' }, { id: 'provider', label: 'Providers' }, { id: 'cloud', label: 'MultiVibe Cloud' }];
 const PAGE_SIZE = 20;
 
-export function ModelsTab({ canConfigure = true, models, accounts, cloudConnected, onUse, onConfigure, onConnectCloud, onDetails }: {
-  canConfigure?: boolean; models: ExposedModel[]; accounts: Account[]; cloudConnected: boolean;
+type ModelsTabSection = 'models' | 'pricing' | 'off-peak';
+
+export function ModelsTab({ canConfigure = true, member = false, models, accounts, cloudConnected, allowedModels, onUse, onConfigure, onConnectCloud, onDetails }: {
+  canConfigure?: boolean; member?: boolean; models: ExposedModel[]; accounts: Account[]; cloudConnected: boolean;
+  allowedModels?: string[];
   onDetails?: (id: string) => void;
   onUse: (id: string) => void; onConfigure: (route: ModelRoute) => void; onConnectCloud: () => Promise<void>;
 }) {
   const { t, locale } = useI18n();
   const api = useDashboardApi();
   const { capabilities } = useDashboardRuntime();
-  const sources = (capabilities.host ? coreSources : [{id:'all',label:'All sources'},{id:'cloud',label:'MultiVibe'},{id:'personal',label:'Personal connections'},{id:'team',label:'Team'}]).map(item => ({ ...item, label: t(item.label) }));
+  const showBillingSections = canConfigure && capabilities.host;
+  const [activeSection, setActiveSection] = useState<ModelsTabSection>('models');
+  const sourceItems = capabilities.host
+    ? coreSources
+    : [{ id: 'all', label: 'All sources' }, { id: 'cloud', label: 'MultiVibe' }, { id: 'personal', label: 'Personal connections' }, { id: 'team', label: 'Team' }];
+  const sources = (member ? sourceItems.filter(item => item.id !== 'cloud') : sourceItems).map(item => ({ ...item, label: t(item.label) }));
+  const [memberCloudModelIds, setMemberCloudModelIds] = useState<string[]>([]);
+  useEffect(() => {
+    setMemberCloudModelIds([]);
+    if (!member) return;
+    const controller = new AbortController();
+    // Cloud models belong to the instance operator: keep them out of the
+    // member catalog even when the shared Cloud account exposes them. The
+    // endpoint lists what that account can reach, so it works whether or not
+    // this member session reports an active Cloud connection.
+    void api('cloud/accessible-models', { signal: controller.signal })
+      .then((result: CloudAccess) => {
+        if (!controller.signal.aborted && result.status === 'available') setMemberCloudModelIds(result.modelIds);
+      })
+      .catch(() => { /* Cloud discovery is optional for members. */ });
+    return () => controller.abort();
+  }, [member]);
   const [cloudAccess, setCloudAccess] = useState<CloudAccess>();
   const [accessRequest, setAccessRequest] = useState(0);
   useEffect(() => {
     setCloudAccess(undefined);
-    if (!cloudConnected || !canConfigure) return;
+    if (!cloudConnected || !canConfigure || member) return;
     const controller = new AbortController();
     void api('cloud/accessible-models', { signal: controller.signal }).then((result: CloudAccess) => {
       if (!controller.signal.aborted) setCloudAccess(result);
     }).catch(() => { if (!controller.signal.aborted) setCloudAccess({ status: 'unavailable', modelIds: [], checkedAt: '' }); });
     return () => controller.abort();
-  }, [cloudConnected, canConfigure, accessRequest]);
+  }, [cloudConnected, canConfigure, accessRequest, member]);
   const [cloud, setCloud] = useState<CloudModel[]>([]);
   const [catalogCursor, setCatalogCursor] = useState('');
   const [loadingMore, setLoadingMore] = useState(false);
@@ -86,10 +110,11 @@ export function ModelsTab({ canConfigure = true, models, accounts, cloudConnecte
   };
   const rawCatalog = useMemo(() => aggregateModels(models, accounts, canConfigure ? cloud : [], canConfigure ? providers : []), [models, accounts, cloud, providers, canConfigure, locale]);
   const catalog = useMemo(() => canConfigure ? verifiedCloudCatalog(rawCatalog, cloudAccess, cloudConnected) : rawCatalog, [rawCatalog, cloudAccess, cloudConnected, canConfigure]);
-  const providerOptions = useMemo(() => [...new Set(catalog.flatMap(model => model.routes.filter(route => source === 'all' || (route.source === source || route.accessSource === source)).map(route => route.label)))].sort((a, b) => a.localeCompare(b)), [catalog, source]);
+  const visibleCatalog = useMemo(() => member ? memberCatalog(catalog, memberCloudModelIds, allowedModels) : catalog, [catalog, member, memberCloudModelIds, allowedModels]);
+  const providerOptions = useMemo(() => [...new Set(visibleCatalog.flatMap(model => model.routes.filter(route => source === 'all' || (route.source === source || route.accessSource === source)).map(route => route.label)))].sort((a, b) => a.localeCompare(b)), [visibleCatalog, source]);
   // Route labels are localized, so a language switch can retire the selected value.
   const providerFilter = provider === 'all' || providerOptions.includes(provider) ? provider : 'all';
-  const filtered = useMemo(() => filterCatalog(catalog, { query, source, provider: providerFilter, readyOnly, sort }), [catalog, query, source, providerFilter, readyOnly, sort]);
+  const filtered = useMemo(() => filterCatalog(visibleCatalog, { query, source, provider: providerFilter, readyOnly, sort }), [visibleCatalog, query, source, providerFilter, readyOnly, sort]);
   const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const currentPage = Math.min(page, pages - 1);
   const activeFilters = Boolean(query || source !== 'all' || provider !== 'all' || readyOnly);
@@ -116,10 +141,27 @@ export function ModelsTab({ canConfigure = true, models, accounts, cloudConnecte
     : total
       ? (total === 1 ? t('model · Showing {from}–{to}', { from: firstShown, to: lastShown }) : t('models · Showing {from}–{to}', { from: firstShown, to: lastShown }))
       : t(total === 1 ? 'model' : 'models');
+  const sections: Array<{ id: ModelsTabSection; label: string; description: string }> = [
+    { id: 'models', label: t('Models'), description: t('Browse the models available to you') },
+    ...(showBillingSections
+      ? [
+          { id: 'pricing' as const, label: t('Pricing'), description: t('Billed rates per million tokens') },
+          { id: 'off-peak' as const, label: t('Off-peak hours'), description: t('Discounted time windows') },
+        ]
+      : []),
+  ];
+  const shownSection = sections.some((section) => section.id === activeSection) ? activeSection : 'models';
+  const showModels = sections.length === 1 || shownSection === 'models';
   return <section className="models-catalog" aria-label={t("Models")}>
-    <header className="models-page-heading"><div><h2>{t("Find the right model")}</h2><p>{t("Explore your connected providers and MultiVibe Cloud models.")}</p></div></header>
-    {canConfigure && capabilities.host && <ModelBillingPanel />}
-    {cloudConnected && canConfigure && <div className="models-access-notice" role="status">
+    {sections.length > 1 && <div className="models-view-tabs" role="tablist" aria-label={t("Model workspace sections")}>
+      {sections.map((section) => <button key={section.id} type="button" role="tab" id={`models-tab-${section.id}`} aria-selected={shownSection === section.id} aria-controls={`models-panel-${section.id}`} className={`models-view-tab${shownSection === section.id ? ' active' : ''}`} onClick={() => setActiveSection(section.id)}>
+        <strong>{section.label}</strong>
+        <small>{section.description}</small>
+      </button>)}
+    </div>}
+    {showModels && <div className="models-tab-panel" {...(sections.length > 1 ? { role: "tabpanel", id: "models-panel-models", "aria-labelledby": "models-tab-models" } : {})}>
+    <header className="models-page-heading"><div><h2>{t("Find the right model")}</h2><p>{member ? t("Explore the models available to you.") : t("Explore your connected providers and MultiVibe Cloud models.")}</p></div></header>
+    {cloudConnected && canConfigure && !member && <div className="models-access-notice" role="status">
       {!cloudAccess ? t('Checking your Cloud access…') : cloudAccess.status === 'available'
         ? !cloudAccess.modelIds.length ? t('No models exposed for your Cloud account.')
           : !catalog.some(model => model.routes.some(route => route.source === 'cloud' && route.ready)) ? t('Cloud exposes models, but no matching chat route is available here.') : t('Cloud catalog verified for your account.')
@@ -129,10 +171,10 @@ export function ModelsTab({ canConfigure = true, models, accounts, cloudConnecte
     <div className="models-layout models-expert-library">
       <details className="models-expert-filters"><summary>{activeFilters ? t('Filters · Active filters') : t('Filters')}</summary><div className="models-sidebar" aria-label={t("Model filters")}>
         <div className="models-filter-heading"><strong>{t("Filters")}</strong>{activeFilters && <button className="models-text-button" onClick={reset}>{t("Reset")}</button>}</div>
-        <fieldset><legend>{t("Source")}</legend>{sources.map(item => <button key={item.id} className="models-source" aria-pressed={source === item.id} onClick={() => { setSource(item.id); setProvider('all'); setPage(0); }}><span>{item.label}</span><span>{catalog.filter(model => item.id === 'all' || model.routes.some(route => (route.source === item.id || route.accessSource === item.id))).length.toLocaleString(activeLocale())}</span></button>)}</fieldset>
+        <fieldset><legend>{t("Source")}</legend>{sources.map(item => <button key={item.id} className="models-source" aria-pressed={source === item.id} onClick={() => { setSource(item.id); setProvider('all'); setPage(0); }}><span>{item.label}</span><span>{visibleCatalog.filter(model => item.id === 'all' || model.routes.some(route => (route.source === item.id || route.accessSource === item.id))).length.toLocaleString(activeLocale())}</span></button>)}</fieldset>
         <fieldset><legend>{t("Availability")}</legend><label className="models-ready"><input type="checkbox" checked={readyOnly} onChange={event => { setReadyOnly(event.target.checked); setPage(0); }} /> {t("Ready to use")}</label><p className="muted">{t("Models with a connected, available account.")}</p></fieldset>
         <label className="models-provider">{t("Provider")}<select value={providerFilter} onChange={event => { setProvider(event.target.value); setPage(0); }}><option value="all">{t("All providers")}</option>{providerOptions.map(name => <option key={name} value={name}>{name}</option>)}</select></label>
-        <div className="models-cloud-card"><strong>MultiVibe Cloud</strong><p className="muted">{t("Cloud access depends on your plan and available capacity.")}</p>{capabilities.cloudConnection && !cloudConnected && <button className="btn ghost" disabled={connecting} onClick={() => void connect()}>{connecting ? t('Connecting…') : t('Connect Cloud')}</button>}</div>
+        {!member && <div className="models-cloud-card"><strong>MultiVibe Cloud</strong><p className="muted">{t("Cloud access depends on your plan and available capacity.")}</p>{capabilities.cloudConnection && !cloudConnected && <button className="btn ghost" disabled={connecting} onClick={() => void connect()}>{connecting ? t('Connecting…') : t('Connect Cloud')}</button>}</div>}
       </div></details>
       <div className="models-results" aria-busy={loading}>
         {catalogError && <p className="models-error" role="alert">{catalogError} <button className="btn ghost" disabled={loading} onClick={() => setCatalogRequest(value => value + 1)}>{t("Retry catalogs")}</button></p>}
@@ -154,5 +196,12 @@ export function ModelsTab({ canConfigure = true, models, accounts, cloudConnecte
 
       </div>
     </div>
+    </div>}
+    {showBillingSections && <div className="models-tab-panel" role="tabpanel" id="models-panel-pricing" aria-labelledby="models-tab-pricing" hidden={shownSection !== 'pricing'}>
+      <ModelPricingPanel />
+    </div>}
+    {showBillingSections && <div className="models-tab-panel" role="tabpanel" id="models-panel-off-peak" aria-labelledby="models-tab-off-peak" hidden={shownSection !== 'off-peak'}>
+      <OffPeakPanel />
+    </div>}
   </section>;
 }

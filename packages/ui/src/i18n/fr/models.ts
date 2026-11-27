@@ -1,6 +1,11 @@
 // Models catalog: headings, filters, availability, actions, empty states, pagination.
 const catalog: Record<string, string> = {
   "Model pricing": "Tarification des modèles",
+  "Browse the models available to you": "Parcourez les modèles auxquels vous avez accès",
+  "Billed rates per million tokens": "Tarifs facturés par million de jetons",
+  "Discounted time windows": "Plages horaires à tarif réduit",
+  "Model workspace sections": "Sections de l’espace modèles",
+  "Explore the models available to you.": "Explorez les modèles auxquels vous avez accès.",
   "Set the amount users are billed per million tokens. Cached input can be cheaper than fresh input. Unlisted models keep the upstream estimate.":
     "Fixez le montant facturé aux utilisateurs par million de jetons. L’entrée en cache peut être moins chère que l’entrée fraîche. Les modèles non listés conservent l’estimation du fournisseur.",
   "Model": "Modèle",

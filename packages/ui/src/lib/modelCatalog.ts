@@ -185,3 +185,30 @@ export function filterCatalog(catalog: CatalogEntry[], filters: { query: string;
     .sort((a, b) => (filters.sort === 'ready' ? Number(b.routes.some(route => route.ready)) - Number(a.routes.some(route => route.ready)) : 0)
       || (filters.sort === 'name-desc' ? -1 : 1) * (a.name.localeCompare(b.name, 'en') || a.id.localeCompare(b.id, 'en')));
 }
+
+/** Mirrors the edge's allow-list matching: compare the last id segment only. */
+export function modelKey(id: string): string {
+  const value = id.trim().toLowerCase();
+  return value.slice(value.lastIndexOf('/') + 1);
+}
+
+/**
+ * Member view of the catalog: only the member's allow-list, and never the
+ * instance operator's MultiVibe Cloud models. A route backed by one of the
+ * member's own accounts stays visible even when Cloud exposes the same id.
+ */
+export function memberCatalog(catalog: CatalogEntry[], cloudModelIds: string[], allowedModels?: string[]): CatalogEntry[] {
+  const allowed = (allowedModels ?? []).map(modelKey).filter(Boolean);
+  const allowedKeys = allowed.length ? new Set(allowed) : null;
+  const cloudKeys = new Set(cloudModelIds.map(modelKey).filter(Boolean));
+  return catalog
+    .map((model) => ({
+      ...model,
+      routes: model.routes.filter((route) => {
+        if (route.source === 'cloud' || route.accessSource === 'cloud') return false;
+        if (!route.accountId && cloudKeys.has(modelKey(route.modelId))) return false;
+        return !allowedKeys || allowedKeys.has(modelKey(model.id)) || allowedKeys.has(modelKey(route.modelId));
+      }),
+    }))
+    .filter((model) => model.routes.length > 0);
+}

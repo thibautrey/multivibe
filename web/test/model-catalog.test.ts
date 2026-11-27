@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { aggregateModels, mergeCloudModelPage, modelLogo, modelsExposedByAccount } from '../../packages/ui/src/lib/modelCatalog.js';
+import { aggregateModels, memberCatalog, mergeCloudModelPage, modelLogo, modelsExposedByAccount } from '../../packages/ui/src/lib/modelCatalog.js';
 import type { Account } from '../../packages/ui/src/types.js';
 
 const accounts: Account[] = [{ id: 'disabled', provider: 'mistral', enabled: false }, { id: 'working', provider: 'mistral', enabled: true }];
@@ -181,4 +181,34 @@ test('an account model selection trims its listing to the selected ids', () => {
   const selected: Account = { id: 'anthropic-1', provider: 'ai-sdk', sdkProvider: 'anthropic', sdkModels: ['claude-opus'], enabled: true };
   assert.deepEqual(modelsExposedByAccount(models, selected).map((model) => model.id), ['anthropic/claude-opus']);
   assert.deepEqual(modelsExposedByAccount(models, { ...selected, sdkModels: ['claude-missing'] }), []);
+});
+
+test('member catalog hides Cloud-only models and keeps the member own route for a shared id', () => {
+  const catalog = aggregateModels(
+    [
+      { id: 'gpt-5.4', metadata: { provider: 'openai', account_ids: ['member-account'] } },
+      { id: 'cloud-only', metadata: { account_ids: ['multivibe-cloud'] } },
+    ],
+    [
+      { id: 'member-account', provider: 'openai', enabled: true },
+      { id: 'multivibe-cloud', multivibeCloud: true, enabled: true },
+    ],
+    [], [],
+  );
+  const visible = memberCatalog(catalog, ['cloud-only', 'gpt-5.4']);
+  assert.deepEqual(visible.map((model) => model.id), ['gpt-5.4']);
+  assert.equal(visible[0].routes.every((route) => route.source !== 'cloud' && Boolean(route.accountId)), true);
+});
+
+test('member catalog enforces the allow-list by model id suffix', () => {
+  const catalog = aggregateModels(
+    [
+      { id: 'gpt-5.4', metadata: { provider: 'openai', account_ids: ['member-account'] } },
+      { id: 'gpt-5.4-mini', metadata: { provider: 'openai', account_ids: ['member-account'] } },
+    ],
+    [{ id: 'member-account', provider: 'openai', enabled: true }],
+    [], [],
+  );
+  assert.deepEqual(memberCatalog(catalog, [], ['OPENAI/GPT-5.4']).map((model) => model.id), ['gpt-5.4']);
+  assert.deepEqual(memberCatalog(catalog, [], []).map((model) => model.id).sort(), ['gpt-5.4', 'gpt-5.4-mini']);
 });

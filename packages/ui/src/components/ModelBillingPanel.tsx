@@ -85,28 +85,22 @@ function timezones(): string[] {
 /**
  * Billed rates for models, in USD per million tokens. Upstream provider prices
  * remain the fallback; setting a model here changes what users are charged and
- * what quota accounting counts. An optional weekly calendar replaces those
- * rates with the model's off-peak rates inside the configured windows.
+ * what quota accounting counts.
  */
-export function ModelBillingPanel() {
+export function ModelPricingPanel() {
   const t = useT();
   const api = useDashboardApi();
   const [billing, setBilling] = useState<Record<string, DashboardModelBillingRate>>({});
   const [models, setModels] = useState<string[]>([]);
   const [form, setForm] = useState<FormDraft>(EMPTY_FORM);
-  const [schedule, setSchedule] = useState<ScheduleDraft>(scheduleDraft(null));
   const [busy, setBusy] = useState(false);
-  const [scheduleBusy, setScheduleBusy] = useState(false);
   const [error, setError] = useState("");
-  const [scheduleError, setScheduleError] = useState("");
   const [notice, setNotice] = useState("");
-  const [scheduleNotice, setScheduleNotice] = useState("");
 
   useEffect(() => {
     void api("model-billing")
       .then((result) => {
         setBilling((result?.billing ?? {}) as Record<string, DashboardModelBillingRate>);
-        setSchedule(scheduleDraft((result?.schedule ?? null) as DashboardOffPeakSchedule | null));
       })
       .catch(() => setBilling({}));
     void api("/v1/models")
@@ -121,7 +115,6 @@ export function ModelBillingPanel() {
     () => Object.entries(billing).sort(([a], [b]) => a.localeCompare(b)),
     [billing],
   );
-  const zones = useMemo(timezones, []);
 
   const save = async () => {
     const model = form.model.trim();
@@ -214,6 +207,188 @@ export function ModelBillingPanel() {
     }
   };
 
+  return (
+    <section className="panel" aria-label={t("Model pricing")}>
+      <div className="section-split-header">
+        <div>
+          <h2>{t("Model pricing")}</h2>
+          <p className="muted">
+            {t("Set the amount users are billed per million tokens. Cached input can be cheaper than fresh input. Unlisted models keep the upstream estimate.")}
+          </p>
+        </div>
+      </div>
+      {error && <div className="error" role="alert">{error}</div>}
+      {notice && <div className="notice" role="status">{notice}</div>}
+      <form onSubmit={(event) => { event.preventDefault(); void save(); }} className="pricing-grid">
+        <label className="control-field">
+          <span className="control-label">{t("Model")}</span>
+          <input
+            list="model-billing-models"
+            value={form.model}
+            disabled={busy}
+            placeholder={t("Choose or type a model id")}
+            onChange={(event) => setForm((current) => ({ ...current, model: event.target.value }))}
+          />
+          <datalist id="model-billing-models">
+            {models.map((model) => <option key={model} value={model} />)}
+          </datalist>
+        </label>
+        <label className="control-field">
+          <span className="control-label">{t("Input $/1M")}</span>
+          <input
+            type="number"
+            min="0"
+            step="0.000001"
+            value={form.inputPer1M}
+            disabled={busy}
+            placeholder="2.50"
+            onChange={(event) => setForm((current) => ({ ...current, inputPer1M: event.target.value }))}
+          />
+        </label>
+        <label className="control-field">
+          <span className="control-label">{t("Output $/1M")}</span>
+          <input
+            type="number"
+            min="0"
+            step="0.000001"
+            value={form.outputPer1M}
+            disabled={busy}
+            placeholder="15.00"
+            onChange={(event) => setForm((current) => ({ ...current, outputPer1M: event.target.value }))}
+          />
+        </label>
+        <label className="control-field">
+          <span className="control-label">{t("Cached input $/1M")}</span>
+          <input
+            type="number"
+            min="0"
+            step="0.000001"
+            value={form.cachedInputPer1M}
+            disabled={busy}
+            placeholder={t("Same as input")}
+            onChange={(event) => setForm((current) => ({ ...current, cachedInputPer1M: event.target.value }))}
+          />
+        </label>
+        {/* One label per row keeps each off-peak price under its standard
+            column instead of stretching across the whole width. */}
+        <p className="control-label pricing-grid-group">{t("Off-peak hours")}</p>
+        <label className="control-field">
+          <span className="control-label">{t("Off-peak input $/1M")}</span>
+          <input
+            type="number"
+            min="0"
+            step="0.000001"
+            value={form.offPeakInputPer1M}
+            disabled={busy}
+            placeholder={t("Same as standard")}
+            onChange={(event) => setForm((current) => ({ ...current, offPeakInputPer1M: event.target.value }))}
+          />
+        </label>
+        <label className="control-field">
+          <span className="control-label">{t("Off-peak output $/1M")}</span>
+          <input
+            type="number"
+            min="0"
+            step="0.000001"
+            value={form.offPeakOutputPer1M}
+            disabled={busy}
+            placeholder={t("Same as standard")}
+            onChange={(event) => setForm((current) => ({ ...current, offPeakOutputPer1M: event.target.value }))}
+          />
+        </label>
+        <label className="control-field">
+          <span className="control-label">{t("Off-peak cached input $/1M")}</span>
+          <input
+            type="number"
+            min="0"
+            step="0.000001"
+            value={form.offPeakCachedInputPer1M}
+            disabled={busy}
+            placeholder={t("Same as off-peak input")}
+            onChange={(event) => setForm((current) => ({ ...current, offPeakCachedInputPer1M: event.target.value }))}
+          />
+        </label>
+      </form>
+      <div className="inline" style={{ gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+        <button className="btn" type="button" disabled={busy || !form.model.trim()} onClick={() => void save()}>
+          {busy ? t("Saving…") : form.model && billing[form.model] ? t("Update price") : t("Save price")}
+        </button>
+        {form.model && (
+          <button className="btn ghost" type="button" disabled={busy} onClick={() => setForm(EMPTY_FORM)}>
+            {t("Clear")}
+          </button>
+        )}
+      </div>
+      {configured.length === 0 ? (
+        <p className="muted" style={{ marginTop: 12 }}>{t("No custom prices yet.")}</p>
+      ) : (
+        <div className="table-wrap" style={{ marginTop: 12 }}>
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>{t("Model")}</th>
+                <th>{t("Input $/1M")}</th>
+                <th>{t("Output $/1M")}</th>
+                <th>{t("Cached input $/1M")}</th>
+                <th>{t("Off-peak $/1M")}</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {configured.map(([model, rate]) => (
+                <tr key={model}>
+                  <td style={{ minWidth: 140 }}><code className="mono" style={{ wordBreak: "break-all" }}>{model}</code></td>
+                  <td>${rate.inputPer1M}</td>
+                  <td>${rate.outputPer1M}</td>
+                  <td>{rate.cachedInputPer1M === undefined ? t("Same as input") : `$${rate.cachedInputPer1M}`}</td>
+                  <td>
+                    {rate.offPeak
+                      ? `${rate.offPeak.inputPer1M} / ${rate.offPeak.outputPer1M} / ${rate.offPeak.cachedInputPer1M ?? "—"}`
+                      : <span className="muted">{t("None")}</span>}
+                  </td>
+                  <td>
+                    <div className="inline" style={{ gap: 6, whiteSpace: "nowrap" }}>
+                      <button className="btn ghost" type="button" disabled={busy} onClick={() => edit(model, rate)}>
+                        {t("Edit")}
+                      </button>
+                      <button className="btn ghost" type="button" disabled={busy} onClick={() => void remove(model)}>
+                        {t("Remove")}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/**
+ * Weekly calendar that replaces standard rates with off-peak rates inside the
+ * configured windows. A range whose end is before its start continues into the
+ * next day.
+ */
+export function OffPeakPanel() {
+  const t = useT();
+  const api = useDashboardApi();
+  const [schedule, setSchedule] = useState<ScheduleDraft>(scheduleDraft(null));
+  const [scheduleBusy, setScheduleBusy] = useState(false);
+  const [scheduleError, setScheduleError] = useState("");
+  const [scheduleNotice, setScheduleNotice] = useState("");
+
+  useEffect(() => {
+    void api("model-billing")
+      .then((result) => {
+        setSchedule(scheduleDraft((result?.schedule ?? null) as DashboardOffPeakSchedule | null));
+      })
+      .catch(() => setSchedule(scheduleDraft(null)));
+  }, []);
+
+  const zones = useMemo(timezones, []);
+
   const editWindow = (
     day: DashboardOffPeakDay,
     index: number,
@@ -294,246 +469,98 @@ export function ModelBillingPanel() {
   };
 
   return (
-    <>
-      <section className="panel" aria-label={t("Model pricing")}>
-        <div className="section-split-header">
-          <div>
-            <h2>{t("Model pricing")}</h2>
-            <p className="muted">
-              {t("Set the amount users are billed per million tokens. Cached input can be cheaper than fresh input. Unlisted models keep the upstream estimate.")}
-            </p>
-          </div>
+    <section className="panel" aria-label={t("Off-peak hours")}>
+      <div className="section-split-header">
+        <div>
+          <h2>{t("Off-peak hours")}</h2>
+          <p className="muted">
+            {t("Inside these windows, models with off-peak rates are billed at those rates. Times use the selected timezone. A range whose end is before its start continues into the next day.")}
+          </p>
         </div>
-        {error && <div className="error" role="alert">{error}</div>}
-        {notice && <div className="notice" role="status">{notice}</div>}
-        <form onSubmit={(event) => { event.preventDefault(); void save(); }} className="pricing-grid">
-          <label className="control-field">
-            <span className="control-label">{t("Model")}</span>
-            <input
-              list="model-billing-models"
-              value={form.model}
-              disabled={busy}
-              placeholder={t("Choose or type a model id")}
-              onChange={(event) => setForm((current) => ({ ...current, model: event.target.value }))}
-            />
-            <datalist id="model-billing-models">
-              {models.map((model) => <option key={model} value={model} />)}
-            </datalist>
-          </label>
-          <label className="control-field">
-            <span className="control-label">{t("Input $/1M")}</span>
-            <input
-              type="number"
-              min="0"
-              step="0.000001"
-              value={form.inputPer1M}
-              disabled={busy}
-              placeholder="2.50"
-              onChange={(event) => setForm((current) => ({ ...current, inputPer1M: event.target.value }))}
-            />
-          </label>
-          <label className="control-field">
-            <span className="control-label">{t("Output $/1M")}</span>
-            <input
-              type="number"
-              min="0"
-              step="0.000001"
-              value={form.outputPer1M}
-              disabled={busy}
-              placeholder="15.00"
-              onChange={(event) => setForm((current) => ({ ...current, outputPer1M: event.target.value }))}
-            />
-          </label>
-          <label className="control-field">
-            <span className="control-label">{t("Cached input $/1M")}</span>
-            <input
-              type="number"
-              min="0"
-              step="0.000001"
-              value={form.cachedInputPer1M}
-              disabled={busy}
-              placeholder={t("Same as input")}
-              onChange={(event) => setForm((current) => ({ ...current, cachedInputPer1M: event.target.value }))}
-            />
-          </label>
-          {/* One label per row keeps each off-peak price under its standard
-              column instead of stretching across the whole width. */}
-          <p className="control-label pricing-grid-group">{t("Off-peak hours")}</p>
-          <label className="control-field">
-            <span className="control-label">{t("Off-peak input $/1M")}</span>
-            <input
-              type="number"
-              min="0"
-              step="0.000001"
-              value={form.offPeakInputPer1M}
-              disabled={busy}
-              placeholder={t("Same as standard")}
-              onChange={(event) => setForm((current) => ({ ...current, offPeakInputPer1M: event.target.value }))}
-            />
-          </label>
-          <label className="control-field">
-            <span className="control-label">{t("Off-peak output $/1M")}</span>
-            <input
-              type="number"
-              min="0"
-              step="0.000001"
-              value={form.offPeakOutputPer1M}
-              disabled={busy}
-              placeholder={t("Same as standard")}
-              onChange={(event) => setForm((current) => ({ ...current, offPeakOutputPer1M: event.target.value }))}
-            />
-          </label>
-          <label className="control-field">
-            <span className="control-label">{t("Off-peak cached input $/1M")}</span>
-            <input
-              type="number"
-              min="0"
-              step="0.000001"
-              value={form.offPeakCachedInputPer1M}
-              disabled={busy}
-              placeholder={t("Same as off-peak input")}
-              onChange={(event) => setForm((current) => ({ ...current, offPeakCachedInputPer1M: event.target.value }))}
-            />
-          </label>
-        </form>
-        <div className="inline" style={{ gap: 8, flexWrap: "wrap", marginTop: 12 }}>
-          <button className="btn" type="button" disabled={busy || !form.model.trim()} onClick={() => void save()}>
-            {busy ? t("Saving…") : form.model && billing[form.model] ? t("Update price") : t("Save price")}
-          </button>
-          {form.model && (
-            <button className="btn ghost" type="button" disabled={busy} onClick={() => setForm(EMPTY_FORM)}>
-              {t("Clear")}
-            </button>
-          )}
-        </div>
-        {configured.length === 0 ? (
-          <p className="muted" style={{ marginTop: 12 }}>{t("No custom prices yet.")}</p>
-        ) : (
-          <div className="table-wrap" style={{ marginTop: 12 }}>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>{t("Model")}</th>
-                  <th>{t("Input $/1M")}</th>
-                  <th>{t("Output $/1M")}</th>
-                  <th>{t("Cached input $/1M")}</th>
-                  <th>{t("Off-peak $/1M")}</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {configured.map(([model, rate]) => (
-                  <tr key={model}>
-                    <td style={{ minWidth: 140 }}><code className="mono" style={{ wordBreak: "break-all" }}>{model}</code></td>
-                    <td>${rate.inputPer1M}</td>
-                    <td>${rate.outputPer1M}</td>
-                    <td>{rate.cachedInputPer1M === undefined ? t("Same as input") : `$${rate.cachedInputPer1M}`}</td>
-                    <td>
-                      {rate.offPeak
-                        ? `${rate.offPeak.inputPer1M} / ${rate.offPeak.outputPer1M} / ${rate.offPeak.cachedInputPer1M ?? "—"}`
-                        : <span className="muted">{t("None")}</span>}
-                    </td>
-                    <td>
-                      <div className="inline" style={{ gap: 6, whiteSpace: "nowrap" }}>
-                        <button className="btn ghost" type="button" disabled={busy} onClick={() => edit(model, rate)}>
-                          {t("Edit")}
-                        </button>
-                        <button className="btn ghost" type="button" disabled={busy} onClick={() => void remove(model)}>
-                          {t("Remove")}
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
-
-      <section className="panel" aria-label={t("Off-peak hours")}>
-        <div className="section-split-header">
-          <div>
-            <h2>{t("Off-peak hours")}</h2>
-            <p className="muted">
-              {t("Inside these windows, models with off-peak rates are billed at those rates. Times use the selected timezone. A range whose end is before its start continues into the next day.")}
-            </p>
-          </div>
-        </div>
-        {scheduleError && <div className="error" role="alert">{scheduleError}</div>}
-        {scheduleNotice && <div className="notice" role="status">{scheduleNotice}</div>}
-        <div className="inline" style={{ gap: 16, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
-          <label className="inline" style={{ gap: 8, alignItems: "center" }}>
-            <input
-              type="checkbox"
-              checked={schedule.enabled}
-              disabled={scheduleBusy}
-              onChange={(event) => setSchedule((current) => ({ ...current, enabled: event.target.checked }))}
-            />
-            <span>{t("Enable off-peak pricing")}</span>
-          </label>
-          <label className="control-field" style={{ minWidth: 220 }}>
-            <span className="control-label">{t("Timezone")}</span>
-            <input
-              list="off-peak-timezones"
-              value={schedule.timezone}
-              disabled={scheduleBusy}
-              placeholder="UTC"
-              onChange={(event) => setSchedule((current) => ({ ...current, timezone: event.target.value }))}
-            />
-            <datalist id="off-peak-timezones">
-              {zones.map((zone) => <option key={zone} value={zone} />)}
-            </datalist>
-          </label>
-        </div>
-        <p className="muted" style={{ marginTop: 0 }}>
-          {schedule.enabled ? t("Off-peak pricing is enabled.") : t("Off-peak pricing is disabled.")}
-        </p>
-        <div style={{ display: "grid", gap: 10 }}>
-          {DAYS.map((day) => (
-            <div key={day} className="off-peak-day" style={{ display: "grid", gap: 6 }}>
-              <div className="inline" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                <strong style={{ minWidth: 92 }}>{t(DAY_LABEL[day])}</strong>
-                <button className="btn ghost" type="button" disabled={scheduleBusy} onClick={() => addWindow(day)}>
-                  {t("Add range")}
-                </button>
-                {schedule.days[day].length === 0 && <span className="muted">{t("No off-peak range")}</span>}
-              </div>
-              {schedule.days[day].map((window, index) => (
-                <div key={index} className="inline" style={{ gap: 6, alignItems: "center", flexWrap: "wrap", paddingLeft: 12 }}>
-                  <input
-                    type="time"
-                    step="60"
-                    value={window.start}
-                    disabled={scheduleBusy}
-                    aria-label={t("Start time")}
-                    style={{ width: 128 }}
-                    onChange={(event) => editWindow(day, index, "start", event.target.value)}
-                  />
-                  <span aria-hidden="true">→</span>
-                  <input
-                    type="time"
-                    step="60"
-                    value={window.end}
-                    disabled={scheduleBusy}
-                    aria-label={t("End time")}
-                    style={{ width: 128 }}
-                    onChange={(event) => editWindow(day, index, "end", event.target.value)}
-                  />
-                  <button className="btn ghost" type="button" disabled={scheduleBusy} onClick={() => removeWindow(day, index)}>
-                    {t("Remove")}
-                  </button>
-                </div>
-              ))}
+      </div>
+      {scheduleError && <div className="error" role="alert">{scheduleError}</div>}
+      {scheduleNotice && <div className="notice" role="status">{scheduleNotice}</div>}
+      <div className="inline" style={{ gap: 16, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
+        <label className="inline" style={{ gap: 8, alignItems: "center" }}>
+          <input
+            type="checkbox"
+            checked={schedule.enabled}
+            disabled={scheduleBusy}
+            onChange={(event) => setSchedule((current) => ({ ...current, enabled: event.target.checked }))}
+          />
+          <span>{t("Enable off-peak pricing")}</span>
+        </label>
+        <label className="control-field" style={{ minWidth: 220 }}>
+          <span className="control-label">{t("Timezone")}</span>
+          <input
+            list="off-peak-timezones"
+            value={schedule.timezone}
+            disabled={scheduleBusy}
+            placeholder="UTC"
+            onChange={(event) => setSchedule((current) => ({ ...current, timezone: event.target.value }))}
+          />
+          <datalist id="off-peak-timezones">
+            {zones.map((zone) => <option key={zone} value={zone} />)}
+          </datalist>
+        </label>
+      </div>
+      <p className="muted" style={{ marginTop: 0 }}>
+        {schedule.enabled ? t("Off-peak pricing is enabled.") : t("Off-peak pricing is disabled.")}
+      </p>
+      <div style={{ display: "grid", gap: 10 }}>
+        {DAYS.map((day) => (
+          <div key={day} className="off-peak-day" style={{ display: "grid", gap: 6 }}>
+            <div className="inline" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <strong style={{ minWidth: 92 }}>{t(DAY_LABEL[day])}</strong>
+              <button className="btn ghost" type="button" disabled={scheduleBusy} onClick={() => addWindow(day)}>
+                {t("Add range")}
+              </button>
+              {schedule.days[day].length === 0 && <span className="muted">{t("No off-peak range")}</span>}
             </div>
-          ))}
-        </div>
-        <div className="inline" style={{ gap: 8, flexWrap: "wrap", marginTop: 12 }}>
-          <button className="btn" type="button" disabled={scheduleBusy} onClick={() => void saveSchedule()}>
-            {scheduleBusy ? t("Saving…") : t("Save schedule")}
-          </button>
-        </div>
-      </section>
+            {schedule.days[day].map((window, index) => (
+              <div key={index} className="inline" style={{ gap: 6, alignItems: "center", flexWrap: "wrap", paddingLeft: 12 }}>
+                <input
+                  type="time"
+                  step="60"
+                  value={window.start}
+                  disabled={scheduleBusy}
+                  aria-label={t("Start time")}
+                  style={{ width: 128 }}
+                  onChange={(event) => editWindow(day, index, "start", event.target.value)}
+                />
+                <span aria-hidden="true">→</span>
+                <input
+                  type="time"
+                  step="60"
+                  value={window.end}
+                  disabled={scheduleBusy}
+                  aria-label={t("End time")}
+                  style={{ width: 128 }}
+                  onChange={(event) => editWindow(day, index, "end", event.target.value)}
+                />
+                <button className="btn ghost" type="button" disabled={scheduleBusy} onClick={() => removeWindow(day, index)}>
+                  {t("Remove")}
+                </button>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+      <div className="inline" style={{ gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+        <button className="btn" type="button" disabled={scheduleBusy} onClick={() => void saveSchedule()}>
+          {scheduleBusy ? t("Saving…") : t("Save schedule")}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+/** Both billing sections, for callers that render them on one page. */
+export function ModelBillingPanel() {
+  return (
+    <>
+      <ModelPricingPanel />
+      <OffPeakPanel />
     </>
   );
 }

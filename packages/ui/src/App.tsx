@@ -1892,7 +1892,8 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
           />
         )}
 
-        {tab === "models" && <ModelsTab canConfigure={canManage || (!capabilities.host && allowedPages?.includes("models") === true)} models={models} accounts={accounts}
+        {tab === "models" && <ModelsTab canConfigure={canManage || (!capabilities.host && allowedPages?.includes("models") === true)} member={isMember} models={models} accounts={accounts}
+          allowedModels={isMember ? sessionUser?.allowedModels : undefined}
           onDetails={!capabilities.host && onNavigate ? model => onNavigate("models", { model }) : undefined}
           cloudConnected={cloudConnected} onUse={canManage || (!capabilities.host && allowedPages?.includes("docs") === true) ? openModelInDocs : () => { if (cloudConnected) window.location.assign("https://chat.multivibe.cloud"); }}
           onConnectCloud={connectMultivibeCloud} onConfigure={(route) => {
