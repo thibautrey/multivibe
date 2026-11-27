@@ -511,8 +511,9 @@ Postgres recommandé ; SQLite acceptable en mono-instance.
   `paymentAwards` borné, `recordUserUsage` (imputation granted/wallet).
 - `src/users.ts` : `reasonsFor` / `remainingFor` incluent wallet et
   `grantedCostUsd`.
-- `src/config.ts` : `MULTIVIBE_MARKETPLACE_URL`,
-  `MULTIVIBE_MARKETPLACE_SECRET_PATH`,
+- `src/config.ts` : `MULTIVIBE_MARKETPLACE_URL` (défaut
+  `https://marketplace.multivibe.cloud`, une valeur vide désactive
+  l'enrollment), `MULTIVIBE_MARKETPLACE_SECRET_PATH`,
   `MULTIVIBE_MARKETPLACE_POLL_INTERVAL_MS`,
   `MULTIVIBE_MARKETPLACE_REQUEST_TIMEOUT_MS`.
 - `rust/v1-edge/src/lib.rs` : `user_access` lit `walletUsd` /
@@ -561,15 +562,23 @@ Le secret d'instance n'est pas dans `accounts.json` : fichier
 
 ## 14. Service broker (notre infra)
 
-- `services/marketplace/` dans ce dépôt (TS, Fastify ou Express, Postgres,
-  SDK Stripe), ou dépôt séparé si le déploiement doit être isolé.
-- Pages minimales : saisie du code d'enrollment, retour Connect, retour
-  Checkout, dashboard opérateur.
-- Déploiement Docker derrière HTTPS, secrets en variables d'environnement,
-  sauvegardes DB, logs sans PII.
+État livré :
+
+- `services/marketplace/` dans ce dépôt (TypeScript/Express), image Docker
+  multi-stage, `docker-compose.yml` dédié, store JSON mono-processus (l'adaptateur
+  Postgres reste à faire).
+- Pages présentes : code d'enrollment (`/enroll`), retours Connect et Checkout,
+  API opérateur (`/api/*`), `GET /health`.
+- Déploiement actuel : conteneur `multivibe-marketplace` sur le même hôte que
+  l'instance, port `1460` en LAN, état dans `services/marketplace/data/`, secrets
+  dans `services/marketplace/.env` (0600). L'instance le joint par le gateway
+  Docker (`http://172.24.0.1:1460`).
+- Reste à faire pour la production : nom public HTTPS
+  (`marketplace.multivibe.cloud`) devant ce port pour que Stripe atteigne les
+  deux webhooks, sauvegardes du store, logs sans PII.
 - Dev : clés Stripe test + `stripe listen --forward-to
   localhost:PORT/webhooks/stripe` et
-  `localhost:PORT/webhooks/stripe-connect`.
+  `localhost:PORT/webhooks/stripe/connect`.
 - Prod : deux endpoints webhook (compte + comptes connectés), clés live,
   alerte sur les événements en échec.
 
