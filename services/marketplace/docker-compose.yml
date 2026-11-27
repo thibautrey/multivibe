@@ -38,7 +38,7 @@ services:
         max-file: "2"
 
 # A fixed subnet keeps the broker startable on hosts whose default Docker
-# address pools are exhausted (Unraid here, with dozens of projects).
+# address pools are exhausted (common on NAS platforms running many projects).
 networks:
   default:
     ipam:

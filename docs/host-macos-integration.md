@@ -6,19 +6,19 @@ replace Siri's language model or register MultiVibe as an Apple model provider.
 
 ## Entry points
 
-- **Demander…** in the menu-bar popover opens a native question window. Select a
+- **Ask…** in the menu-bar popover opens a native question window. Select a
   model, enter text, and send. Responses can be selected or copied. Cancel stops
   the client request; a provider may already have incurred usage.
-- **Demander à MultiVibe** in Shortcuts accepts a question and a model and returns
+- **Ask MultiVibe** in Shortcuts accepts a question and a model and returns
   its text, with a Siri dialog. The model picker queries the live Host catalog.
-- **Choisir le modèle MultiVibe par défaut** saves a model for the native window
+- **Set the default MultiVibe model** saves a model for the native window
   and the Shortcuts model parameter's default suggestion.
-- **Lister les modèles MultiVibe** returns model entities for further actions.
-- **Ouvrir une demande MultiVibe** prepares editable text without sending it.
-- **Interroger un fichier texte avec MultiVibe** accepts a UTF-8 file, question and
+- **List MultiVibe models** returns model entities for further actions.
+- **Open a MultiVibe request** prepares editable text without sending it.
+- **Query a text file with MultiVibe** accepts a UTF-8 file, question and
   model, and returns a response. Input is limited to 32,000 characters including
   the question (128 KB maximum file data).
-- **Services → Demander à MultiVibe** prepares text selected in an application
+- **Services → Ask MultiVibe** prepares text selected in an application
   supporting macOS text services. Keyboard shortcuts for Services can be assigned
   in macOS Keyboard settings.
 - **Share → MultiVibe** prepares shared text or web addresses in the Host. Enable
@@ -30,7 +30,7 @@ replace Siri's language model or register MultiVibe as an Apple model provider.
 
 ## Privacy and execution
 
-Only explicit Send or the **Demander** / file interrogation actions execute
+Only explicit Send or the **Ask** / file interrogation actions execute
 inference. Input may reach the selected model's remote provider. Services and
 sharing prepare drafts for review. The share extension is sandboxed and has no
 network or Host credential access. Drafts and replies are held in memory, not

@@ -361,7 +361,7 @@ test("a first start mints a key when none is supplied", () => {
 // --- saturation fallback ----------------------------------------------------
 
 test("an edge 429 falls back to Nous instead of surfacing to the harness", async () => {
-  // 429 is what the edge answers when the edge pool are saturated: precisely the
+  // 429 is what the edge answers when its pool is saturated: precisely the
   // case the fallback exists for.
   const { fetchImpl, calls } = scriptedFetch([
     jsonResponse({ decision: "admit", lease: "adml_x" }),

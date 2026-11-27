@@ -469,7 +469,7 @@ export function createBridge(deps: BridgeDeps) {
       return;
     }
 
-    // `429` is exactly what the edge answers when the edge pool are saturated,
+    // `429` is exactly what the edge answers when its pool is saturated,
     // and `503` when no slot exists at all. Those are the situations the
     // fallback exists for: returning them to the harness would break the
     // promise at the moment it matters most. Nothing has been written to the

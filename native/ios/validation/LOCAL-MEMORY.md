@@ -13,9 +13,9 @@ output and network failures leave existing memory untouched and are retried afte
 a later successful exchange. The reviewed message marker is persisted with history.
 Reviews above the 48 KB input budget are rejected without marking them reviewed.
 
-Use **Mémoire** from the conversation-list menu to add, inspect, correct or forget
-information. The chat has no **Mémoire** toolbar button or **Retenir** message action.
-**Retiens ceci : …** is handled as a normal conversation message; **Oublie ceci**
+Use **Memory** from the conversation-list menu to add, inspect, correct or forget
+information. The chat has no **Memory** toolbar button or **Remember** message action.
+**Remember this: …** is handled as a normal conversation message; **Forget this**
 opens the memory list for explicit selection.
 
 ## Evidence and retrieval
@@ -36,7 +36,7 @@ conflicting memories are never indexed as usable facts. Source messages and raw
 conversation search explicitly distinguish user statements from assistant guesses.
 No model fine-tuning or recursive summary is involved. The app records the exact
 memory revisions retrieved and exposes their original quotations/dates under
-**Souvenirs consultés** on the response. Generated citation text is not trusted.
+**Memories consulted** on the response. Generated citation text is not trusted.
 
 The most relevant sourced memory is also supplied to the selected remote model.
 Remote background reviews send new conversation messages and memories in the same
@@ -53,7 +53,7 @@ stable native source identity across devices. Forgetting a memory alone does not
 delete its original conversation message.
 
 Guest memories stay in the guest journal and are not automatically copied on login.
-Account switches clear the active index/draft. **Synchroniser la mémoire** is a
+Account switches clear the active index/draft. **Sync memory** is a
 separate explicit opt-in; unconfirmed proposals never leave the device. Enabling
 automatic history synchronization also retries memory sync on reconnect. Manual
 sync is available in the Memory screen. Disabling stops future memory sync and does

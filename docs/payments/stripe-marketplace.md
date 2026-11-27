@@ -1,229 +1,225 @@
-# Paiements Stripe Connect : marketplace multi-instances
+# Stripe Connect payments: multi-instance marketplace
 
-Plan de réimplémentation du mécanisme Toulousecraft dans MultiVibe : chaque
-personne qui installe son propre serveur peut encaisser les paiements de ses
-utilisateurs via notre plateforme Stripe Connect, et nous prélevons une
-commission.
+Reimplementation plan for the Toulousecraft mechanism in MultiVibe: anyone who
+installs their own server can collect payments from their users through the
+MultiVibe Stripe Connect platform, and the platform takes a commission.
 
-Statut : proposition, aucune ligne de code de paiement n'est encore écrite.
+Status: proposal, no payment code has been written yet.
 
 ---
 
-## 1. Objectif
+## 1. Goal
 
-- N'importe quelle instance MultiVibe (auto-hébergée, derrière NAT, en HTTP sur
-  un LAN) peut activer la facturation en quelques clics.
-- L'admin de l'instance fixe ses prix (packs de crédit, éventuellement tarifs
-  par modèle déjà en place), encaisse sur **son** compte Stripe Connect, et voit
-  ses revenus.
-- La plateforme MultiVibe garde une commission par transaction, sans jamais
-  manipuler l'argent des utilisateurs finaux.
-- Un membre achète du crédit depuis l'instance, paie sur Stripe Checkout, et son
-  solde est crédité de façon fiable et idempotente.
-- Aucune clé Stripe secrète n'est distribuée aux self-hosters.
+- Any MultiVibe instance (self-hosted, behind NAT, over HTTP on a LAN) can
+  enable billing in a few clicks.
+- The instance admin sets their own prices (credit packs, possibly per-model
+  rates already in place), collects on **their** Stripe Connect account, and
+  sees their revenue.
+- The MultiVibe platform keeps a commission per transaction, without ever
+  handling end users' money.
+- A member buys credit from the instance, pays on Stripe Checkout, and their
+  balance is credited reliably and idempotently.
+- No Stripe secret key is distributed to self-hosters.
 
-## 2. Ce que fait Toulousecraft (référence)
+## 2. What Toulousecraft does (reference)
 
-Le dépôt `~/gitRepo/toulousecraft` contient un service central
-`stripe-service/index.js` (Express + SDK Stripe) et un client Java.
+The `toulousecraft` repository contains a central service
+`stripe-service/index.js` (Express + Stripe SDK) and a Java client.
 
-Mécanique réellement implémentée :
+Mechanics actually implemented:
 
-1. **Compte connecté Express** créé par la plateforme pour chaque admin :
+1. **Express connected account** created by the platform for each admin:
    `stripe.accounts.create({ type: "express", country: "FR", capabilities: {
    card_payments, transfers }, metadata: { admin_id } })`.
-2. **Onboarding hébergé** : `accountLinks.create({ type:
-   "account_onboarding", return_url, refresh_url })` ; le client ouvre l'URL
-   Stripe.
-3. **Checkout en destination charge** :
-   `checkout.sessions.create` avec
+2. **Hosted onboarding**: `accountLinks.create({ type:
+   "account_onboarding", return_url, refresh_url })`; the client opens the
+   Stripe URL.
+3. **Destination-charge checkout**:
+   `checkout.sessions.create` with
    `payment_intent_data.application_fee_amount = amount *
-   PLATFORM_FEE_PERCENT / 100` et
-   `transfer_data.destination = acct_...`. L'admin reçoit le net, la plateforme
-   garde la commission.
-4. **Webhook global** `/webhook` en `express.raw` +
+   PLATFORM_FEE_PERCENT / 100` and
+   `transfer_data.destination = acct_...`. The admin receives the net amount,
+   the platform keeps the commission.
+4. **Global webhook** `/webhook` in `express.raw` +
    `stripe.webhooks.constructEvent`, events `checkout.session.completed`,
    `account.updated`, `payment_intent.succeeded`.
-5. **Commission globale** via `PLATFORM_FEE_PERCENT` (défaut 20).
-6. **Authentification du client** par JWT signé par la plateforme.
+5. **Global commission** via `PLATFORM_FEE_PERCENT` (default 20).
+6. **Client authentication** by a JWT signed by the platform.
 
-Limites à ne pas reproduire :
+Limitations not to reproduce:
 
-- Le crédit joueur est un `TODO` dans le webhook : aucun crédit fiable.
-- Le webhook n'est pas persisté, pas idempotent, pas rejouable.
-- Un serveur auto-hébergé derrière NAT ne peut pas recevoir de webhook, et
-  Stripe refuse les URLs de retour non HTTPS : le retour navigateur casse.
-- Une seule commission globale, non snapshotée par paiement.
-- Pas de remboursements, pas de litiges, pas de ledger, pas de réconciliation.
-- Secrets chiffrés/obfusqués dans le client Java : sécurité par obscurité, et
-  le service central détient la clé secrète de la plateforme pour tous.
+- Player credit is a `TODO` in the webhook: no reliable credit.
+- The webhook is not persisted, not idempotent, not replayable.
+- A self-hosted server behind NAT cannot receive a webhook, and Stripe rejects
+  non-HTTPS return URLs: the browser return breaks.
+- A single global commission, not snapshotted per payment.
+- No refunds, no disputes, no ledger, no reconciliation.
+- Secrets encrypted/obfuscated in the Java client: security through obscurity,
+  and the central service holds the platform secret key for everyone.
 
-## 3. Architecture cible
+## 3. Target architecture
 
 ```
-Navigateur du membre
-   │  1. achat
+Member browser
+   │  1. purchase
    ▼
-Instance MultiVibe (Node)  ──2. POST /checkout (HMAC)──►  Broker marketplace (notre service)
+MultiVibe instance (Node)  ──2. POST /checkout (HMAC)──►  Marketplace broker
    │   ▲                                                     │  3. Checkout Session
-   │   └────────────── 6. événement signé / poll ────────────┤
+   │   └────────────── 6. signed event / poll ──────────────┤
    │                                                         ▼
-   └── 7. crédit wallet (idempotent)                    Stripe Connect
+   └── 7. wallet credit (idempotent)                    Stripe Connect
                                                              │
-                                                             └── compte connecté de l'instance
+                                                             └── instance connected account
 
-Navigateur ──4. paiement──► Stripe Checkout ──5. webhook──► Broker
+Browser ──4. payment──► Stripe Checkout ──5. webhook──► Broker
 ```
 
-- **Instance** : source de vérité du solde utilisateur, ne détient que son
-  secret d'instance. Elle ne parle jamais directement à Stripe.
-- **Broker** : notre service. Crée et gère les comptes connectés (dashboard
-  Express), les sessions Checkout, les commissions, les remboursements, le
-  ledger des paiements et un journal d'événements par instance.
-- **Stripe** : KYC, encaissement, payouts, Radar, TVA optionnelle.
+- **Instance**: source of truth for the user balance, holds only its instance
+  secret. It never talks to Stripe directly.
+- **Broker**: the marketplace service. Creates and manages connected accounts
+  (Express dashboard), Checkout sessions, commissions, refunds, the payment
+  ledger and an event journal per instance.
+- **Stripe**: KYC, collection, payouts, Radar, optional VAT.
 
-Ce découpage est nécessaire parce qu'une instance peut être injoignable
-(derrière NAT) et en HTTP. Le broker est le point durable ; l'instance tire les
-événements.
+This split is necessary because an instance may be unreachable (behind NAT) and
+on HTTP. The broker is the durable point; the instance pulls the events.
 
-## 4. Modèle économique
+## 4. Economic model
 
-### 4.1 Type de charge : direct charges recommandées
+### 4.1 Charge type: direct charges recommended
 
-Toulousecraft utilisait des **destination charges**. C'est le plus simple à
-brancher (une seule clé, celle de la plateforme), mais ce n'est pas le bon
-modèle pour une marketplace auto-hébergée :
+Toulousecraft used **destination charges**. It is the simplest to wire (a single
+key, the platform's), but it is not the right model for a self-hosted
+marketplace:
 
-- la plateforme est débitée des frais Stripe, des remboursements et des
-  litiges, même avec `on_behalf_of` ;
-- les comptes connectés ne peuvent pas gérer eux-mêmes remboursements ni
-  litiges ;
-- la plateforme porte les soldes négatifs ;
-- la commission doit couvrir les frais de traitement, donc être artificiellement
-  élevée.
+- the platform is debited for Stripe fees, refunds and disputes, even with
+  `on_behalf_of`;
+- connected accounts cannot handle refunds or disputes themselves;
+- the platform carries the negative balances;
+- the commission must cover the processing fees, and therefore has to be
+  artificially high.
 
-Recommandé : **direct charges** sur des comptes Connect v2 configurés en
-équivalent Express.
+Recommended: **direct charges** on Connect v2 accounts configured as the
+Express equivalent.
 
 ```
 stripe.accounts.create({
   dashboard: "express",
-  fees_collector: "stripe",        // le compte connecté paie les frais Stripe
-  losses_collector: "stripe",      // Stripe porte les soldes négatifs
+  fees_collector: "stripe",        // the connected account pays the Stripe fees
+  losses_collector: "stripe",      // Stripe carries the negative balances
   requirements_collector: "stripe",
   configuration: { merchant: { capabilities: { card_payments: { requested: true } } } },
   metadata: { instance_id, platform: "multivibe" },
 })
 ```
 
-Puis la session Checkout est créée **sur le compte connecté**
-(`stripe.checkout.sessions.create(params, { stripeAccount: acct_... })`) avec
+Then the Checkout session is created **on the connected account**
+(`stripe.checkout.sessions.create(params, { stripeAccount: acct_... })`) with
 `payment_intent_data.application_fee_amount`.
 
-Conséquences :
+Consequences:
 
-- le compte connecté est marchand de règlement : relevé bancaire, TVA,
-  remboursements et litiges lui appartiennent ;
-- Stripe débite ses frais du compte connecté, pas du nôtre ;
-- notre commission est du revenu net, sans devoir couvrir le processing ;
-- les soldes négatifs et les chargebacks sont portés par Stripe
-  (`losses_collector: stripe`), pas par la plateforme ;
-- l'admin peut rembourser depuis son dashboard Express ou via le broker.
+- the connected account is the merchant of record: bank statement, VAT,
+  refunds and disputes belong to it;
+- Stripe debits its fees from the connected account, not from ours;
+- our commission is net revenue, with no processing to cover;
+- negative balances and chargebacks are carried by Stripe
+  (`losses_collector: stripe`), not by the platform;
+- the admin can refund from their Express dashboard or through the broker.
 
-Formule :
+Formula:
 
 ```
 feeCents = round(amountCents * commissionBps / 10000)
-netCents = amountCents - feeCents - stripeFees   // payés par le compte connecté
+netCents = amountCents - feeCents - stripeFees   // paid by the connected account
 ```
 
-La commission peut donc être faible (5 % par exemple) sans perte.
+The commission can therefore be low (5% for example) without a loss.
 
-**Repli destination charges** si les direct charges ne sont pas disponibles
-(pays non couvert, compte v1 `type=express` legacy, ou contrainte Stripe) :
+**Destination charges fallback** if direct charges are not available (country
+not covered, legacy v1 `type=express` account, or a Stripe constraint):
 
-- `checkout.sessions.create` sur le compte plateforme avec
+- `checkout.sessions.create` on the platform account with
   `payment_intent_data.application_fee_amount` +
-  `transfer_data.destination` + `on_behalf_of` ;
-- notre solde paie les frais Stripe, les remboursements et les litiges ;
-- la commission minimale doit couvrir ~2,9 % + 0,30 dans la devise, sinon la
-  plateforme perd de l'argent ;
-- les comptes connectés ne peuvent pas rembourser : tout passe par le broker.
+  `transfer_data.destination` + `on_behalf_of`;
+- our balance pays the Stripe fees, the refunds and the disputes;
+- the minimum commission must cover ~2.9% + 0.30 in the currency, otherwise the
+  platform loses money;
+- connected accounts cannot refund: everything goes through the broker.
 
-Le broker choisit le mode par instance (`chargeMode: "direct" | "destination"`)
-et le fige à la création du compte ; il ne se mélange pas en cours de vie.
+The broker chooses the mode per instance (`chargeMode: "direct" | "destination"`)
+and freezes it at account creation; it is not mixed during the account's life.
 
-### 4.2 Alternative BYO Stripe (phase 2)
+### 4.2 BYO Stripe alternative (phase 2)
 
-Mode `byo-stripe` : l'admin colle ses propres clés (compte Standard ou v2 dont
-il est propriétaire), l'instance parle directement à Stripe, aucune commission.
-Utile aux entreprises qui refusent la marketplace, et cela dérisque l'activation
-du compte Connect plateforme.
+`byo-stripe` mode: the admin pastes their own keys (Standard account or a v2
+account they own), the instance talks to Stripe directly, no commission. Useful
+for businesses that refuse the marketplace, and it de-risks activation of the
+platform Connect account.
 
-### 4.3 TVA et conformité
+### 4.3 VAT and compliance
 
-- La vente de crédit est faite par l'admin de l'instance : sa responsabilité
-  fiscale, son compte Stripe, sa TVA.
-- La commission est une prestation B2B de la plateforme : à facturer par nous
-  (Stripe Tax sur le compte plateforme, ou facturation annuelle).
-- Le broker doit publier des CGU marketplace (interdictions, remboursements,
-  litiges) et Stripe doit approuver l'usage Connect/marketplace.
-- En direct charge, le compte connecté est marchand de règlement : c'est lui
-  qui apparaît sur le relevé du client final.
+- The credit sale is made by the instance admin: their tax responsibility,
+  their Stripe account, their VAT.
+- The commission is a B2B service from the platform: to be invoiced by us
+  (Stripe Tax on the platform account, or annual invoicing).
+- The broker must publish marketplace terms of service (prohibitions, refunds,
+  disputes) and Stripe must approve the Connect/marketplace usage.
+- In direct charge, the connected account is the merchant of record: it is the
+  one that appears on the end customer's statement.
 
-## 5. Enrollment sans OAuth redirect (compatible NAT)
+## 5. Enrollment without OAuth redirect (NAT-compatible)
 
-Un flux OAuth classique exige une `redirect_uri` publique HTTPS. On utilise donc
-un **device code** :
+A classic OAuth flow requires a public HTTPS `redirect_uri`. So we use a
+**device code**:
 
-1. Admin → Réglages → Paiements → « Connecter Stripe ».
+1. Admin → Settings → Payments → "Connect Stripe".
 2. `POST {broker}/v1/enrollments` → `{ code, verificationUrl, expiresAt }`
-   (code court, 10 minutes, à usage unique).
-3. L'UI affiche le code et le lien. L'admin l'ouvre sur son téléphone ou un
-   autre navigateur, se connecte à son compte marketplace (email + magic link
-   ou passkey, réutiliser l'identité MultiVibe Cloud), saisit le code et nomme
-   l'instance.
-4. L'instance interroge `GET /v1/enrollments/{code}` (ou reçoit un push SSE) et
-   obtient une seule fois `{ instanceId, instanceSecret }`.
-5. Le secret est stocké côté instance dans un fichier `0600` (ou un champ
-   dédié du store avec permissions restrictives) ; le broker ne garde qu'un
-   hash.
+   (short code, 10 minutes, single use).
+3. The UI displays the code and the link. The admin opens it on their phone or
+   another browser, signs in to their marketplace account (email + magic link
+   or passkey, reusing the MultiVibe Cloud identity), enters the code and names
+   the instance.
+4. The instance polls `GET /v1/enrollments/{code}` (or receives an SSE push) and
+   obtains `{ instanceId, instanceSecret }` exactly once.
+5. The secret is stored on the instance side in a `0600` file (or a dedicated
+   store field with restrictive permissions); the broker keeps only a hash.
 
-Variante acceptée : si l'instance a déjà une connexion MultiVibe Cloud, le
-broker peut réutiliser cette identité pour pré-remplir l'étape 3.
+Accepted variant: if the instance already has a MultiVibe Cloud connection, the
+broker can reuse that identity to pre-fill step 3.
 
-## 6. Onboarding Stripe Connect
+## 6. Stripe Connect onboarding
 
-- `POST /v1/instances/{id}/connect/onboarding` (auth secret d'instance) :
-  - crée le compte v2 si absent, avec la configuration du §4.1
+- `POST /v1/instances/{id}/connect/onboarding` (instance secret auth):
+  - creates the v2 account if missing, with the §4.1 configuration
     (`dashboard: "express"`, `fees_collector: "stripe"`,
     `losses_collector: "stripe"`, `requirements_collector: "stripe"`,
-    capability `card_payments`), pays de l'admin, email,
-    `metadata: { instance_id, platform: "multivibe" }` ;
-  - crée un `accountLink` `account_onboarding`.
-- `return_url` et `refresh_url` pointent vers des pages **du broker**
-  (`/connect/return?instance=...`), qui affichent « Revenir à votre serveur »
-  avec un deep link. Stripe ne voit jamais une URL HTTP locale.
-- `GET /v1/instances/{id}/connect` renvoie
+    `card_payments` capability), the admin's country, email,
+    `metadata: { instance_id, platform: "multivibe" }`;
+  - creates an `accountLink` `account_onboarding`.
+- `return_url` and `refresh_url` point to pages **of the broker**
+  (`/connect/return?instance=...`), which show "Back to your server" with a deep
+  link. Stripe never sees a local HTTP URL.
+- `GET /v1/instances/{id}/connect` returns
   `{ status: not_connected | pending | restricted | active, chargesEnabled,
   payoutsEnabled, requirementsDue, dashboardUrl? }`.
-- `account.updated` et les événements de capability mettent à jour le broker et
-  émettent un événement `connect.updated`.
-- Bouton « Tableau de bord Stripe » : `accounts.createLoginLink` (Express) pour
-  que l'admin voie ses paiements et payouts.
-- Un compte = un pays et une devise de règlement. Changer de pays plus tard
-  impose un nouveau compte : à afficher à l'onboarding.
-- Vérifier avant tout checkout : `charges_enabled` et capability
-  `card_payments` active.
+- `account.updated` and capability events update the broker and emit a
+  `connect.updated` event.
+- "Stripe dashboard" button: `accounts.createLoginLink` (Express) so the admin
+  sees their payments and payouts.
+- One account = one country and one settlement currency. Changing country later
+  requires a new account: to be shown at onboarding.
+- Check before any checkout: `charges_enabled` and the `card_payments`
+  capability active.
 
-## 7. Checkout et crédit
+## 7. Checkout and credit
 
-### 7.1 Packs définis par l'instance
+### 7.1 Packs defined by the instance
 
 ```json
 {
   "id": "pack_10",
-  "label": "10 € de crédit",
+  "label": "€10 of credit",
   "amountCents": 1000,
   "currency": "EUR",
   "creditUsd": 10,
@@ -231,13 +227,13 @@ broker peut réutiliser cette identité pour pré-remplir l'étape 3.
 }
 ```
 
-L'admin choisit une devise de vente unique par instance. Le crédit est exprimé
-en USD (unité interne de MultiVibe) et fixé par pack : pas de conversion
-implicite ni de taux de change caché.
+The admin chooses a single sales currency per instance. Credit is expressed in
+USD (MultiVibe's internal unit) and fixed per pack: no implicit conversion and
+no hidden exchange rate.
 
-### 7.2 Création de session
+### 7.2 Session creation
 
-`POST /v1/instances/{id}/checkout` avec `Idempotency-Key` :
+`POST /v1/instances/{id}/checkout` with `Idempotency-Key`:
 
 ```json
 {
@@ -246,150 +242,149 @@ implicite ni de taux de change caché.
   "currency": "EUR",
   "creditUsd": 10,
   "userRef": "usr_...",
-  "customerEmail": "membre@example.com",
+  "customerEmail": "member@example.com",
   "successUrl": "https://instance.example/billing/return",
   "cancelUrl": "https://instance.example/billing"
 }
 ```
 
-Le broker valide : instance active, `chargesEnabled`, devise autorisée, montant
-entier dans `[minCharge, maxCharge]`, `creditUsd` positif et plafonné. Il ne
-connaît pas les prix de l'instance et ne peut pas les vérifier : l'admin est le
-marchand, le risque est le sien.
+The broker validates: instance active, `chargesEnabled`, allowed currency,
+integer amount within `[minCharge, maxCharge]`, `creditUsd` positive and capped.
+It does not know the instance's prices and cannot verify them: the admin is the
+merchant, the risk is theirs.
 
-Stripe (mode direct, recommandé) :
+Stripe (direct mode, recommended):
 
-- `stripe.checkout.sessions.create(params, { stripeAccount: acct_... })` ;
-- `mode: "payment"`, `line_items` construits depuis le pack ;
-- `client_reference_id = userRef` ;
-- `payment_intent_data: { application_fee_amount: feeCents, metadata: {...} }` ;
-- `success_url = {broker}/checkout/return?session_id={CHECKOUT_SESSION_ID}` ;
-- le broker redirige ensuite vers le `successUrl` de l'instance en ajoutant
+- `stripe.checkout.sessions.create(params, { stripeAccount: acct_... })`;
+- `mode: "payment"`, `line_items` built from the pack;
+- `client_reference_id = userRef`;
+- `payment_intent_data: { application_fee_amount: feeCents, metadata: {...} }`;
+- `success_url = {broker}/checkout/return?session_id={CHECKOUT_SESSION_ID}`;
+- the broker then redirects to the instance's `successUrl`, adding
   `session_id`.
 
-En mode destination (repli), la session est créée sur le compte plateforme avec
-`payment_intent_data.transfer_data.destination` et `on_behalf_of` en plus.
+In destination mode (fallback), the session is created on the platform account
+with `payment_intent_data.transfer_data.destination` and `on_behalf_of` as well.
 
-Réponse : `{ url, sessionId, amountCents, feeCents, netCents, currency,
+Response: `{ url, sessionId, amountCents, feeCents, netCents, currency,
 chargeMode, expiresAt }`.
 
-### 7.3 Crédit fiable
+### 7.3 Reliable credit
 
-- L'instance ne crédite **jamais** sur la seule redirection navigateur.
-- Elle appelle `GET /v1/instances/{id}/payments/{sessionId}` ou attend
-  l'événement `payment.succeeded`.
-- Le crédit est idempotent : `paymentId`/`sessionId` unique dans le ledger
-  local (`creditLedger`), rejouer ne double pas.
-- Le crédit ajoute `creditUsd + bonusUsd` au wallet de l'utilisateur, avec une
-  entrée `topup` contenant `paymentId`, montant payé, devise, commission, date.
+- The instance **never** credits on the browser redirect alone.
+- It calls `GET /v1/instances/{id}/payments/{sessionId}` or waits for the
+  `payment.succeeded` event.
+- Credit is idempotent: `paymentId`/`sessionId` unique in the local ledger
+  (`creditLedger`), replaying does not double it.
+- Credit adds `creditUsd + bonusUsd` to the user's wallet, with a `topup` entry
+  containing `paymentId`, amount paid, currency, commission, date.
 
-### 7.4 Retour, expiration, abandon
+### 7.4 Return, expiration, abandonment
 
-- Session expirée → événement `checkout.expired` (ou statut `unpaid` au poll),
-  aucun crédit.
-- Paiement en attente (moyens asynchrones) → `processing`, crédit seulement à
-  `paid`.
-- L'instance affiche un état « paiement en cours de vérification » plutôt qu'un
-  faux succès.
+- Expired session → `checkout.expired` event (or `unpaid` status at poll), no
+  credit.
+- Pending payment (asynchronous methods) → `processing`, credit only at `paid`.
+- The instance shows a "payment being verified" state rather than a false
+  success.
 
-## 8. Événements et fiabilité
+## 8. Events and reliability
 
-C'est le point qui manque à Toulousecraft.
+This is the point Toulousecraft is missing.
 
-- Webhooks Stripe → broker uniquement, en `raw` body,
-  `stripe.webhooks.constructEvent`, avec **deux endpoints et deux secrets** :
-  - « votre compte » (`connect: false`) : événements plateforme ;
-  - « comptes connectés » (`connect: true`) : événements des direct charges
-    (`event.account` renseigné).
-- Vérifier `event.livemode` et le mettre en correspondance avec le mode de
-  l'instance. Pour un objet d'un direct charge, le récupérer **en tant que
-  compte connecté** (`stripeAccount: event.account`), sinon Stripe répond
-  « No such… ».
-- Le broker persiste chaque événement dans `stripe_events` (clé
-  `stripe_event_id`, idempotence) puis dans un **outbox par instance** :
+- Stripe webhooks → broker only, with a `raw` body,
+  `stripe.webhooks.constructEvent`, with **two endpoints and two secrets**:
+  - "your account" (`connect: false`): platform events;
+  - "connected accounts" (`connect: true`): events of the direct charges
+    (`event.account` set).
+- Check `event.livemode` and match it against the instance's mode. For an object
+  of a direct charge, retrieve it **as the connected account**
+  (`stripeAccount: event.account`), otherwise Stripe answers "No such…".
+- The broker persists each event in `stripe_events` (key `stripe_event_id`,
+  idempotence) then in an **outbox per instance**:
   `instance_events(instance_id, seq, type, payload, created_at)`.
-- L'instance tire `GET /v1/instances/{id}/events?after={cursor}&limit=100`,
-  applique chaque événement, puis avance son curseur **dans le même flush** que
-  le crédit. Un doublon est ignoré par `stripeEventId`.
-- Polling : au démarrage, toutes les 60 s quand la facturation est active, et
-  juste après un retour de checkout. Aucun besoin d'être joignable.
-- Push optionnel plus tard (SSE ou webhook sortant signé) pour la latence,
-  jamais comme source unique.
-- Rétention 90 jours ; au-delà, la réconciliation se fait via
+- The instance pulls `GET /v1/instances/{id}/events?after={cursor}&limit=100`,
+  applies each event, then advances its cursor **in the same flush** as the
+  credit. A duplicate is ignored by `stripeEventId`.
+- Polling: at startup, every 60 s when billing is active, and right after a
+  checkout return. No need to be reachable.
+- Optional push later (SSE or signed outgoing webhook) for latency, never as the
+  single source.
+- Retention 90 days; beyond that, reconciliation happens via
   `GET /v1/instances/{id}/payments?since=`.
-- Réconciliation quotidienne côté instance : sessions des 7 derniers jours
-  comparées au ledger local.
+- Daily reconciliation on the instance side: sessions of the last 7 days
+  compared against the local ledger.
 
-Types d'événements : `payment.succeeded`, `payment.refunded`,
+Event types: `payment.succeeded`, `payment.refunded`,
 `payment.disputed`, `connect.updated`, `checkout.expired`.
 
-## 9. Remboursements, litiges, chargebacks
+## 9. Refunds, disputes, chargebacks
 
-Direct charges (recommandé) :
+Direct charges (recommended):
 
-- `POST /v1/instances/{id}/refunds` (admin de l'instance, ou depuis son
-  dashboard Express) : le broker exécute `refunds.create` sur le compte
-  connecté et émet `payment.refunded`.
-- La commission peut être restituée avec `refund_application_fee: true` selon
-  la politique commerciale. Stripe ne le fait jamais automatiquement.
-- Les litiges sont débités du compte connecté ; Stripe est responsable des
-  soldes négatifs (`losses_collector: stripe`). Le broker émet
-  `payment.disputed` et gèle le crédit lié.
-- L'instance débite le wallet du montant crédité, clampe à 0, journalise, et
-  gèle le compte si le solde devient négatif au-delà d'un seuil configurable.
-- Pas de remboursement libre-service côté membre en v1 : cela permettrait de
-  blanchir du crédit déjà consommé.
+- `POST /v1/instances/{id}/refunds` (instance admin, or from their Express
+  dashboard): the broker runs `refunds.create` on the connected account and
+  emits `payment.refunded`.
+- The commission can be returned with `refund_application_fee: true` depending
+  on the commercial policy. Stripe never does it automatically.
+- Disputes are debited from the connected account; Stripe is responsible for
+  negative balances (`losses_collector: stripe`). The broker emits
+  `payment.disputed` and freezes the related credit.
+- The instance debits the wallet by the credited amount, clamps at 0, journals
+  it, and freezes the account if the balance goes negative beyond a
+  configurable threshold.
+- No member self-service refund in v1: that would allow laundering credit
+  already consumed.
 
-Destination charges (repli) :
+Destination charges (fallback):
 
-- Les remboursements et litiges sont débités du **solde plateforme** ;
-- les comptes connectés ne peuvent pas rembourser eux-mêmes : tout passe par
-  le broker, qui doit surveiller son solde et suspendre les instances à risque ;
-- `refund_application_fee` n'existe pas dans ce mode : la commission est
-  reprise par un remboursement manuel ou une écriture d'ajustement.
+- Refunds and disputes are debited from the **platform balance**;
+- connected accounts cannot refund themselves: everything goes through the
+  broker, which must watch its balance and suspend instances at risk;
+- `refund_application_fee` does not exist in this mode: the commission is
+  clawed back by a manual refund or an adjustment entry.
 
-## 10. Comptabilité du crédit dans MultiVibe
+## 10. Credit accounting in MultiVibe
 
-État actuel :
+Current state:
 
-- `User.quota.creditUsd` = allocation de la période (mois/jour/total), remise à
-  zéro par `rollUsagePeriod`.
-- `User.usage.costUsd` = coût cumulé de la période.
-- Enforcement : `user_access()` dans `rust/v1-edge/src/lib.rs` et
-  `reasonsFor()` / `remainingFor()` dans `src/users.ts`.
-- Le coût est enregistré par `store.recordUserUsage()` depuis le callback
-  `onCompleted` de `createTraceManager` (`src/server.ts`).
+- `User.quota.creditUsd` = the period's allocation (month/day/total), reset to
+  zero by `rollUsagePeriod`.
+- `User.usage.costUsd` = cumulative cost of the period.
+- Enforcement: `user_access()` in `rust/v1-edge/src/lib.rs` and
+  `reasonsFor()` / `remainingFor()` in `src/users.ts`.
+- The cost is recorded by `store.recordUserUsage()` from the `onCompleted`
+  callback of `createTraceManager` (`src/server.ts`).
 
-Ajouts :
+Additions:
 
 ```ts
 type CreditEntry = {
   id: string;
   kind: "allowance" | "topup" | "adjust" | "refund" | "debit";
-  amountUsd: number;          // signé
-  balanceAfterUsd: number;    // wallet après l'écriture
+  amountUsd: number;          // signed
+  balanceAfterUsd: number;    // wallet after the entry
   at: number;
-  actor?: string;             // admin ou "system"
-  paymentId?: string;         // référence Stripe côté broker
+  actor?: string;             // admin or "system"
+  paymentId?: string;         // Stripe reference on the broker side
   note?: string;
 };
 
 type User = {
   // ...
-  /** Crédit acheté, persiste d'une période à l'autre. */
+  /** Purchased credit, persists from one period to the next. */
   walletUsd?: number;
-  /** Part du coût de la période couverte par l'allocation quota. */
+  /** Share of the period cost covered by the quota allowance. */
   usage: UserUsage & { grantedCostUsd?: number };
-  /** Journal borné (500 dernières entrées). */
+  /** Bounded journal (last 500 entries). */
   creditLedger?: CreditEntry[];
 };
 ```
 
-Règles d'imputation dans `recordUserUsage` :
+Charging rules in `recordUserUsage`:
 
 ```
 if quota.creditUsd === undefined:
-    // crédit illimité : le wallet n'est pas débité
+    // unlimited credit: the wallet is not debited
     usage.grantedCostUsd += cost
 else:
     grantedRemaining = max(0, quota.creditUsd - usage.grantedCostUsd)
@@ -398,72 +393,73 @@ else:
     walletUsd       -= (cost - covered)
 ```
 
-- Crédit illimité (`creditUsd` absent) : aucun débit du wallet, sinon un compte
-  sans plafond viderait un porte-monnaie acheté sans raison.
-- L'allocation de période est consommée d'abord, puis le wallet.
-- `rollUsagePeriod` remet `grantedCostUsd` à 0 et **ne touche pas** au wallet.
-- Une requête déjà partie ne peut pas être arrêtée en cours : le solde peut donc
-  devenir négatif du coût de cette dernière requête. On ne clampe pas (ce serait
-  perdre la dette réelle) ; le compte est bloqué dès que le solde est ≤ 0.
-  Décision validée : le léger dépassement est autorisé et un solde négatif est
-  conservé tel quel, visible dans le dashboard, jusqu'au prochain rechargement.
-- Enforcement : épuisé si
-  `usage.grantedCostUsd >= quota.creditUsd && walletUsd <= 0`, ou caps
-  tokens/requêtes atteints.
-- Compatibilité ascendante Rust : si `walletUsd` ou `grantedCostUsd` sont
-  absents (ancien `accounts.json`), retomber sur le calcul actuel
+- Unlimited credit (`creditUsd` absent): no wallet debit, otherwise an account
+  without a cap would empty a purchased wallet for no reason.
+- The period allowance is consumed first, then the wallet.
+- `rollUsagePeriod` resets `grantedCostUsd` to 0 and **does not touch** the
+  wallet.
+- A request already in flight cannot be stopped midway: the balance can
+  therefore go negative by the cost of that last request. We do not clamp (that
+  would lose the real debt); the account is blocked as soon as the balance is
+  ≤ 0. Decision approved: the slight overshoot is allowed and a negative balance
+  is kept as is, visible in the dashboard, until the next top-up.
+- Enforcement: exhausted if
+  `usage.grantedCostUsd >= quota.creditUsd && walletUsd <= 0`, or token/request
+  caps reached.
+- Rust backward compatibility: if `walletUsd` or `grantedCostUsd` are absent
+  (old `accounts.json`), fall back to the current calculation
   `usage.costUsd >= quota.creditUsd`.
-- `POST /admin/users/:id/credit` (existant) continue d'augmenter
-  `quota.creditUsd` et journalise une entrée `allowance`.
-- Une édition directe du plafond dans le formulaire utilisateur est journalisée
-  de la même façon (delta seulement).
-- `POST /admin/users/:id/wallet` crédite ou débite le solde prépayé
-  (geste commercial, remboursement), journalisé, avec note optionnelle.
-- `GET /admin/users/:id/credits` renvoie `{ walletUsd, ledger }` pour l'onglet
-  **Users** (solde, formulaire, huit derniers mouvements).
-- Onglet membre **Credit** : `GET /admin/me` suffit, il expose déjà
-  `walletUsd` et `usage.remainingCreditUsd`; aucune fuite des autres membres.
-- Solde affiché au membre :
+- `POST /admin/users/:id/credit` (existing) keeps increasing
+  `quota.creditUsd` and journals an `allowance` entry.
+- A direct edit of the cap in the user form is journaled the same way (delta
+  only).
+- `POST /admin/users/:id/wallet` credits or debits the prepaid balance
+  (goodwill gesture, refund), journaled, with an optional note.
+- `GET /admin/users/:id/credits` returns `{ walletUsd, ledger }` for the
+  **Users** tab (balance, form, last eight movements).
+- Member **Credit** tab: `GET /admin/me` is enough, it already exposes
+  `walletUsd` and `usage.remainingCreditUsd`; no leak of other members.
+- Balance shown to the member:
   `max(0, creditUsd - grantedCostUsd) + max(0, walletUsd)`.
 
-Ne pas débiter `usage.costUsd` directement : il se réinitialise, donc le crédit
-acheté redeviendrait dépensable à chaque période.
+Do not debit `usage.costUsd` directly: it resets, so purchased credit would
+become spendable again every period.
 
-## 11. API du broker
+## 11. Broker API
 
-Auth instance : `Authorization: Bearer <instanceSecret>` +
+Instance auth: `Authorization: Bearer <instanceSecret>` +
 `X-Multivibe-Timestamp` + `X-Multivibe-Signature =
 HMAC-SHA256(secret, timestamp + "." + method + path + sha256(body))`,
-fenêtre de 5 minutes, `Idempotency-Key` obligatoire sur les écritures. Le
-`instanceId` est toujours déduit du secret, jamais lu dans le corps.
+5-minute window, `Idempotency-Key` mandatory on writes. The `instanceId` is
+always derived from the secret, never read from the body.
 
-| Méthode | Route | Rôle |
+| Method | Route | Role |
 | --- | --- | --- |
-| POST | `/v1/enrollments` | démarrer un device code |
-| GET | `/v1/enrollments/{code}` | récupérer l'identité (une fois) |
-| POST | `/v1/enrollments/{code}/claim` | approuver côté navigateur |
-| GET | `/v1/instance` | nom, statut, commission, devise |
-| POST | `/v1/connect/onboarding` | créer le compte v2 + lien |
-| GET | `/v1/connect` | statut KYC, capabilities, dashboard |
-| POST | `/v1/checkout` | créer une session Checkout (sur le compte connecté en mode direct) |
-| GET | `/v1/payments/{sessionId}` | statut vérifié d'un paiement |
-| GET | `/v1/payments?since=&limit=` | réconciliation |
-| GET | `/v1/events?after=&limit=` | outbox signé |
-| POST | `/v1/refunds` | rembourser |
-| GET | `/v1/earnings` | brut, commission, net, prochains payouts |
-| POST | `/v1/secret/rotate` | rotation sans downtime |
+| POST | `/v1/enrollments` | start a device code |
+| GET | `/v1/enrollments/{code}` | retrieve the identity (once) |
+| POST | `/v1/enrollments/{code}/claim` | approve on the browser side |
+| GET | `/v1/instance` | name, status, commission, currency |
+| POST | `/v1/connect/onboarding` | create the v2 account + link |
+| GET | `/v1/connect` | KYC status, capabilities, dashboard |
+| POST | `/v1/checkout` | create a Checkout session (on the connected account in direct mode) |
+| GET | `/v1/payments/{sessionId}` | verified status of a payment |
+| GET | `/v1/payments?since=&limit=` | reconciliation |
+| GET | `/v1/events?after=&limit=` | signed outbox |
+| POST | `/v1/refunds` | refund |
+| GET | `/v1/earnings` | gross, commission, net, upcoming payouts |
+| POST | `/v1/secret/rotate` | rotation without downtime |
 
-API plateforme (notre dashboard, auth opérateur) :
+Platform API (operator dashboard, operator auth):
 
-- lister les instances (GMV, commission, statut KYC, pays) ;
-- changer `commissionBps` (snapshot par paiement, jamais rétroactif) ;
-- suspendre une instance (fraude, chargebacks) ;
-- voir les paiements, remboursements, litiges ;
-- exports comptables.
+- list the instances (GMV, commission, KYC status, country);
+- change `commissionBps` (snapshot per payment, never retroactive);
+- suspend an instance (fraud, chargebacks);
+- see payments, refunds, disputes;
+- accounting exports.
 
-## 12. Modèle de données du broker
+## 12. Broker data model
 
-Postgres recommandé ; SQLite acceptable en mono-instance.
+Postgres recommended; SQLite acceptable in single-instance mode.
 
 - `platform_users(id, email, passkey…, created_at)`
 - `instances(id, owner_id, name, secret_hash, status, commission_bps,
@@ -483,63 +479,63 @@ Postgres recommandé ; SQLite acceptable en mono-instance.
   created_at)`
 - `audit_log(actor, action, target, metadata, at)`
 
-## 13. Modifications dans MultiVibe
+## 13. Changes in MultiVibe
 
-### Backend Node
+### Node backend
 
-- `src/types.ts` : `StoreSettings.payments`, `PaymentPack`, `PaymentsSettings`,
+- `src/types.ts`: `StoreSettings.payments`, `PaymentPack`, `PaymentsSettings`,
   `User.walletUsd`, `User.creditLedger`, `CreditEntry`, `AppliedPayment`.
-- `src/payments/` (nouveau) :
-  - `broker-client.ts` : HTTP signé (HMAC + horodatage), vérification de la
-    signature des réponses, timeouts, `Idempotency-Key`, erreurs typées.
-  - `credentials.ts` : fichier `data/payments-credentials.json` en `0600`
-    (instance id, secret, enrollment en cours), jamais dans `accounts.json`.
-  - `service.ts` : enrollment, statut Connect, onboarding, checkout,
-    synchronisation de l'outbox, crédit idempotent, remboursements,
-    réconciliation quotidienne, `startPaymentsPoller` (`unref()`).
-  - `signing.ts` : HMAC et comparaison à temps constant, partagés avec le
-    format wire du broker.
-  - `test-broker.ts` : faux broker `node:http` signé pour les tests.
-- `src/routes/admin/payments.ts` : réglages, enrollment, Connect, packs,
-  remboursements, revenus, synchronisation, déconnexion.
-- `src/routes/billing.ts` : côté membre — solde, packs, checkout, vérification
-  du retour, historique.
-- `src/server.ts` : init du service, démarrage du poller, montage de
-  `/admin/payments` et `/admin/billing`, arrêt propre.
-- `src/store.ts` : `creditWalletFromPayment` et `refundWalletFromPayment`
-  (idempotents par `paymentId`, remboursement proportionnel au crédit),
-  `paymentAwards` borné, `recordUserUsage` (imputation granted/wallet).
-- `src/users.ts` : `reasonsFor` / `remainingFor` incluent wallet et
+- `src/payments/` (new):
+  - `broker-client.ts`: signed HTTP (HMAC + timestamp), response signature
+    verification, timeouts, `Idempotency-Key`, typed errors.
+  - `credentials.ts`: `data/payments-credentials.json` file in `0600`
+    (instance id, secret, enrollment in progress), never in `accounts.json`.
+  - `service.ts`: enrollment, Connect status, onboarding, checkout, outbox
+    synchronization, idempotent credit, refunds, daily reconciliation,
+    `startPaymentsPoller` (`unref()`).
+  - `signing.ts`: HMAC and constant-time comparison, shared with the broker
+    wire format.
+  - `test-broker.ts`: fake signed `node:http` broker for tests.
+- `src/routes/admin/payments.ts`: settings, enrollment, Connect, packs,
+  refunds, revenue, synchronization, disconnection.
+- `src/routes/billing.ts`: member side — balance, packs, checkout, return
+  verification, history.
+- `src/server.ts`: service init, poller start, mounting of `/admin/payments`
+  and `/admin/billing`, clean shutdown.
+- `src/store.ts`: `creditWalletFromPayment` and `refundWalletFromPayment`
+  (idempotent by `paymentId`, refund proportional to the credit),
+  bounded `paymentAwards`, `recordUserUsage` (granted/wallet charging).
+- `src/users.ts`: `reasonsFor` / `remainingFor` include wallet and
   `grantedCostUsd`.
-- `src/config.ts` : `MULTIVIBE_MARKETPLACE_URL` (défaut
-  `https://marketplace.multivibe.cloud`, une valeur vide désactive
-  l'enrollment), `MULTIVIBE_MARKETPLACE_SECRET_PATH`,
+- `src/config.ts`: `MULTIVIBE_MARKETPLACE_URL` (default
+  `https://marketplace.multivibe.cloud`, an empty value disables enrollment),
+  `MULTIVIBE_MARKETPLACE_SECRET_PATH`,
   `MULTIVIBE_MARKETPLACE_POLL_INTERVAL_MS`,
   `MULTIVIBE_MARKETPLACE_REQUEST_TIMEOUT_MS`.
-- `rust/v1-edge/src/lib.rs` : `user_access` lit `walletUsd` /
-  `usage.grantedCostUsd` (fallback legacy), motif `payment_required`.
+- `rust/v1-edge/src/lib.rs`: `user_access` reads `walletUsd` /
+  `usage.grantedCostUsd` (legacy fallback), reason `payment_required`.
 
 ### UI
 
-- `packages/ui/src/components/tabs/BillingTab.tsx` (membre) : solde,
-  consommation de la période, packs, achat, retour Stripe vérifié, historique.
-- `packages/ui/src/components/tabs/PaymentsPanel.tsx` (admin) : enrollment,
-  état Stripe Connect, onboarding, commission, packs (CRUD), revenus,
-  remboursements, synchronisation.
-- `packages/ui/src/App.tsx` : onglet membre « Credit », onglet admin
-  « Payments » (groupe Advanced).
-- `packages/ui/src/types.ts` : types dashboard (`DashboardMemberBilling`,
+- `packages/ui/src/components/tabs/BillingTab.tsx` (member): balance, period
+  consumption, packs, purchase, verified Stripe return, history.
+- `packages/ui/src/components/tabs/PaymentsPanel.tsx` (admin): enrollment,
+  Stripe Connect state, onboarding, commission, packs (CRUD), revenue, refunds,
+  synchronization.
+- `packages/ui/src/App.tsx`: member tab "Credit", admin tab "Payments"
+  (Advanced group).
+- `packages/ui/src/types.ts`: dashboard types (`DashboardMemberBilling`,
   `DashboardPaymentsOverview`, `DashboardConnectStatus`…).
-- `packages/ui/src/i18n/fr/users.ts` : catalogues FR.
+- `packages/ui/src/i18n/fr/users.ts`: FR catalogs.
 
-### Réglages
+### Settings
 
 ```ts
 type PaymentsSettings = {
   enabled: boolean;
   brokerUrl?: string;
   instanceId?: string;
-  commissionBps?: number;       // informatif, figé par le broker
+  commissionBps?: number;       // informational, frozen by the broker
   chargeMode?: "direct" | "destination";
   currency: string;
   packs: PaymentPack[];         // id, label, amountCents, currency, creditUsd, bonusUsd
@@ -556,230 +552,221 @@ type PaymentsSettings = {
 };
 ```
 
-Le secret d'instance n'est pas dans `accounts.json` : fichier
-`data/payments-credentials.json` en `0600` (chemin surchargé par
-`MULTIVIBE_MARKETPLACE_SECRET_PATH`).
+The instance secret is not in `accounts.json`: `data/payments-credentials.json`
+file in `0600` (path overridden by `MULTIVIBE_MARKETPLACE_SECRET_PATH`).
 
-## 14. Service broker (notre infra)
+## 14. Broker service (operator-hosted)
 
-État livré :
+Delivered state:
 
-- `services/marketplace/` dans ce dépôt (TypeScript/Express), image Docker
-  multi-stage, `docker-compose.yml` dédié, store JSON mono-processus (l'adaptateur
-  Postgres reste à faire).
-- Pages présentes : code d'enrollment (`/enroll`), retours Connect et Checkout,
-  API opérateur (`/api/*`), `GET /health`.
-- Déploiement actuel : conteneur `multivibe-marketplace` sur le même hôte que
-  l'instance, port `1460` en LAN, état dans `services/marketplace/data/`, secrets
-  dans `services/marketplace/.env` (0600). L'instance le joint par le gateway
-  Docker (`http://172.24.0.1:1460`).
-- Reste à faire pour la production : nom public HTTPS
-  (`marketplace.multivibe.cloud`) devant ce port pour que Stripe atteigne les
-  deux webhooks, sauvegardes du store, logs sans PII.
-- Dev : clés Stripe test + `stripe listen --forward-to
-  localhost:PORT/webhooks/stripe` et
+- `services/marketplace/` in this repository (TypeScript/Express), multi-stage
+  Docker image, dedicated `docker-compose.yml`, single-process JSON store (the
+  Postgres adapter remains to be done).
+- Pages present: enrollment code (`/enroll`), Connect and Checkout returns,
+  operator API (`/api/*`), `GET /health`.
+- Current deployment: a `multivibe-marketplace` container on the same host as
+  the instance, port `1460` on the LAN, state in `services/marketplace/data/`,
+  secrets in `services/marketplace/.env` (0600). The instance reaches it
+  through the Docker gateway (`http://<docker-gateway>:1460`).
+- Remaining for production: public HTTPS name (`marketplace.multivibe.cloud`)
+  in front of this port so Stripe can reach both webhooks, store backups, logs
+  without PII.
+- Dev: Stripe test keys + `stripe listen --forward-to
+  localhost:PORT/webhooks/stripe` and
   `localhost:PORT/webhooks/stripe/connect`.
-- Prod : deux endpoints webhook (compte + comptes connectés), clés live,
-  alerte sur les événements en échec.
+- Prod: two webhook endpoints (account + connected accounts), live keys,
+  alerting on failed events.
 
 <a id="operator-token"></a>
 
-### Où trouver le jeton opérateur
+### Where to find the operator token
 
-La page `/enroll` du broker — celle que l'instance ouvre depuis **Réglages →
-Paiements** — demande un « Jeton opérateur » en plus du code d'enrôlement. Ce
-n'est ni le jeton d'administration de l'instance (`ADMIN_TOKEN`) ni le code
-d'enrôlement : c'est le secret que l'exploitant de la place de marché a
-configuré dans le broker.
+The broker's `/enroll` page — the one the instance opens from **Settings →
+Payments** — asks for an "Operator token" in addition to the enrollment code.
+This is neither the instance administration token (`ADMIN_TOKEN`) nor the
+enrollment code: it is the secret the marketplace operator configured in the
+broker.
 
-- **Génération** (une seule fois, puis on le conserve) :
+- **Generation** (once, then keep it):
 
   ```sh
   openssl rand -hex 32
   ```
 
-- **Stockage** : la valeur est affectée à `MARKETPLACE_OPERATOR_TOKEN=` dans
-  `services/marketplace/.env`, sur l'hôte qui exécute le broker. Sur Unraid :
-  `/mnt/user/appdata/multivibe/services/marketplace/.env`, mode `0600`,
-  git-ignoré. Ce fichier ne doit jamais être copié dans le dépôt, un ticket, une
-  capture d'écran ou un message.
+- **Storage**: the value is assigned to `MARKETPLACE_OPERATOR_TOKEN=` in
+  `services/marketplace/.env`, on the host running the broker. On the broker
+  host: `/srv/multivibe/services/marketplace/.env`, mode `0600`, git-ignored.
+  This file must never be copied into the repository, a ticket, a screenshot or
+  a message.
 
-- **Lecture sur Unraid sans fuite** : depuis la copie du dépôt sur l'hôte,
+- **Reading it on the broker host without leaking it**: from the repository
+  checkout on the host,
 
   ```sh
-  cd /mnt/user/appdata/multivibe/services/marketplace
+  cd /srv/multivibe/services/marketplace
   docker compose exec marketplace printenv MARKETPLACE_OPERATOR_TOKEN
   ```
 
-  Si le conteneur est arrêté :
+  If the container is stopped:
 
   ```sh
   sed -n 's/^MARKETPLACE_OPERATOR_TOKEN=//p' \
-    /mnt/user/appdata/multivibe/services/marketplace/.env
+    /srv/multivibe/services/marketplace/.env
   ```
 
-  La valeur s'affiche dans le terminal : ne la redirigez pas vers un fichier et
-  ne la collez pas dans un log, un ticket ou une conversation. Seule la commande
-  reste dans l'historique du shell, jamais la valeur. Après toute modification du
-  `.env`, recréer le conteneur (`docker compose up -d`) : l'environnement est lu
-  au démarrage.
+  The value is displayed in the terminal: do not redirect it to a file and do
+  not paste it into a log, a ticket or a conversation. Only the command stays in
+  the shell history, never the value. After any change to the `.env`, recreate
+  the container (`docker compose up -d`): the environment is read at startup.
 
-- **Valeur vide** : sans `MARKETPLACE_OPERATOR_TOKEN`, l'API opérateur est
-  désactivée (`/api/*` et `POST /v1/enrollments/:code/claim` répondent
-  `503 operator_disabled`) et `/enroll` n'exige plus de jeton. À réserver au
-  développement local : une place de marché en production doit toujours en avoir
-  un.
+- **Empty value**: without `MARKETPLACE_OPERATOR_TOKEN`, the operator API is
+  disabled (`/api/*` and `POST /v1/enrollments/:code/claim` answer
+  `503 operator_disabled`) and `/enroll` no longer requires a token. Reserve
+  this for local development: a production marketplace must always have one.
 
-- **À ne pas confondre** :
-  - `ADMIN_TOKEN` : jeton d'administration de l'instance MultiVibe (tableau de
-    bord du self-hoster), stocké dans le `.env` de l'instance, sans rapport avec
-    le broker ;
-  - le **code d'enrôlement** (`ABCD-EFGH`) : code court, à usage unique, affiché
-    dans Réglages → Paiements et valable quelques minutes ;
-  - le **jeton opérateur** : secret durable du broker, partagé uniquement avec
-    les personnes qui exploitent la place de marché.
+- **Not to be confused**:
+  - `ADMIN_TOKEN`: administration token of the MultiVibe instance (the
+    self-hoster's dashboard), stored in the instance `.env`, unrelated to the
+    broker;
+  - the **enrollment code** (`ABCD-EFGH`): short, single-use code, displayed in
+    Settings → Payments and valid for a few minutes;
+  - the **operator token**: durable broker secret, shared only with the people
+    who operate the marketplace.
 
-Le broker ne renvoie jamais ce jeton : il se saisit à la main sur `/enroll`, ou
-s'envoie en `Authorization: Bearer` sur `/api/*`.
+The broker never returns this token: it is entered by hand on `/enroll`, or sent
+as `Authorization: Bearer` on `/api/*`.
 
-## 15. Sécurité
+## 15. Security
 
-- Aucune clé Stripe chez les self-hosters ; le broker est le seul à parler à
+- No Stripe key at the self-hosters; the broker is the only one talking to
   Stripe.
-- Secret d'instance hashé (scrypt/argon2), rotation possible avec double secret
-  pendant 24 h.
-- HMAC + timestamp + idempotence sur chaque appel ; anti-replay.
-- Jamais de crédit sur la redirection navigateur.
-- Validation stricte : montants, devises autorisées, plafonds, rate limit par
+- Instance secret hashed (scrypt/argon2), rotation possible with a double
+  secret for 24 h.
+- HMAC + timestamp + idempotence on every call; anti-replay.
+- Never any credit on the browser redirect.
+- Strict validation: amounts, allowed currencies, caps, rate limit per
   instance.
-- `instanceId` déduit du secret, jamais du corps de requête.
-- Logs : pas de secret, pas de PII carte (Stripe ne la transmet pas),
-  `userRef` opaque.
-- Le checkout exige une session membre active (CSRF déjà couvert par l'auth
-  existante).
-- Un admin d'instance compromis ne peut nuire qu'à son propre compte : il est
-  le marchand. Un secret volé ne permet pas de créer des paiements pour une
-  autre instance.
-- En direct charge, le risque de solde négatif et de litige est porté par le
-  compte connecté et par Stripe (`losses_collector: stripe`) ; la plateforme
-  reste exposée si sa configuration est incorrecte.
-- Stripe Radar s'applique au compte connecté ; nouvelles instances
-  éventuellement en revue manuelle avant activation.
-- Surveiller le blanchiment : packs à très forte valeur, cartes volées,
-  remboursements anormaux, plusieurs instances sur la même carte.
-- Ne jamais accepter un `stripeAccount` fourni par l'instance : le broker le
-  résout depuis sa base.
+- `instanceId` derived from the secret, never from the request body.
+- Logs: no secret, no card PII (Stripe does not transmit it), opaque `userRef`.
+- Checkout requires an active member session (CSRF already covered by the
+  existing auth).
+- A compromised instance admin can only harm their own account: they are the
+  merchant. A stolen secret does not allow creating payments for another
+  instance.
+- In direct charge, the risk of negative balance and of dispute is carried by
+  the connected account and by Stripe (`losses_collector: stripe`); the platform
+  remains exposed if its configuration is incorrect.
+- Stripe Radar applies to the connected account; new instances possibly under
+  manual review before activation.
+- Watch for money laundering: very high-value packs, stolen cards, abnormal
+  refunds, several instances on the same card.
+- Never accept a `stripeAccount` supplied by the instance: the broker resolves
+  it from its database.
 
-## 16. Cas limites
+## 16. Edge cases
 
-- Instance hors ligne au paiement → événement conservé, crédit au prochain poll.
-- Paiement réussi mais instance supprimée ou secret perdu → ledger broker
-  conservé, support manuel.
-- Double clic / double webhook → idempotence par `session_id`.
-- Devises à zéro décimale (JPY) et minimum Stripe (~0,50) → validation.
-- Remboursement partiel, litige, chargeback → wallet négatif ou gel ; en direct
-  charge, le débit est sur le compte connecté.
-- Changement de domaine de l'instance → URLs stockées par paiement, aucune
-  dépendance.
-- Rotation de secret sans downtime.
-- Plusieurs admins par instance → rôles owner/admin et audit.
-- Changement de commission → snapshot par paiement, jamais rétroactif.
-- Test mode vs live → flag par instance, jamais mélanger les ledgers ;
-  vérifier `event.livemode`.
-- Compte Connect bloqué (`requirementsDue`) → checkout refusé avec un message
-  clair, pas une erreur Stripe brute.
-- Événement de direct charge livré dans le scope « comptes connectés » :
-  toujours lire `event.account` et requêter avec `stripeAccount`.
+- Instance offline at payment time → event kept, credit at the next poll.
+- Payment succeeded but instance deleted or secret lost → broker ledger kept,
+  manual support.
+- Double click / double webhook → idempotence by `session_id`.
+- Zero-decimal currencies (JPY) and the Stripe minimum (~0.50) → validation.
+- Partial refund, dispute, chargeback → negative wallet or freeze; in direct
+  charge, the debit is on the connected account.
+- Instance domain change → URLs stored per payment, no dependency.
+- Secret rotation without downtime.
+- Several admins per instance → owner/admin roles and audit.
+- Commission change → snapshot per payment, never retroactive.
+- Test mode vs live → flag per instance, never mix the ledgers; check
+  `event.livemode`.
+- Connect account blocked (`requirementsDue`) → checkout refused with a clear
+  message, not a raw Stripe error.
+- Direct charge event delivered in the "connected accounts" scope: always read
+  `event.account` and query with `stripeAccount`.
 
-## 17. Livraison
+## 17. Delivery
 
-| Phase | Contenu | Estimation |
+| Phase | Content | Estimate |
 | --- | --- | --- |
-| 0 | Décisions, compte Connect plateforme, CGU, TVA | 0,5 j + délais Stripe |
-| 1 | Wallet local sans Stripe, ledger, enforcement Node/Rust, UI solde | **fait** |
-| 2 | Broker MVP : device code, Connect, checkout crédit + abonnement, webhook, outbox, refunds | **fait** |
-| 3 | Intégration instance : client signé, poller, routes, crédit, réconciliation | **fait** |
-| 4 | Ops et durcissement : dashboard, métriques, e2e test mode, docs, i18n | 2–3 j |
+| 0 | Decisions, platform Connect account, terms of service, VAT | 0.5 day + Stripe lead times |
+| 1 | Local wallet without Stripe, ledger, Node/Rust enforcement, balance UI | **done** |
+| 2 | Broker MVP: device code, Connect, credit + subscription checkout, webhook, outbox, refunds | **done** |
+| 3 | Instance integration: signed client, poller, routes, credit, reconciliation | **done** |
+| 4 | Ops and hardening: dashboard, metrics, e2e test mode, docs, i18n | 2–3 days |
 
-Total indicatif : 11–15 jours ouvrés, hors activation Stripe Connect et
-vérification d'entreprise.
+Indicative total: 11–15 business days, excluding Stripe Connect activation and
+business verification.
 
-La phase 1 est livrée : `walletUsd`, `usage.grantedCostUsd`, le ledger borné
-`creditLedger`, l'enforcement Node et Rust (avec repli sur les anciens
-enregistrements), les routes `/admin/users/:id/wallet` et
-`/admin/users/:id/credits`, l'onglet **Users** (solde, crédit/débit, journal) et
-un onglet membre **Credit**. Le crédit prépayé est donc utilisable dès
-aujourd'hui avec des grants manuels, sans aucune dépendance Stripe.
+Phase 1 is delivered: `walletUsd`, `usage.grantedCostUsd`, the bounded
+`creditLedger`, Node and Rust enforcement (with a fallback to the old records),
+the `/admin/users/:id/wallet` and `/admin/users/:id/credits` routes, the
+**Users** tab (balance, credit/debit, journal) and a member **Credit** tab.
+Prepaid credit is therefore usable today with manual grants, without any Stripe
+dependency.
 
-Les phases 2 et 3 sont livrées : le broker TypeScript de
-`services/marketplace` (accounts Connect v2, checkout, webhooks Stripe et
-Connect, outbox signée, remboursements, litiges, revenus, idempotence) et son
-intégration dans l'instance (`src/payments/`). L'instance conserve son secret
-dans `data/payments-credentials.json` (0600), signe chaque appel HMAC, vérifie
-la signature de chaque réponse, et crédite le wallet par `paymentId` — le même
-garde-fou couvre le poller, le retour navigateur vérifié et la réconciliation
-quotidienne. Les onglets admin **Payments** et membre **Credit** exposent
-l'enrollment, l'onboarding Stripe, les packs, la synchronisation, les revenus,
-les remboursements et l'historique des achats.
+Phases 2 and 3 are delivered: the TypeScript broker of `services/marketplace`
+(Connect v2 accounts, checkout, Stripe and Connect webhooks, signed outbox,
+refunds, disputes, revenue, idempotence) and its integration into the instance
+(`src/payments/`). The instance keeps its secret in
+`data/payments-credentials.json` (0600), signs every HMAC call, verifies the
+signature of every response, and credits the wallet by `paymentId` — the same
+guard covers the poller, the verified browser return and the daily
+reconciliation. The admin **Payments** and member **Credit** tabs expose the
+enrollment, the Stripe onboarding, the packs, the synchronization, the revenue,
+the refunds and the purchase history.
 
-Les factures membres sont natives Stripe : le checkout top-up active
-`invoice_creation`, le broker résout `hosted_invoice_url` et `invoice_pdf` au
-moment du paiement (`payment.succeeded`), et l'instance les expose dans
-l'historique de son propre membre (`GET /admin/billing/history`, filtré par
-`userRef`). L'onglet **Invoices** du membre affiche « Your MultiVibe purchases »
-avec un lien direct vers la facture hébergée, et la ligne correspondante de
-l'historique de l'onglet **Credit** porte le même lien. Aucune facture n'est
-stockée côté instance : Stripe reste la source du document, et seules les URLs
-HTTPS sont transmises au navigateur.
+Member invoices are native Stripe: the top-up checkout enables
+`invoice_creation`, the broker resolves `hosted_invoice_url` and `invoice_pdf` at
+payment time (`payment.succeeded`), and the instance exposes them in its own
+member's history (`GET /admin/billing/history`, filtered by `userRef`). The
+member's **Invoices** tab shows "Your MultiVibe purchases" with a direct link to
+the hosted invoice, and the matching line of the **Credit** tab history carries
+the same link. No invoice is stored on the instance side: Stripe remains the
+source of the document, and only HTTPS URLs are passed to the browser.
 
-Reste avant une mise en production publique : un adaptateur SQL partagé (le
-store JSON est mono-processus), une identité opérateur réelle à la place de
-`MARKETPLACE_OPERATOR_TOKEN`, la vente d'abonnements depuis l'UI membre (le
-broker accepte déjà `kind: subscription`), et un passage E2E complet en mode
-test Stripe avec `stripe listen`.
+Remaining before a public production release: a shared SQL adapter (the JSON
+store is single-process), a real operator identity instead of
+`MARKETPLACE_OPERATOR_TOKEN`, subscription sales from the member UI (the broker
+already accepts `kind: subscription`), and a full E2E pass in Stripe test mode
+with `stripe listen`.
 
 ## 18. Tests
 
-- Unitaires : imputation granted/wallet, rollover, caps, ledger idempotent,
-  signature HMAC, anti-replay, validation des montants et devises.
-- Contrat : stub broker local (`node:http`) avec fixtures Stripe
-  (paid / unpaid / expired / refunded / disputed) — aucun appel réseau dans
+- Unit: granted/wallet charging, rollover, caps, idempotent ledger, HMAC
+  signature, anti-replay, amount and currency validation.
+- Contract: local broker stub (`node:http`) with Stripe fixtures
+  (paid / unpaid / expired / refunded / disputed) — no network call in
   `npm test`.
-- Intégration instance + broker stub : checkout → retour → crédit, double
-  livraison, panne réseau, reprise par curseur, réconciliation.
-- Rust : `user_access` avec wallet, fallback legacy, message
-  `payment_required`.
-- E2E manuel : Stripe test mode, `stripe listen`, carte 4242, onboarding
-  Express test, remboursement, litige simulé.
-- Non-régression : suite existante ; les 3 échecs `decision-spark` préexistants
-  restent attendus.
+- Instance + broker stub integration: checkout → return → credit, double
+  delivery, network failure, cursor resume, reconciliation.
+- Rust: `user_access` with wallet, legacy fallback, `payment_required` message.
+- Manual E2E: Stripe test mode, `stripe listen`, 4242 card, Express test
+  onboarding, refund, simulated dispute.
+- Non-regression: existing suite; the 3 pre-existing failures remain expected.
 
-## 19. Décisions validées
+## 19. Approved decisions
 
-1. **Type de compte** : compte v2 « Express » créé par notre plateforme
-   (« un clic »). Standard/OAuth reste hors périmètre v1.
-2. **Type de charge** : direct charges + `application_fee_amount`. L'admin de
-   l'instance est marchand, paie les frais Stripe, gère litiges et
-   remboursements. Destination charges + `on_behalf_of` documenté comme repli
-   uniquement.
-3. **Commission** : 5 % par défaut, par instance, historisée par paiement. En
-   direct charge elle n'a pas à couvrir les frais Stripe ; en destination,
-   prévoir une commission minimale.
-4. **Produit vendu** : les deux. Crédit prépayé (phase 1, livré) et abonnements
-   ou plans payants via Checkout, avec les mêmes fenêtres glissantes que les
-   plans actuels.
-5. **Remboursements** : admin de l'instance uniquement. Pas de libre-service
-   membre, pour éviter de blanchir du crédit déjà consommé.
-6. **Broker** : hébergé sur notre infra, enrollment réutilisant l'identité
-   MultiVibe Cloud.
-7. **Devises** : EUR par défaut, USD en option, une seule devise de vente par
+1. **Account type**: v2 "Express" account created by our platform ("one
+   click"). Standard/OAuth stays out of the v1 scope.
+2. **Charge type**: direct charges + `application_fee_amount`. The instance
+   admin is the merchant, pays the Stripe fees, handles disputes and refunds.
+   Destination charges + `on_behalf_of` documented as a fallback only.
+3. **Commission**: 5% by default, per instance, journaled per payment. In direct
+   charge it does not have to cover the Stripe fees; in destination, plan for a
+   minimum commission.
+4. **Product sold**: both. Prepaid credit (phase 1, delivered) and subscriptions
+   or paid plans via Checkout, with the same sliding windows as the current
+   plans.
+5. **Refunds**: instance admin only. No member self-service, to avoid laundering
+   credit already consumed.
+6. **Broker**: operator-hosted, enrollment reusing the MultiVibe Cloud identity.
+7. **Currencies**: EUR by default, USD optional, a single sales currency per
    instance.
 
-## 20. Ce qu'on ne reprend pas de Toulousecraft
+## 20. What we do not take from Toulousecraft
 
-- Configuration chiffrée/obfusquée dans le client distribué.
-- Commission globale unique non historisée.
-- Webhook non persistant et non idempotent.
-- Crédit laissé en `TODO`.
-- Retour navigateur comme preuve de paiement.
-- Absence de remboursements, litiges, réconciliation et ledger.
+- Encrypted/obfuscated configuration in the distributed client.
+- Single global commission not journaled.
+- Non-persistent and non-idempotent webhook.
+- Credit left as a `TODO`.
+- Browser return as proof of payment.
+- No refunds, disputes, reconciliation or ledger.

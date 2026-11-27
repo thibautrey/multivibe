@@ -11,8 +11,8 @@ No secret value was printed or sent to Cloud during this investigation.
   `IDENTITY`, `test`, `multicodex` and `proxy` found no clearly identified
   Cloud test project key, Cloud test OAuth session or test operator credential.
 - Codex's local `litellm` provider uses environment field `MULTIVIBE_API_KEY`
-  with an HTTP origin on the private network (`192.0.2.10`), not the public
-  `api.multivibe.cloud` origin. Metadata does not establish that the OpenBao
+  with an HTTP origin on a private network (not the public
+  `api.multivibe.cloud` origin). Metadata does not establish that the OpenBao
   `API_KEY` has Cloud scope, and its value was not used to guess that scope.
 - Local environment names contained `MULTIVIBE_API_KEY`, but no dedicated
   `MULTIVIBE_CLOUD_TEST_API_KEY` or `MULTIVIBE_E2E_PROJECT_API_KEY`.

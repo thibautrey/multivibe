@@ -1,9 +1,9 @@
 # Hermes remote capacity: fair share, session grace, and the client bridge
 
 This document is the contract behind the operator promise: a customer's own
-Hermes keeps running unchanged, is served by the edge pool when they have room,
-and is served by their own Nous Research account when they do not — without the
-customer needing to know which happened.
+Hermes keeps running unchanged, is served by the shared edge pool when it has
+room, and is served by their own Nous Research account when it does not — without
+the customer needing to know which happened.
 
 ## Why the limits are shaped this way
 
@@ -273,7 +273,7 @@ Routing rules, in priority order:
    included, comes out identical. If a real divergence appears, `doctor` fails on
    the mapping before it fails in a conversation.
 8. **A saturated edge is a reason to fall back, not to fail.** `429` and `503`
-   from the edge — the edge pool busy, or no slot at all — are retried on Nous
+   from the edge — the shared pool busy, or no slot at all — are retried on Nous
    before any byte reaches the harness. A `400` is not: retrying a malformed
    request against a second provider would double the failure and hide its cause.
 

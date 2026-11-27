@@ -1,88 +1,87 @@
-# MultiVibe Chat — iOS natif
+# MultiVibe Chat — native iOS
 
-Application SwiftUI pour iPhone et iPad, iOS 18 minimum, Swift 6. Le projet
-Xcode est versionné : aucune installation de dépendances ni génération XcodeGen
-n'est nécessaire pour l'ouvrir.
+SwiftUI application for iPhone and iPad, iOS 18 minimum, Swift 6. The Xcode
+project is versioned: no dependency installation or XcodeGen generation is
+needed to open it.
 
-## Ouvrir et lancer
+## Open and run
 
-Depuis la racine du dépôt :
+From the repository root:
 
 ```sh
 open native/ios/MultiVibeChat.xcodeproj
 ```
 
-Choisir le schéma **MultiVibeChat**, puis un simulateur iPhone ou iPad. La dernière
-validation a utilisé Xcode beta installé dans `/Applications/Xcode-beta.app` et
-un simulateur iPhone 17 / iOS 27. Consulter `IMPLEMENTATION-STATUS.md` pour les
-résultats exacts et les limites de validation.
+Choose the **MultiVibeChat** scheme, then an iPhone or iPad simulator. The last
+validation used the Xcode beta installed in `/Applications/Xcode-beta.app` and
+an iPhone 17 / iOS 27 simulator. See `IMPLEMENTATION-STATUS.md` for the exact
+results and the validation limits.
 
-Pour un appareil physique, sélectionner une équipe de développement réelle dans
-Signing & Capabilities. Le dépôt ne fournit ni équipe, ni certificat, ni profil.
-L'identifiant de bundle est `cloud.multivibe.chat`. La compilation simulateur ne
-prouve pas les droits de signature, les liens universels ou l'exécution Siri.
+For a physical device, select a real development team under
+Signing & Capabilities. The repository provides no team, certificate or
+provisioning profile. The bundle identifier is `cloud.multivibe.chat`. A simulator
+build does not prove signing entitlements, universal links or Siri execution.
 
-## Authentification et environnement
+## Authentication and environment
 
-L'application cible explicitement les services MultiVibe :
+The application explicitly targets MultiVibe services:
 
-- API applicative : `https://app.multivibe.cloud` ;
-- OAuth : `https://auth.multivibe.cloud` ;
-- retour SSO : `https://auth.multivibe.cloud/oauth/callback/ios`.
+- Application API: `https://app.multivibe.cloud`;
+- OAuth: `https://auth.multivibe.cloud`;
+- SSO callback: `https://auth.multivibe.cloud/oauth/callback/ios`.
 
-Ces destinations sont définies dans le code ; il n'existe pas de sélecteur
-serveur ou de mode démo. Ne pas supposer qu'un lancement local rend disponibles
-les nouvelles routes : les modifications du backend frère `multivibe-cloud`
-n'ont pas été déployées par cette tâche.
+These destinations are defined in code; there is no server selector or demo
+mode. Do not assume that a local launch makes new routes available: changes to
+the sibling `multivibe-cloud` backend were not deployed by this task.
 
-Dans Compte, **Crédits disponibles** ouvre **Usage et crédits** : graphiques
-sur 24 h, 7 jours ou 30 jours, détail des tokens, répartitions par modèle,
-projet et fournisseur, performances et dernières requêtes avec export CSV.
-Le solde reste actuel, indépendamment de la période. Les statistiques couvrent
-l'espace Cloud associé au compte et distinguent les mesures absentes des zéros.
-Le client utilise `GET /native/v1/analytics` avec son bearer iOS ; cette route
-doit être présente sur le Cloud pour charger les statistiques. L'export contient
-au plus les 50 dernières requêtes de la période, sans contenu de conversation.
+Under Account, **Available credits** opens **Usage and credits**: charts over
+24 hours, 7 days or 30 days, token breakdown, distribution by model, project and
+provider, performance and recent requests with CSV export. The balance stays
+current regardless of the selected period. Statistics cover the Cloud workspace
+associated with the account and distinguish missing measurements from zeros.
+The client uses `GET /native/v1/analytics` with its iOS bearer token; that route
+must exist on Cloud for statistics to load. The export contains at most the last
+50 requests of the period, without conversation content.
 
-L'email/mot de passe, l'inscription, le TOTP et la récupération utilisent des
-écrans natifs. Le SSO utilise la session d'authentification système, avec PKCE
-et vérification d'état, et non une saisie du mot de passe fournisseur dans l'app.
-Le bouton SSO générique ne garantit pas qu'Apple soit activé côté serveur.
+Email/password, registration, TOTP and recovery use native screens. SSO uses the
+system authentication session, with PKCE and state verification, rather than
+entering a provider password in the app. The generic SSO button does not
+guarantee that Apple is enabled server-side.
 
-Avant un essai réel : configurer les identifiants Apple côté backend, signer
-l'application et publier l'association de domaine pour l'équipe réelle. Ne
-jamais placer une clé fournisseur, une clé Apple privée ou un secret OAuth dans
-l'application. Voir aussi `docs/apple-oauth-grant-retention.md` du backend.
+Before a real trial: configure the Apple credentials on the backend, sign the
+app and publish the domain association for the real team. Never place a provider
+key, a private Apple key or an OAuth secret in the application. See also
+`docs/apple-oauth-grant-retention.md` in the backend.
 
-## Raccourcis et voix
+## Shortcuts and voice
 
-Quatre App Intents ouvrent l'application après authentification locale : nouvelle
-conversation, dictée, préparation d'un brouillon et conversation vocale. Un
-brouillon ou une dictée n'envoie aucun message automatiquement.
+Four App Intents open the application after local authentication: new
+conversation, dictation, draft preparation and voice conversation. A draft or a
+dictation never sends a message automatically.
 
-Le mode vocal implémenté est **dictée locale → relecture → Envoyer → lecture de
-la réponse**. Ce n'est pas une conversation temps réel en duplex intégral.
-Le chemin assistant spécial est désactivé à la compilation par défaut ; ne pas
-activer `MULTIVIBE_SIDE_BUTTON_ASSISTANT` comme substitut à une autorisation,
-une signature ou une vérification d'éligibilité Apple.
+The implemented voice mode is **local dictation → review → Send → play the
+response**. It is not a full-duplex real-time conversation. The special
+assistant path is disabled at build time by default; do not enable
+`MULTIVIBE_SIDE_BUTTON_ASSISTANT` as a substitute for an entitlement, signing or
+an Apple eligibility check.
 
-## Recette avant diffusion
+## Pre-release checklist
 
-Utiliser un compte de test autorisé et vérifier séparément :
+Use an authorized test account and verify separately:
 
-- inscription, connexion, challenge TOTP, récupération et déconnexion ;
-- retour SSO sur appareil signé, refus/annulation et changement de compte ;
-- choix du modèle, réponse en streaming, interruption réseau et reprise ;
-- historique local puis synchronisation explicitement acceptée, avec conflits
-  depuis un second appareil sans écrasement silencieux ;
-- refus d'accès au microphone, interruption audio et fonctionnement des quatre
-  raccourcis sur appareil ;
-- VoiceOver, grandes tailles de texte, clavier, orientation et affichage iPad.
+- registration, sign-in, TOTP challenge, recovery and sign-out;
+- SSO callback on a signed device, denial/cancellation and account switching;
+- model selection, streaming response, network interruption and resume;
+- local history then explicitly accepted synchronization, including conflicts
+  from a second device without silent overwrite;
+- microphone access denial, audio interruption and the four shortcuts working
+  on device;
+- VoiceOver, large text sizes, keyboard, orientation and iPad display.
 
-Ces vérifications ne sont pas déclarées réussies par cette liste. La suppression
-de compte, la finalisation de la révocation Apple, la validation visuelle et
-physique, ainsi que la configuration de production restent ouvertes. L'état
-faisant autorité est `IMPLEMENTATION-STATUS.md` : **non prêt pour publication**.
+These checks are not declared successful by this list. Account deletion,
+completion of Apple revocation, visual and physical validation, and production
+configuration remain open. The authoritative status is
+`IMPLEMENTATION-STATUS.md`: **not ready for release**.
 
 ## Apple Foundation Local
 
@@ -95,15 +94,15 @@ implicit remote fallback.
 
 The native model/tool loop can search saved conversations, list/read imported
 UTF-8 text documents (100 KB each), perform arithmetic, obtain the current date,
-and create new local text documents that can be inspected/shared from Outils
-locaux. Optional calendar, reminders and consent-gated web tools are described below. Tool calls share a 12-call and 120-second budget. Context overflow can
+and create new local text documents that can be inspected/shared from Local
+tools. Optional calendar, reminders and consent-gated web tools are described below. Tool calls share a 12-call and 120-second budget. Context overflow can
 restart with bounded successful tool observations twice, without resetting the
 budget. Created documents are deduplicated by title and contents. This is an
 app-scoped workspace, not access to arbitrary iPhone files, apps or web browsing.
 
 History is written atomically with complete file protection and excluded from
 backups. Guest storage is separate from hashed account storage. Sign-in does not
-import guest data implicitly; Importer les conversations invitées copies it into
+import guest data implicitly; Import guest conversations copies it into
 the signed-in account without deleting the guest originals. Documents remain
 local; conversation text, including quotations from documents, is synchronized.
 
@@ -112,7 +111,7 @@ foregrounding trigger the existing account-scoped revision-checked history API.
 Transient failures receive bounded retries. Concurrent edits require preserving
 both versions explicitly; the app never silently overwrites another device.
 Suspension stops local generation and retains the partial conversation/tool trace;
-Réessayer explicitly restarts the request with the current local workspace.
+Retry explicitly restarts the request with the current local workspace.
 There is no promise of continuous background inference on iOS.
 
 ### Optional Internet tools
@@ -133,7 +132,7 @@ as untrusted evidence. The model always stays local. This permission is separate
 from account-history synchronization. Human approval time is excluded from the
 run deadline; Stop cancels a pending prompt.
 
-Calendar and reminders are optional read-only tools enabled from Outils locaux
+Calendar and reminders are optional read-only tools enabled from Local tools
 via iOS permission prompts. They read EventKit's local stores; they do not modify
 events/reminders. Their text can appear in conversation responses and therefore
 in synced history if history sync is enabled.

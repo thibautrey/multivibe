@@ -41,3 +41,7 @@ plugins/dsh-multivibe/*.tgz
 
 # Marketplace broker runtime state (secrets live in .env, data in data/).
 services/marketplace/data/
+
+# Xcode per-user state (never shared, contains local usernames and window state).
+xcuserdata/
+*.xcuserstate
