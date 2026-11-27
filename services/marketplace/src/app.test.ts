@@ -264,6 +264,36 @@ test("signed instance API: onboarding, checkout, idempotency and events", async 
   }
 });
 
+test("the operator enrollment page never leaks the operator token", async () => {
+  const harness = await start();
+  try {
+    const page = await fetch(`${harness.baseUrl}/enroll?code=ABCD-EFGH`);
+    const html = await page.text();
+    assert.equal(page.status, 200);
+    assert.equal(html.includes(OPERATOR), false);
+    assert.match(html, /name="operatorToken" type="password"/);
+    assert.match(html, /value="ABCD-EFGH"/);
+
+    const started = await fetch(`${harness.baseUrl}/v1/enrollments`, { method: "POST" });
+    const ticket = (await started.json()) as { code: string };
+    const denied = await fetch(`${harness.baseUrl}/enroll`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ code: ticket.code, name: "Atelier", operatorToken: "wrong" }),
+    });
+    assert.equal(denied.status, 401);
+
+    const approved = await fetch(`${harness.baseUrl}/enroll`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ code: ticket.code, name: "Atelier", operatorToken: OPERATOR }),
+    });
+    assert.equal(approved.status, 200);
+  } finally {
+    await harness.close();
+  }
+});
+
 test("operator API lists instances and changes commission", async () => {
   const harness = await start();
   try {

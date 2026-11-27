@@ -166,7 +166,6 @@ export function createMarketplaceApp(options: MarketplaceAppOptions): express.Ex
         `<h1>Connecter une instance</h1>
 <p class="muted">Saisissez le code affiché dans <strong>Réglages → Paiements</strong> de votre instance MultiVibe, puis validez.</p>
 <form method="post" action="/enroll" autocomplete="off">
-  <input type="hidden" name="operatorToken" value="${escapeHtml(operatorToken)}">
   <label for="code">Code</label>
   <input id="code" name="code" value="${escapeHtml(code)}" placeholder="ABCD-EFGH" required>
   <label for="name">Nom de l'instance</label>
@@ -177,6 +176,8 @@ export function createMarketplaceApp(options: MarketplaceAppOptions): express.Ex
   <input id="country" name="country" value="FR" maxlength="2">
   <label for="currency">Devise de vente</label>
   <input id="currency" name="currency" value="EUR" maxlength="3">
+  <label for="operatorToken">Jeton opérateur</label>
+  <input id="operatorToken" name="operatorToken" type="password" required>
   <button type="submit">Approuver</button>
 </form>
 <p class="muted">En production, cette page est protégée par l'identité MultiVibe Cloud de l'opérateur.</p>`,
