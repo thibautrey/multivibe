@@ -1,4 +1,5 @@
 import type { ModelAlias, RoutingCandidate as RoutingCandidateConfig, RoutingRule } from "../types.js";
+import { t } from "../i18n/core";
 
 export type AliasCreationScenario =
   | "redirect"
@@ -58,7 +59,7 @@ export function createAliasScenarioDraft(scenario: GuidedAliasScenario): ModelAl
       schemaVersion: 2,
       id: "",
       enabled: true,
-      description: "Redirect an existing model name",
+      description: t("Redirect an existing model name"),
       rules: [orderedRule("redirect", "reject")],
     };
   }
@@ -68,7 +69,7 @@ export function createAliasScenarioDraft(scenario: GuidedAliasScenario): ModelAl
       schemaVersion: 2,
       id: "",
       enabled: true,
-      description: "Prefer one model and fall back to another",
+      description: t("Prefer one model and fall back to another"),
       rules: [orderedRule("fallback", "queue")],
     };
   }
@@ -77,7 +78,7 @@ export function createAliasScenarioDraft(scenario: GuidedAliasScenario): ModelAl
     schemaVersion: 2,
     id: "",
     enabled: true,
-    description: "Prefer local capacity and overflow to cloud",
+    description: t("Prefer local capacity and overflow to cloud"),
     rules: [{
       ...orderedRule("local-first", "queue"),
       constraints: { allowedLocations: ["local", "cloud"] },

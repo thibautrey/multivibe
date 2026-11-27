@@ -7,6 +7,7 @@ import { AvailableModels } from "../AvailableModels";
 import type { ActivityView, ExposedModel, TraceStats } from "../../types";
 
 import { formatLatency, isMeasured } from "../../lib/ui";
+import { activeLocale, useT } from "../../i18n";
 
 const WELCOME_VIEW_COUNT_KEY = "multivibe.workspaceWelcome.viewCount";
 const WELCOME_COMPACT_AFTER_VIEWS = 10;
@@ -36,6 +37,7 @@ export function OverviewTab({
   hostApplication,
   onHarnessesChanged,
 }: Props) {
+  const t = useT();
   const [compactWelcome, setCompactWelcome] = useState(() => {
     if (typeof window === "undefined") return false;
     try {
@@ -65,20 +67,20 @@ export function OverviewTab({
   const nextStepCard = (
     <section className="panel overview-next-step">
       <div className="overview-next-step-copy">
-        <span className="eyebrow">Next step</span>
-        <h2>{!stats.total ? "Connect your first provider" : !models.length ? "Choose models to expose" : !hasTraffic ? "Send your first request" : stats.blocked ? "Review your providers" : "Everything is running"}</h2>
+        <span className="eyebrow">{t("Next step")}</span>
+        <h2>{!stats.total ? t("Connect your first provider") : !models.length ? t("Choose models to expose") : !hasTraffic ? t("Send your first request") : stats.blocked ? t("Review your providers") : t("Everything is running")}</h2>
         <p className="muted">
           {!stats.total
-            ? "Add OpenAI, Mistral, Grok Build, OpenCode, or any OpenAI-compatible endpoint."
+            ? t("Add OpenAI, Mistral, Grok Build, OpenCode, or any OpenAI-compatible endpoint.")
             : !models.length
-              ? "Your provider is connected. Finish its model configuration before routing traffic."
+              ? t("Your provider is connected. Finish its model configuration before routing traffic.")
               : !hasTraffic
-                ? "Test an exposed model from the API workspace to validate the complete route."
-                : `${traceStats.totals.requests} requests processed with ${stats.blocked} providers requiring attention.`}
+                ? t("Test an exposed model from the API workspace to validate the complete route.")
+                : t("{requests} requests processed with {providers} providers requiring attention.", { requests: traceStats.totals.requests, providers: stats.blocked })}
         </p>
       </div>
       <button className="btn overview-primary-action" onClick={() => navigate(!stats.total || !models.length ? "accounts" : !hasTraffic ? "docs" : stats.blocked ? "accounts" : "tracing")}>
-        {!stats.total ? "Add a provider" : !models.length ? "Configure providers" : !hasTraffic ? "Test the API" : stats.blocked ? "Review providers" : "View activity"}
+        {!stats.total ? t("Add a provider") : !models.length ? t("Configure providers") : !hasTraffic ? t("Test the API") : stats.blocked ? t("Review providers") : t("View activity")}
       </button>
     </section>
   );
@@ -86,18 +88,18 @@ export function OverviewTab({
 
   return (
     <>
-      <h1 className="sr-only">Workspace overview</h1>
+      <h1 className="sr-only">{t("Workspace overview")}</h1>
       <section className={`workspace-welcome${compactWelcome ? " workspace-welcome-compact" : ""}`}>
-        <div><span className="welcome-status">{isEverythingRunning ? "Ready for your next idea" : stats.blocked ? "Some providers need attention" : isReady ? "Your workspace is ready" : "Let’s get you connected"}</span>
-        <h2>All your AI. One place to build.</h2><p>Use your favorite models through one API. Bring a provider, explore what’s available, download models.</p>
-        <div className="welcome-actions"><button className="welcome-secondary" onClick={() => navigate("docs")}>Open playground ↗</button><button className="btn" onClick={() => navigate("models")}>Explore models <span aria-hidden="true">→</span></button><button className="welcome-secondary" onClick={() => navigate("accounts")}>Manage providers ↗</button></div></div>
+        <div><span className="welcome-status">{isEverythingRunning ? t("Ready for your next idea") : stats.blocked ? t("Some providers need attention") : isReady ? t("Your workspace is ready") : t("Let’s get you connected")}</span>
+        <h2>{t("All your AI. One place to build.")}</h2><p>{t("Use your favorite models through one API. Bring a provider, explore what’s available, download models.")}</p>
+        <div className="welcome-actions"><button className="welcome-secondary" onClick={() => navigate("docs")}>{t("Open playground")} ↗</button><button className="btn" onClick={() => navigate("models")}>{t("Explore models")} <span aria-hidden="true">→</span></button><button className="welcome-secondary" onClick={() => navigate("accounts")}>{t("Manage providers")} ↗</button></div></div>
         <div className="welcome-orbit" aria-hidden="true"><div className="orbit-ring orbit-one"/><div className="orbit-ring orbit-two"/><span className="orbit-node orbit-node-a">AI</span><span className="orbit-node orbit-node-b">⌘</span><span className="orbit-node orbit-node-c">✳</span><img src="/assets/brand/multivibe-app-icon.svg" alt="" /></div>
       </section>
-      <div className="overview-metrics" aria-label="Workspace summary">
-        <Metric title="Connected providers" value={`${stats.enabled}`} detail={`${stats.total} total · ${stats.blocked} need attention`} onClick={() => navigate("accounts")} />
-        <Metric title="Available models" value={`${models.length}`} detail="Ready to explore and use" onClick={() => navigate("models")} />
-        <Metric loading={traceStatsLoading} preserveValueWhileLoading={traceStatsLoaded} title="Requests" value={traceStats.totals.requests.toLocaleString()} detail="In the activity date range" onClick={() => navigate("tracing", "performance")} />
-        <Metric loading={traceStatsLoading} preserveValueWhileLoading={traceStatsLoaded} title="Estimated cost" value={isMeasured(traceStats.totals.costUsd) ? new Intl.NumberFormat(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(traceStats.totals.costUsd) : "Unavailable"} detail={`${traceStats.totals.requestsWithCost}/${traceStats.totals.upstreamAttempts} attempts priced · missing costs excluded`} onClick={() => navigate("tracing", "usage")} />
+      <div className="overview-metrics" aria-label={t("Workspace summary")}>
+        <Metric title={t("Connected providers")} value={`${stats.enabled}`} detail={t("{total} total · {blocked} need attention", { total: stats.total, blocked: stats.blocked })} onClick={() => navigate("accounts")} />
+        <Metric title={t("Available models")} value={`${models.length}`} detail={t("Ready to explore and use")} onClick={() => navigate("models")} />
+        <Metric loading={traceStatsLoading} preserveValueWhileLoading={traceStatsLoaded} title={t("Requests")} value={traceStats.totals.requests.toLocaleString(activeLocale())} detail={t("In the activity date range")} onClick={() => navigate("tracing", "performance")} />
+        <Metric loading={traceStatsLoading} preserveValueWhileLoading={traceStatsLoaded} title={t("Estimated cost")} value={isMeasured(traceStats.totals.costUsd) ? new Intl.NumberFormat(activeLocale(), { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(traceStats.totals.costUsd) : t("Unavailable")} detail={t("{priced}/{attempts} attempts priced · missing costs excluded", { priced: traceStats.totals.requestsWithCost, attempts: traceStats.totals.upstreamAttempts })} onClick={() => navigate("tracing", "usage")} />
       </div>
 
       {showHostHarnesses && !isEverythingRunning ? (
@@ -115,23 +117,23 @@ export function OverviewTab({
       <section className="overview-detail-grid">
         <div className="overview-insights">
         <section className="panel overview-activity-panel">
-          <div className="section-split-header"><div><h2>Request activity</h2><small>Traffic in your selected activity date range</small></div><button className="btn ghost" onClick={() => navigate("tracing")}>View activity ↗</button></div>
-          {hasTraffic ? <><div className="activity-total">{traceStats.totals.requests.toLocaleString()} <small>requests</small></div><div className="overview-chart" role="img" aria-label={`${traceStats.totals.requests} requests, ${traceStats.totals.errors} errors in the selected period`}><ResponsiveContainer width="100%" height={160}><AreaChart data={traceStats.timeseries} margin={{ top: 10, right: 8, left: 8, bottom: 0 }}><defs><linearGradient id="overview-traffic" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="var(--primary)" stopOpacity={0.22}/><stop offset="100%" stopColor="var(--primary)" stopOpacity={0}/></linearGradient></defs><XAxis dataKey="at" tickFormatter={value => new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric" })} minTickGap={50} axisLine={false} tickLine={false} tick={{ fill: "var(--muted)", fontSize: 11 }} /><Tooltip contentStyle={{ background: "var(--panel)", borderColor: "var(--line)", borderRadius: 12 }} labelFormatter={value => new Date(Number(value)).toLocaleString()}/><Area type="monotone" dataKey="requests" stroke="var(--primary)" strokeWidth={2} fill="url(#overview-traffic)" isAnimationActive={false}/></AreaChart></ResponsiveContainer></div><div className="activity-footnote"><span>{traceStats.totals.errors.toLocaleString()} errors</span><span>{formatLatency(traceStats.totals.latencyAvgMs)} avg. latency</span></div></> : <div className="overview-no-activity"><h3>Your first request starts here</h3><p className="muted">Once you use a connected model, you’ll see your traffic and performance here.</p><button className="btn secondary" onClick={() => navigate("docs")}>Try a request →</button></div>}
+          <div className="section-split-header"><div><h2>{t("Request activity")}</h2><small>{t("Traffic in your selected activity date range")}</small></div><button className="btn ghost" onClick={() => navigate("tracing")}>{t("View activity")} ↗</button></div>
+          {hasTraffic ? <><div className="activity-total">{traceStats.totals.requests.toLocaleString(activeLocale())} <small>{t("requests")}</small></div><div className="overview-chart" role="img" aria-label={t("{requests} requests, {errors} errors in the selected period", { requests: traceStats.totals.requests, errors: traceStats.totals.errors })}><ResponsiveContainer width="100%" height={160}><AreaChart data={traceStats.timeseries} margin={{ top: 10, right: 8, left: 8, bottom: 0 }}><defs><linearGradient id="overview-traffic" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="var(--primary)" stopOpacity={0.22}/><stop offset="100%" stopColor="var(--primary)" stopOpacity={0}/></linearGradient></defs><XAxis dataKey="at" tickFormatter={value => new Date(value).toLocaleDateString(activeLocale(), { month: "short", day: "numeric" })} minTickGap={50} axisLine={false} tickLine={false} tick={{ fill: "var(--muted)", fontSize: 11 }} /><Tooltip contentStyle={{ background: "var(--panel)", borderColor: "var(--line)", borderRadius: 12 }} labelFormatter={value => new Date(Number(value)).toLocaleString(activeLocale())}/><Area type="monotone" dataKey="requests" stroke="var(--primary)" strokeWidth={2} fill="url(#overview-traffic)" isAnimationActive={false}/></AreaChart></ResponsiveContainer></div><div className="activity-footnote"><span>{traceStats.totals.errors.toLocaleString(activeLocale())} {t("errors")}</span><span>{t("{latency} avg. latency", { latency: formatLatency(traceStats.totals.latencyAvgMs) })}</span></div></> : <div className="overview-no-activity"><h3>{t("Your first request starts here")}</h3><p className="muted">{t("Once you use a connected model, you’ll see your traffic and performance here.")}</p><button className="btn secondary" onClick={() => navigate("docs")}>{t("Try a request")} →</button></div>}
         </section>
         <div className="panel overview-usage-panel">
           <div className="section-split-header">
             <div>
-              <h2>Provider capacity</h2>
-              <small>Average quota remaining across connected accounts.</small>
+              <h2>{t("Provider capacity")}</h2>
+              <small>{t("Average quota remaining across connected accounts.")}</small>
             </div>
-            <span className="badge">{usageStats.primaryCount + usageStats.secondaryCount} windows</span>
+            <span className="badge">{usageStats.primaryCount + usageStats.secondaryCount === 1 ? t("1 window") : t("{count} windows", { count: usageStats.primaryCount + usageStats.secondaryCount })}</span>
           </div>
-          {usageStats.primaryCount + usageStats.secondaryCount === 0 && <p className="muted">Quota information isn’t available for your connected providers yet.</p>}
+          {usageStats.primaryCount + usageStats.secondaryCount === 0 && <p className="muted">{t("Quota information isn’t available for your connected providers yet.")}</p>}
           {usageStats.primaryCount > 0 && (
-            <ProgressStat label="Next 5 hours" value={usageStats.primaryAvg} count={usageStats.primaryCount} />
+            <ProgressStat label={t("Next 5 hours")} value={usageStats.primaryAvg} count={usageStats.primaryCount} />
           )}
           {usageStats.secondaryCount > 0 && (
-            <ProgressStat label="This week" value={usageStats.secondaryAvg} count={usageStats.secondaryCount} />
+            <ProgressStat label={t("This week")} value={usageStats.secondaryAvg} count={usageStats.secondaryCount} />
           )}
         </div>
 

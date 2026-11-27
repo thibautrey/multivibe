@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import type { ExposedModel } from "../../types";
+import { useT } from "../../i18n";
 
 type Props = {
   models: ExposedModel[];
@@ -10,6 +11,7 @@ type Props = {
 };
 
 export function ModelSelector({ models, value, onChange, disabled, allowCustom }: Props) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -82,12 +84,12 @@ export function ModelSelector({ models, value, onChange, disabled, allowCustom }
               if (allowCustom) onChange(nextValue);
             }}
             onClick={(e) => e.stopPropagation()}
-            placeholder="Search models..."
+            placeholder={t("Search models...")}
             disabled={disabled}
-            aria-label="Search models"
+            aria-label={t("Search models")}
           />
         ) : (
-          <span className="model-selector-value">{value || "Select a model..."}</span>
+          <span className="model-selector-value">{value || t("Select a model...")}</span>
         )}
         <span className={`model-selector-arrow${open ? " open" : ""}`}>&#9662;</span>
       </div>
@@ -100,7 +102,7 @@ export function ModelSelector({ models, value, onChange, disabled, allowCustom }
           onKeyDown={handleKeyDown}
         >
           {filtered.length === 0 ? (
-            <li className="model-selector-empty">No models found</li>
+            <li className="model-selector-empty">{t("No models found")}</li>
           ) : (
             filtered.map((model) => (
               <li

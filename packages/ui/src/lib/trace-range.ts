@@ -1,4 +1,5 @@
 import type { TraceRange } from "../types";
+import { t } from "../i18n/core";
 
 export function localDateValue(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
@@ -11,7 +12,7 @@ export function getRangeBounds(range: TraceRange, now = Date.now()): { sinceMs?:
     if (!/^\d{4}-\d{2}-\d{2}$/.test(range.startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(range.endDate)
       || !Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())
       || localDateValue(start) !== range.startDate || localDateValue(end) !== range.endDate || start > end) {
-      throw new Error("Choose valid dates with the end date on or after the start date.");
+      throw new Error(t("Choose valid dates with the end date on or after the start date."));
     }
     // Calendar arithmetic preserves full local days across daylight-saving changes.
     end.setDate(end.getDate() + 1);

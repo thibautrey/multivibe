@@ -1,11 +1,13 @@
 import { useDashboardApi, useDashboardRuntime } from "../adapter";
 import { PluginAnalytics } from "./PluginAnalytics";
 import { useState } from "react";
+import { useT } from "../i18n";
 import type { ModuleView } from "../types";
 
 import { ModelSelect } from "./ModelSelect";
 
 export function PluginSettings({ plugin, onSaved, onClose }: { plugin: ModuleView; onSaved: () => Promise<void>; onClose: () => void }) {
+  const t = useT();
   const api = useDashboardApi();
   const { capabilities } = useDashboardRuntime();
   const [settings, setSettings] = useState(plugin.settings);
@@ -14,9 +16,9 @@ export function PluginSettings({ plugin, onSaved, onClose }: { plugin: ModuleVie
   const properties = (plugin.manifest?.settingsSchema?.properties ?? {}) as Record<string, {
     deprecated?: boolean; type?: string; title?: string; description?: string; format?: string; enum?: string[]; minimum?: number; maximum?: number;
   }>;
-  return <section className="panel plugin-settings" aria-label={`${plugin.manifest?.name ?? plugin.id} settings`}>
-    <h3>{plugin.manifest?.name ?? plugin.id} settings</h3>
-    {plugin.id === "multivibe.automatic-router" && <p className="muted">Send requests to multivibe/autorouter to opt into automatic routing. Explicit model selections are unchanged. Requires JavaScript inference. Choose a classifier and three difficulty tiers before enabling. Multi-turn routing requires a stable session ID; continuations retain their first selection to help reuse cached input. Classifier calls add cost and latency.</p>}
+  return <section className="panel plugin-settings" aria-label={t("{name} settings", { name: plugin.manifest?.name ?? plugin.id })}>
+    <h3>{t("{name} settings", { name: plugin.manifest?.name ?? plugin.id })}</h3>
+    {plugin.id === "multivibe.automatic-router" && <p className="muted">{t("Send requests to multivibe/autorouter to opt into automatic routing. Explicit model selections are unchanged. Requires JavaScript inference. Choose a classifier and three difficulty tiers before enabling. Multi-turn routing requires a stable session ID; continuations retain their first selection to help reuse cached input. Classifier calls add cost and latency.")}</p>}
     <PluginAnalytics pluginId={plugin.id} />
     <form onSubmit={async (event) => {
       event.preventDefault(); setSaving(true); setError("");
@@ -31,13 +33,13 @@ export function PluginSettings({ plugin, onSaved, onClose }: { plugin: ModuleVie
           {field.format === "multivibe-model" ? <ModelSelect id={id} value={String(settings[name] ?? "")} onChange={change} disabled={saving} excludeVirtual={plugin.id === "multivibe.automatic-router"} />
             : field.type === "boolean" ? <input id={id} type="checkbox" checked={Boolean(settings[name])} onChange={(event) => change(event.target.checked)} />
             : field.enum ? <select id={id} value={String(settings[name] ?? "")} onChange={(event) => change(event.target.value)}>{field.enum.map((item) => <option key={item}>{item}</option>)}</select>
-            : field.type === "object" || field.type === "array" ? <textarea id={id} defaultValue={JSON.stringify(settings[name], null, 2)} onChange={(event) => { try { change(JSON.parse(event.target.value)); event.target.setCustomValidity(""); } catch { event.target.setCustomValidity("Enter valid JSON"); } }} />
+            : field.type === "object" || field.type === "array" ? <textarea id={id} defaultValue={JSON.stringify(settings[name], null, 2)} onChange={(event) => { try { change(JSON.parse(event.target.value)); event.target.setCustomValidity(""); } catch { event.target.setCustomValidity(t("Enter valid JSON")); } }} />
             : <input id={id} type={field.type === "integer" || field.type === "number" ? "number" : "text"} step={field.type === "integer" ? 1 : "any"} min={field.minimum} max={field.maximum} value={String(settings[name] ?? "")} onChange={(event) => change(field.type === "integer" || field.type === "number" ? Number(event.target.value) : event.target.value)} />}
           {field.description && <span className="muted">{field.description}</span>}
         </label>;
       })}
       {error && <p className="error" role="alert">{error}</p>}
-      <button className="btn" disabled={saving}>{saving ? "Saving…" : "Save settings"}</button> <button className="btn ghost" type="button" disabled={saving} onClick={onClose}>Cancel</button>
+      <button className="btn" disabled={saving}>{saving ? t("Saving…") : t("Save settings")}</button> <button className="btn ghost" type="button" disabled={saving} onClick={onClose}>{t("Cancel")}</button>
     </form>
   </section>;
 }

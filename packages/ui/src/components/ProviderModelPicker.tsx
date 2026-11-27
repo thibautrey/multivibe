@@ -1,4 +1,5 @@
 import { memo, useMemo, useState } from "react";
+import { useT } from "../i18n";
 import "./ProviderModelPicker.css";
 
 export type ProviderModelOption = { id: string; name?: string; context?: number | null };
@@ -54,6 +55,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker({
   requiresSelection?: boolean;
   inputId?: string;
 }) {
+  const t = useT();
   const [query, setQuery] = useState("");
   const [manual, setManual] = useState("");
   const selected = useMemo(() => parseSelection(value), [value]);
@@ -78,26 +80,38 @@ export const ProviderModelPicker = memo(function ProviderModelPicker({
     if (!selectedSet.has(id)) onChange(formatSelection([...selected, id]));
     setManual("");
   };
+  const fetchedAt = fetchedLabel(live?.fetchedAt);
+  const catalogFetchedAt = fetchedLabel(live?.catalog?.fetchedAt);
   const status = live?.discovered
-    ? `Liste live du provider${live.stale ? " (mise à jour en arrière-plan)" : ""}${fetchedLabel(live.fetchedAt) ? ` — ${fetchedLabel(live.fetchedAt)}` : ""}`
-    : live?.catalog?.fetchedAt
-      ? `Catalogue revu${fetchedLabel(live.catalog.fetchedAt) ? ` — ${fetchedLabel(live.catalog.fetchedAt)}` : ""}`
-      : "Catalogue revu";
+    ? live.stale
+      ? fetchedAt
+        ? t("Live list from the provider (updating in background) — {date}", { date: fetchedAt })
+        : t("Live list from the provider (updating in background)")
+      : fetchedAt
+        ? t("Live list from the provider — {date}", { date: fetchedAt })
+        : t("Live list from the provider")
+    : catalogFetchedAt
+      ? t("Reviewed catalog — {date}", { date: catalogFetchedAt })
+      : t("Reviewed catalog");
 
   return (
     <div className="provider-model-picker">
       <div className="provider-model-picker-head">
         <span>
-          {loading ? "Chargement des modèles du provider…" : `${options.length} modèle${options.length === 1 ? "" : "s"} disponible${options.length === 1 ? "" : "s"} · ${status}`}
+          {loading
+            ? t("Loading provider models…")
+            : options.length === 1
+              ? t("1 model available · {status}", { status })
+              : t("{count} models available · {status}", { count: options.length, status })}
         </span>
         {onRefresh && (
           <button type="button" className="btn secondary" disabled={loading} onClick={onRefresh}>
-            {loading ? "Rafraîchissement…" : "Rafraîchir"}
+            {loading ? t("Refreshing…") : t("Refresh")}
           </button>
         )}
       </div>
       {error && <p className="provider-model-picker-error">{error}</p>}
-      {live?.error && !loading && <p className="provider-model-picker-error">Découverte en échec ({live.error}). Liste de secours affichée.</p>}
+      {live?.error && !loading && <p className="provider-model-picker-error">{t("Discovery failed ({error}). Showing the fallback list.", { error: live.error })}</p>}
       {!requiresSelection && (
         <label className="provider-model-picker-all">
           <input
@@ -105,13 +119,13 @@ export const ProviderModelPicker = memo(function ProviderModelPicker({
             checked={allModels}
             onChange={(event) => onChange(event.target.checked ? "" : formatSelection(selected))}
           />
-          Tous les modèles du provider{providerName ? ` (${providerName})` : ""}
+          {providerName ? t("All provider models ({name})", { name: providerName }) : t("All provider models")}
         </label>
       )}
       {!allModels && (
         <div className="provider-model-picker-selected">
           {selected.map((id) => (
-            <button type="button" key={id} className="provider-model-picker-chip" onClick={() => toggle(id)} title="Retirer">
+            <button type="button" key={id} className="provider-model-picker-chip" onClick={() => toggle(id)} title={t("Remove")}>
               {id} <span aria-hidden="true">×</span>
             </button>
           ))}
@@ -123,8 +137,8 @@ export const ProviderModelPicker = memo(function ProviderModelPicker({
             type="search"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Filtrer les modèles"
-            aria-label="Filtrer les modèles"
+            placeholder={t("Filter models")}
+            aria-label={t("Filter models")}
           />
           <ul className="provider-model-picker-list" role="listbox" aria-multiselectable="true">
             {list.map((option) => (
@@ -136,7 +150,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker({
                 </label>
               </li>
             ))}
-            {!list.length && <li className="provider-model-picker-empty">Aucun modèle ne correspond au filtre.</li>}
+            {!list.length && <li className="provider-model-picker-empty">{t("No model matches the filter.")}</li>}
           </ul>
         </>
       )}
@@ -147,12 +161,12 @@ export const ProviderModelPicker = memo(function ProviderModelPicker({
           value={manual}
           onChange={(event) => setManual(event.target.value)}
           onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addManual(); } }}
-          placeholder="Ajouter un ID de modèle manuellement"
-          aria-label="Ajouter un ID de modèle manuellement"
+          placeholder={t("Add a model ID manually")}
+          aria-label={t("Add a model ID manually")}
         />
-        <button type="button" className="btn secondary" onClick={addManual} disabled={!manual.trim()}>Ajouter</button>
+        <button type="button" className="btn secondary" onClick={addManual} disabled={!manual.trim()}>{t("Add")}</button>
       </div>
-      {unlisted.length > 0 && <p className="muted">IDs personnalisés : {unlisted.join(", ")}</p>}
+      {unlisted.length > 0 && <p className="muted">{t("Custom IDs: {ids}", { ids: unlisted.join(", ") })}</p>}
     </div>
   );
 });

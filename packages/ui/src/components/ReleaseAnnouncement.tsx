@@ -1,3 +1,5 @@
+import { activeLocale, useT } from "../i18n";
+
 import type { GitHubReleaseNotes } from "../release-announcement";
 
 function CloseIcon() {
@@ -15,17 +17,18 @@ export function ReleaseAnnouncementCard({
   onOpen: () => void;
   onDismiss: () => void;
 }) {
+  const t = useT();
   return (
     <div className={`release-announcement-card${release?.bannerUrl ? " has-banner" : ""}`}>
-      <button type="button" className="release-announcement-open" onClick={onOpen} aria-label={`Read the release notes for MultiVibe version ${version}`}>
+      <button type="button" className="release-announcement-open" onClick={onOpen} aria-label={t("Read the release notes for MultiVibe version {version}", { version })}>
         {release?.bannerUrl && <img src={release.bannerUrl} alt={release.bannerAlt} />}
         <span className="release-announcement-copy">
-          <small>MultiVibe updated</small>
-          <strong>Version {version}</strong>
-          <span>See what’s new <span aria-hidden="true">→</span></span>
+          <small>{t("MultiVibe updated")}</small>
+          <strong>{t("Version {version}", { version })}</strong>
+          <span>{t("See what’s new")} <span aria-hidden="true">→</span></span>
         </span>
       </button>
-      <button type="button" className="release-announcement-dismiss" onClick={onDismiss} aria-label={`Hide the update notice for version ${version}`}>
+      <button type="button" className="release-announcement-dismiss" onClick={onDismiss} aria-label={t("Hide the update notice for version {version}", { version })}>
         <CloseIcon />
       </button>
     </div>
@@ -33,7 +36,8 @@ export function ReleaseAnnouncementCard({
 }
 
 export function ReleaseNotesBody({ body }: { body: string }) {
-  if (!body.trim()) return <p className="release-notes-empty">This release does not include additional notes.</p>;
+  const t = useT();
+  if (!body.trim()) return <p className="release-notes-empty">{t("This release does not include additional notes.")}</p>;
   return <div className="release-notes-body">
     {body.split(/\r?\n/u).map((line, index) => {
       const heading = /^(#{1,4})\s+(.+)$/u.exec(line);
@@ -61,22 +65,23 @@ export function ReleaseNotesModal({
   fallbackUrl: string;
   onClose: () => void;
 }) {
+  const t = useT();
   const published = release?.publishedAt ? new Date(release.publishedAt) : null;
   const validPublished = published && !Number.isNaN(published.getTime()) ? published : null;
   return <section className="modal panel release-notes-modal" role="dialog" aria-modal="true" aria-labelledby="release-notes-title">
-    <button className="modal-close-button release-notes-close" type="button" onClick={onClose} aria-label="Close release notes"><CloseIcon /></button>
+    <button className="modal-close-button release-notes-close" type="button" onClick={onClose} aria-label={t("Close release notes")}><CloseIcon /></button>
     {release?.bannerUrl && <img className="release-notes-banner" src={release.bannerUrl} alt={release.bannerAlt} />}
     <header className="release-notes-header">
-      <span className="eyebrow">Update installed · Version {version}</span>
+      <span className="eyebrow">{t("Update installed · Version {version}", { version })}</span>
       <h2 id="release-notes-title">{release?.title ?? `MultiVibe v${version}`}</h2>
-      {validPublished && <small>Released {validPublished.toLocaleDateString()}</small>}
+      {validPublished && <small>{t("Released {date}", { date: validPublished.toLocaleDateString(activeLocale()) })}</small>}
     </header>
-    {loading && <p className="muted release-notes-loading">Loading release notes from GitHub…</p>}
+    {loading && <p className="muted release-notes-loading">{t("Loading release notes from GitHub…")}</p>}
     {!loading && error && <div className="error release-notes-error" role="alert">{error}</div>}
     {!loading && !error && release && <ReleaseNotesBody body={release.body} />}
     <footer className="release-notes-actions">
-      <a className="btn secondary" href={release?.htmlUrl ?? fallbackUrl} target="_blank" rel="noreferrer">View release on GitHub</a>
-      <button className="btn" type="button" onClick={onClose}>Done</button>
+      <a className="btn secondary" href={release?.htmlUrl ?? fallbackUrl} target="_blank" rel="noreferrer">{t("View release on GitHub")}</a>
+      <button className="btn" type="button" onClick={onClose}>{t("Done")}</button>
     </footer>
   </section>;
 }

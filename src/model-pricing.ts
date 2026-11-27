@@ -1,4 +1,6 @@
 import { normalizeModelsDevCost, type ModelsDevCost, type ModelsDevRates } from "./models-dev-pricing.js";
+import { isOffPeakAt } from "./off-peak.js";
+import type { ModelBillingRate } from "./types.js";
 
 export type ModelPricing = {
   inputPer1M: number;
@@ -17,6 +19,81 @@ export type ModelPricing = {
 
 export let MODEL_PRICING_VERSION = "2026-10-27";
 let runtimePricing = new Map<string, ModelPricing>();
+/**
+ * Operator-set billed rates, keyed by exposed model id. They are kept apart
+ * from the upstream catalog so a catalog refresh never erases them, and they
+ * take precedence when a trace is priced. Off-peak sits beside the standard
+ * rate so the weekly calendar only changes which entry is selected.
+ */
+type BilledEntry = { standard: ModelPricing; offPeak?: ModelPricing };
+let billedPricing = new Map<string, BilledEntry>();
+
+function billingRate(rate: {
+  inputPer1M: number;
+  outputPer1M: number;
+  cachedInputPer1M?: number;
+}): ModelPricing {
+  return {
+    inputPer1M: rate.inputPer1M,
+    outputPer1M: rate.outputPer1M,
+    ...(rate.cachedInputPer1M !== undefined
+      ? { cachedInputPer1M: rate.cachedInputPer1M }
+      : {}),
+  };
+}
+
+function validBillingRate(rate: ModelBillingRate | undefined): boolean {
+  if (!rate) return false;
+  const valid = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0;
+  if (!valid(rate.inputPer1M) || !valid(rate.outputPer1M)) return false;
+  if (rate.cachedInputPer1M !== undefined && !valid(rate.cachedInputPer1M)) return false;
+  if (rate.offPeak) {
+    if (!valid(rate.offPeak.inputPer1M) || !valid(rate.offPeak.outputPer1M)) return false;
+    if (rate.offPeak.cachedInputPer1M !== undefined && !valid(rate.offPeak.cachedInputPer1M)) return false;
+  }
+  return true;
+}
+
+export function setModelBillingOverrides(
+  overrides: Record<string, ModelBillingRate> | undefined,
+): void {
+  const next = new Map<string, BilledEntry>();
+  for (const [model, rate] of Object.entries(overrides ?? {})) {
+    const key = model.trim();
+    if (!key || !validBillingRate(rate)) continue;
+    next.set(key, {
+      standard: billingRate(rate),
+      ...(rate.offPeak ? { offPeak: billingRate(rate.offPeak) } : {}),
+    });
+  }
+  billedPricing = next;
+}
+
+/**
+ * Dated snapshots and `:variant` tags belong to the same billable model, so
+ * they inherit its rate. A sibling such as `gpt-5.4-mini` does not: charging it
+ * the `gpt-5.4` rate would silently overbill smaller models.
+ */
+const BILLING_VARIANT_SUFFIX =
+  /^(?:-(?:\d{4}(?:-\d{2}(?:-\d{2})?)?|latest)|:[a-z0-9][a-z0-9._-]*)$/i;
+
+function billedEntryFor(model: string): BilledEntry | undefined {
+  const exact = billedPricing.get(model);
+  if (exact) return exact;
+  // A provider-qualified request may use a rate configured on the bare id.
+  const slash = model.indexOf("/");
+  if (slash !== -1) {
+    const bare = billedPricing.get(model.slice(slash + 1));
+    if (bare) return bare;
+  }
+  let match: { key: string; entry: BilledEntry } | undefined;
+  for (const [key, entry] of billedPricing) {
+    if (!model.startsWith(key)) continue;
+    if (!BILLING_VARIANT_SUFFIX.test(model.slice(key.length))) continue;
+    if (!match || key.length > match.key.length) match = { key, entry };
+  }
+  return match?.entry;
+}
 // Only origin providers may supply bare model IDs. Gateway prices must retain
 // their provider prefix; otherwise the same model could inherit a reseller rate.
 const ORIGIN_PROVIDERS = new Set(["openai", "anthropic", "google", "deepseek", "xai", "mistral", "cohere", "groq", "cerebras", "perplexity", "z-ai", "zai", "moonshotai", "minimax"]);
@@ -154,15 +231,20 @@ const PREFIX_PRICING: Array<{ prefix: string; pricing: ModelPricing }> = [
   { prefix: "deepseek-reasoner", pricing: { inputPer1M: 0.14, outputPer1M: 0.28 } }
 ];
 
-export function getModelPricing(model?: string): ModelPricing | undefined {
+export function getModelPricing(model?: string, at: number | Date = Date.now()): ModelPricing | undefined {
   if (!model || typeof model !== "string") return undefined;
-  let m = model.trim();
-  if (!m) return undefined;
+  const trimmed = model.trim();
+  if (!trimmed) return undefined;
+  let m = trimmed;
+  const billed = billedEntryFor(m);
+  if (billed) return billed.offPeak && isOffPeakAt(at) ? billed.offPeak : billed.standard;
   if (UNPRICED_MODELS.has(m) || (m.startsWith("openai/") && UNPRICED_MODELS.has(m.slice(7)))) return undefined;
   if (runtimePricing.has(m)) return runtimePricing.get(m);
   // Qualified IDs must never fall through to another provider's price.
-  if (m.startsWith("openai/")) { m = m.slice(7); if (UNPRICED_MODELS.has(m)) return undefined; }
+  let bare = m;
+  if (m.startsWith("openai/")) { bare = m.slice(7); if (UNPRICED_MODELS.has(bare)) return undefined; }
   else if (m.includes("/")) return undefined;
+  m = bare;
   if (EXACT_PRICING[m]) return EXACT_PRICING[m];
   for (const entry of PREFIX_PRICING) {
     if (entry.prefix === "gpt-6.1-sol") {
@@ -178,8 +260,9 @@ export function estimateCostUsd(
   tokensOutput = 0,
   tokensInputCached = 0,
   tokensInputCacheWrite = 0,
+  at: number | Date = Date.now(),
 ): number | undefined {
-  const pricing = getModelPricing(model);
+  const pricing = getModelPricing(model, at);
   if (!pricing) return undefined;
   const input = Math.max(0, tokensInput);
   let rate: ModelPricing = pricing;
@@ -208,6 +291,7 @@ export function estimateCostUsdWithoutCache(
   tokensInput = 0,
   tokensOutput = 0,
   tokensInputCacheWrite = 0,
+  at: number | Date = Date.now(),
 ): number | undefined {
   return estimateCostUsd(
     model,
@@ -215,6 +299,7 @@ export function estimateCostUsdWithoutCache(
     tokensOutput,
     0,
     tokensInputCacheWrite,
+    at,
   );
 }
 
@@ -235,11 +320,13 @@ export function estimateImageCostUsd(model: string | undefined, usage: any): num
 export function estimateTraceCostUsd(trace: {
   model?: string; resolvedModel?: string; usageStatus?: string; costStatus?: string; costUsd?: number;
   usage?: unknown; route?: string;
+  at?: number; startedAt?: number; completedAt?: number;
   tokensInput?: number; tokensOutput?: number; tokensInputCached?: number; tokensInputCacheWrite?: number;
 }): number | undefined {
   if (typeof trace.costUsd === "number" && Number.isFinite(trace.costUsd)) return trace.costUsd;
   if (trace.usageStatus === "missing" || trace.costStatus === "unpriced") return undefined;
   if (trace.route?.includes("/images/")) return estimateImageCostUsd(trace.resolvedModel ?? trace.model, trace.usage);
   return estimateCostUsd(trace.resolvedModel ?? trace.model, trace.tokensInput ?? 0, trace.tokensOutput ?? 0,
-    trace.tokensInputCached ?? 0, trace.tokensInputCacheWrite ?? 0);
+    trace.tokensInputCached ?? 0, trace.tokensInputCacheWrite ?? 0,
+    trace.startedAt ?? trace.completedAt ?? trace.at);
 }

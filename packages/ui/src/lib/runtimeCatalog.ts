@@ -1,5 +1,6 @@
 import { SDK_PROVIDER_NAMES } from "./expandedProviderMetadata";
 import type { Account } from "../types";
+import { t } from "../i18n/core";
 
 export type RuntimeIdentity = {
   id: string;
@@ -89,7 +90,7 @@ export function runtimeIdentityForAccount(
   if (account.provider === "ai-sdk") {
     return runtimeIdentityForAdapter(
       account.sdkProvider ?? "ai-sdk",
-      SDK_PROVIDER_NAMES[account.sdkProvider ?? ""] ?? "Cloud provider",
+      SDK_PROVIDER_NAMES[account.sdkProvider ?? ""] ?? t("Cloud provider"),
     );
   }
   return runtimeIdentityForProvider(account.provider);

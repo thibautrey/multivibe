@@ -1,4 +1,5 @@
 import React from "react";
+import { useT } from "../i18n";
 
 type Props = {
   widgetId?: string;
@@ -15,6 +16,7 @@ type Props = {
 };
 
 export function Metric({ title, value, detail, action, onClick, ariaLabel, loading = false, preserveValueWhileLoading = false, tone = "default" }: Props) {
+  const t = useT();
   const refreshing = loading && preserveValueWhileLoading;
   const showSkeleton = loading && !preserveValueWhileLoading;
   const interactive = Boolean(onClick) && !showSkeleton;
@@ -23,7 +25,7 @@ export function Metric({ title, value, detail, action, onClick, ariaLabel, loadi
     <div
       className={`panel metric metric-${showSkeleton ? "default" : tone}${interactive ? " metric-interactive" : ""}${refreshing ? " metric-refreshing" : ""}`}
       aria-busy={loading}
-      aria-label={interactive ? ariaLabel ?? `Open ${title}` : undefined}
+      aria-label={interactive ? ariaLabel ?? t("Open {title}", { title }) : undefined}
       role={interactive ? "button" : undefined}
       tabIndex={interactive ? 0 : undefined}
       onClick={interactive ? onClick : undefined}
@@ -36,9 +38,9 @@ export function Metric({ title, value, detail, action, onClick, ariaLabel, loadi
     >
       <div className="metric-heading">
         <div className="muted metric-title">{title}</div>
-        {refreshing && <span className="metric-updating" role="status">Updating</span>}
+        {refreshing && <span className="metric-updating" role="status">{t("Updating")}</span>}
       </div>
-      <div className="value" aria-label={showSkeleton ? `Loading ${title}` : undefined}>
+      <div className="value" aria-label={showSkeleton ? t("Loading {title}", { title }) : undefined}>
         {showSkeleton ? <span className="metric-skeleton metric-skeleton-value" aria-hidden="true" /> : value}
       </div>
       {detail && <div className="metric-detail">

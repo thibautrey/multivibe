@@ -1,4 +1,5 @@
-import { installModelsDevPricing } from "./model-pricing.js";
+import { installModelsDevPricing, setModelBillingOverrides } from "./model-pricing.js";
+import { setOffPeakSchedule } from "./off-peak.js";
 import { COMMUNITY_BENCHMARKS_API_BASE_URL, COMMUNITY_BENCHMARKS_ENABLED, COMMUNITY_BENCHMARKS_STATE_PATH } from "./config.js";
 import { createCommunityReportSharingWorker } from "./community-report-sharing.js";
 import { detectCommunityHost } from "./community-host-profile.js";
@@ -12,6 +13,26 @@ import { HeadroomProvisioner } from "./headroom-provisioner.js";
 import { codingEconomyManifest, createCodingEconomy } from "./coding-economy.js";
 import { syncVirtualModelAliases } from "./virtual-model-registry.js";
 import { createAuthRateLimiter } from "./auth-rate-limit.js";
+import { getAuth, requireAdmin, scopedUserId, type AuthIdentity } from "./auth-context.js";
+import {
+  hashInviteToken,
+  hashPassword,
+  isValidEmail,
+  isValidPassword,
+  normalizeEmail,
+  publicUser,
+  signSession,
+  verifyPassword,
+  verifySession,
+} from "./users.js";
+import {
+  authenticationOptions,
+  finishAuthentication,
+  finishRegistration,
+  findPasskeyOwner,
+  PasskeyError,
+  registrationOptions,
+} from "./passkeys.js";
 import { createSdkAdapterRouter } from "./ai-sdk/routes.js";
 import { SDK_INTERNAL_TOKEN } from "./ai-sdk/connection.js";
 import { LiveModelCatalog } from "./ai-sdk/live-model-catalog.js";
@@ -27,6 +48,11 @@ import { createTraceManager } from "./traces.js";
 import { MultivibeTeamSyncService } from "./team-sync.js";
 import { AccountStoreManagedEnrollmentInstaller, ManagedTeamEnrollmentService } from "./managed-team-enrollment.js";
 import { createAdminRouter } from "./routes/admin/index.js";
+import { createAdminUsersRouter } from "./routes/admin/users.js";
+import { createAdminModelBillingRouter } from "./routes/admin/model-billing.js";
+import { createAdminPaymentsRouter } from "./routes/admin/payments.js";
+import { createBillingRouter } from "./routes/billing.js";
+import { PaymentsService, startPaymentsPoller } from "./payments/service.js";
 import { HostHarnessIntegrationManager } from "./host/harness-integrations.js";
 import { HostConversationHarnessManager } from "./host/conversation-harnesses.js";
 import { HostHarnessRuntime } from "./host/harness-runtime/runtime.js";
@@ -95,6 +121,9 @@ import {
   CLOUDFLARE_ACCESS_TOKEN_DURATION,
   CLOUDFLARE_ACCOUNT_ID,
   CLOUDFLARE_API_TOKEN,
+  MARKETPLACE_URL,
+  MARKETPLACE_SECRET_PATH,
+  MARKETPLACE_POLL_INTERVAL_MS,
 } from "./config.js";
 import { createCloudflareAccessProvisioner } from "./cloudflare-access.js";
 import { ModuleManager } from "./module-manager.js";
@@ -213,6 +242,12 @@ await cleanupOrphanedTmpFiles(dataDir);
 
 const store = new AccountStore(STORE_PATH);
 
+const paymentsService = new PaymentsService({
+  store,
+  credentialsPath: MARKETPLACE_SECRET_PATH,
+  brokerUrl: MARKETPLACE_URL,
+});
+
 const teamSync = new MultivibeTeamSyncService(store, `${STORE_PATH}.team-instance.json`);
 const appVersion = process.env.APP_VERSION ?? "unknown";
 const managedTeamEnrollment = new ManagedTeamEnrollmentService({
@@ -278,6 +313,16 @@ const traceManager = createTraceManager({
   pricingCachePath: SDK_MODELS_DEV_CACHE_PATH,
   onCompleted: async (trace) => {
     recordHostMenuTraceUsage(trace, store.getCachedAccounts());
+    if (trace.userId) {
+      // Quota accounting: one client request, and the provider attempt's tokens
+      // and priced cost. Attempts carry the usage; client traces carry the count.
+      const isAttempt = !trace.traceKind || trace.traceKind === "upstream-attempt";
+      store.recordUserUsage(trace.userId, {
+        requests: trace.traceKind === "client-request" ? 1 : 0,
+        tokens: isAttempt ? trace.tokensTotal ?? 0 : 0,
+        costUsd: isAttempt ? trace.costUsd ?? 0 : 0,
+      });
+    }
     const principal = trace.application
       ? store.getCachedProxyApiKeys().find((entry) => entry.application === trace.application)?.principal
         ?? { type: "service" as const, id: trace.application, name: trace.application }
@@ -313,6 +358,10 @@ await Promise.all([
   traceManager.initialize(),
   moduleManager.initialize(),
 ]);
+// Admin-set billed rates are independent of the upstream catalog and must be
+// live before the first trace is priced.
+setModelBillingOverrides(store.getCachedSettings().modelBilling);
+setOffPeakSchedule(store.getCachedSettings().offPeak);
 // Reconcile virtual models declared by bundled modules once the store and the
 // module locks are loaded, so a restart can never leave a stale managed alias
 // behind or publish an alias for a disabled module.
@@ -530,6 +579,7 @@ const adminRouter = createAdminRouter({
 
 const ADMIN_SESSION_COOKIE = "multivibe_admin_session";
 const ADMIN_SESSION_MAX_AGE_MS = 400 * 24 * 60 * 60 * 1000;
+const USER_SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const DESKTOP_SESSION_MAX_AGE_MS = 60 * 1000;
 const desktopSessionCodes = new Map<string, number>();
 const INTERNAL_JOB_TOKEN =
@@ -552,35 +602,45 @@ function readCookie(req: express.Request, name: string): string | undefined {
   return undefined;
 }
 
-function adminSessionValue(): string {
-  return crypto
-    .createHmac("sha256", ADMIN_TOKEN)
-    .update("multivibe-admin-session-v1")
-    .digest("base64url");
-}
-
-function hasAdminSession(req: express.Request): boolean {
-  const sessionId = readCookie(req, ADMIN_SESSION_COOKIE);
-  if (!sessionId) return false;
-  return safeEqual(sessionId, adminSessionValue());
-}
-
 function shouldUseSecureCookie(req: express.Request): boolean {
   return req.secure || req.header("x-forwarded-proto") === "https";
 }
 
-function setAdminSession(req: express.Request, res: express.Response) {
-  const sessionId = adminSessionValue();
-  res.cookie(ADMIN_SESSION_COOKIE, sessionId, {
+/**
+ * Resolve the caller once per request. The cookie is the only source of user
+ * identity, and the store is re-read so a suspended or demoted user loses
+ * access immediately instead of when their 30-day cookie expires.
+ */
+function resolveAuth(req: express.Request): AuthIdentity | null {
+  if (!ADMIN_TOKEN) return { role: "admin", via: "token" };
+  const token =
+    req.header("x-admin-token") ||
+    req.header("authorization")?.replace(/^Bearer\s+/i, "");
+  if (token && safeEqual(token, ADMIN_TOKEN)) return { role: "admin", via: "token" };
+  const claims = verifySession(readCookie(req, ADMIN_SESSION_COOKIE), ADMIN_TOKEN);
+  if (!claims) return null;
+  // Legacy admin cookie (HMAC of a constant) carries no user id.
+  if (!claims.userId) return { role: "admin", via: "session" };
+  const user = store.getCachedUsers().find((candidate) => candidate.id === claims.userId);
+  if (!user || user.status !== "active") return null;
+  return { role: user.role, userId: user.id, via: "session" };
+}
+
+function setSessionCookie(
+  req: express.Request,
+  res: express.Response,
+  claims: { userId?: string; role: "admin" | "member"; expiresAt: number },
+) {
+  res.cookie(ADMIN_SESSION_COOKIE, signSession(claims, ADMIN_TOKEN), {
     httpOnly: true,
     sameSite: "strict",
     secure: shouldUseSecureCookie(req),
-    maxAge: ADMIN_SESSION_MAX_AGE_MS,
+    maxAge: Math.max(0, claims.expiresAt - Date.now()),
     path: "/",
   });
 }
 
-function clearAdminSession(req: express.Request, res: express.Response) {
+function clearSessionCookie(req: express.Request, res: express.Response) {
   res.clearCookie(ADMIN_SESSION_COOKIE, {
     httpOnly: true,
     sameSite: "strict",
@@ -598,13 +658,9 @@ function adminGuard(
   // cookie is intentionally unavailable on that request; the callback route
   // still requires the flow's unpredictable state and PKCE-bound code.
   if (req.path === "/cloud/oauth/callback") return next();
-  if (!ADMIN_TOKEN) return next();
-  if (hasAdminSession(req)) return next();
-  const token =
-    req.header("x-admin-token") ||
-    req.header("authorization")?.replace(/^Bearer\s+/i, "");
-  if (!token || !safeEqual(token, ADMIN_TOKEN))
-    return res.status(401).json({ error: "unauthorized" });
+  const auth = resolveAuth(req);
+  if (!auth) return res.status(401).json({ error: "unauthorized" });
+  req.auth = auth;
   next();
 }
 
@@ -671,7 +727,7 @@ app.head("/api/hello", (_req, res) => res.sendStatus(200));
 
 if (!MULTIVIBE_CONTROL_PLANE) {
   app.get("/admin/session", (req, res) => {
-    res.json({ authenticated: !ADMIN_TOKEN || hasAdminSession(req) });
+    res.json({ authenticated: Boolean(resolveAuth(req)) });
   });
 }
 
@@ -764,7 +820,7 @@ if (!MULTIVIBE_CONTROL_PLANE) {
       return res.status(401).type("text/plain").send("This desktop session link is invalid or expired.");
     }
     desktopSessionCodes.delete(code);
-    setAdminSession(req, res);
+    setSessionCookie(req, res, { role: "admin", expiresAt: Date.now() + ADMIN_SESSION_MAX_AGE_MS });
     res.setHeader("cache-control", "no-store");
     res.setHeader("referrer-policy", "no-referrer");
     return res.redirect(303, "/");
@@ -790,15 +846,259 @@ if (!MULTIVIBE_CONTROL_PLANE) {
     const token = String(req.body?.token ?? "");
     if (!safeEqual(token, ADMIN_TOKEN))
       return res.status(401).json({ error: "unauthorized" });
-    setAdminSession(req, res);
+    setSessionCookie(req, res, { role: "admin", expiresAt: Date.now() + ADMIN_SESSION_MAX_AGE_MS });
     res.json({ authenticated: true });
   });
 
   app.delete("/admin/session", (req, res) => {
-    clearAdminSession(req, res);
+    clearSessionCookie(req, res);
     res.json({ authenticated: false });
   });
 }
+
+// --- Dashboard authentication (users) -------------------------------------
+// These routes run before the admin guard: login and invite acceptance are the
+// only unauthenticated dashboard entry points.
+
+function inviteForToken(token: string) {
+  const hash = hashInviteToken(token);
+  return store
+    .getCachedUsers()
+    .find((candidate) => candidate.invite?.tokenHash === hash);
+}
+
+app.get("/admin/auth/invite", (req, res) => {
+  const token = typeof req.query.token === "string" ? req.query.token : "";
+  const user = token ? inviteForToken(token) : undefined;
+  if (!user?.invite || user.invite.expiresAt <= Date.now()) {
+    return res.status(404).json({ error: "invite_invalid" });
+  }
+  res.setHeader("cache-control", "no-store");
+  res.json({ email: user.email, ...(user.name ? { name: user.name } : {}) });
+});
+
+app.post(
+  "/admin/auth/invite/accept",
+  createAuthRateLimiter({ limit: 20 }),
+  async (req, res) => {
+    const token = String(req.body?.token ?? "");
+    const password = String(req.body?.password ?? "");
+    const name = typeof req.body?.name === "string" ? req.body.name.trim().slice(0, 120) : "";
+    if (!token || !isValidPassword(password)) {
+      return res.status(400).json({ error: "invalid_request" });
+    }
+    const user = inviteForToken(token);
+    if (!user?.invite || user.invite.expiresAt <= Date.now()) {
+      return res.status(410).json({ error: "invite_invalid" });
+    }
+    const updated = await store.patchUser(user.id, {
+      password: await hashPassword(password),
+      invite: null,
+      status: "active",
+      lastLoginAt: Date.now(),
+      ...(name ? { name } : {}),
+    });
+    if (!updated) return res.status(410).json({ error: "invite_invalid" });
+    setSessionCookie(req, res, {
+      userId: updated.id,
+      role: updated.role,
+      expiresAt: Date.now() + USER_SESSION_MAX_AGE_MS,
+    });
+    res.setHeader("cache-control", "no-store");
+    res.json({ authenticated: true, user: publicUser(updated) });
+  },
+);
+
+app.post(
+  "/admin/auth/login",
+  createAuthRateLimiter({ limit: 20 }),
+  async (req, res) => {
+    const email = normalizeEmail(req.body?.email);
+    const password = String(req.body?.password ?? "");
+    const user = email ? await store.findUserByEmail(email) : undefined;
+    const valid = user ? await verifyPassword(password, user.password) : false;
+    if (!user || !valid) {
+      return res.status(401).json({ error: "invalid_credentials" });
+    }
+    if (user.status !== "active") {
+      return res.status(403).json({ error: "user_suspended" });
+    }
+    const updated = await store.patchUser(user.id, { lastLoginAt: Date.now() });
+    setSessionCookie(req, res, {
+      userId: user.id,
+      role: user.role,
+      expiresAt: Date.now() + USER_SESSION_MAX_AGE_MS,
+    });
+    res.setHeader("cache-control", "no-store");
+    res.json({ authenticated: true, user: publicUser(updated ?? user) });
+  },
+);
+
+app.post("/admin/auth/logout", (req, res) => {
+  clearSessionCookie(req, res);
+  res.setHeader("cache-control", "no-store");
+  res.json({ authenticated: false });
+});
+
+function passkeyFailure(res: express.Response, error: unknown) {
+  if (error instanceof PasskeyError) {
+    return res.status(error.status).json({ error: error.code });
+  }
+  return res.status(400).json({ error: "passkey_failed" });
+}
+
+// Passkey ceremonies are unauthenticated entry points, like the password login.
+app.post(
+  "/admin/auth/passkey/options",
+  createAuthRateLimiter({ limit: 30 }),
+  async (req, res) => {
+    try {
+      const email = normalizeEmail(req.body?.email);
+      const user = email ? await store.findUserByEmail(email) : undefined;
+      if (user && user.status !== "active") {
+        return res.status(403).json({ error: "user_suspended" });
+      }
+      // With an email the browser is restricted to that account's credentials;
+      // without one it may offer any discoverable passkey for this site.
+      const { flowId, options } = await authenticationOptions(req, user);
+      res.setHeader("cache-control", "no-store");
+      res.json({ flowId, options });
+    } catch (error) {
+      passkeyFailure(res, error);
+    }
+  },
+);
+
+app.post(
+  "/admin/auth/passkey/login",
+  createAuthRateLimiter({ limit: 20 }),
+  async (req, res) => {
+    try {
+      const result = await finishAuthentication(
+        req,
+        req.body?.flowId,
+        req.body?.response,
+        (credentialId) => findPasskeyOwner(store.getCachedUsers(), credentialId),
+      );
+      if (result.user.status !== "active") {
+        return res.status(403).json({ error: "user_suspended" });
+      }
+      const updated = await store.patchUser(result.user.id, {
+        passkeys: (result.user.passkeys ?? []).map((passkey) =>
+          passkey.id === result.passkeyId
+            ? { ...passkey, counter: result.counter, lastUsedAt: Date.now() }
+            : passkey,
+        ),
+        lastLoginAt: Date.now(),
+      });
+      setSessionCookie(req, res, {
+        userId: result.user.id,
+        role: result.user.role,
+        expiresAt: Date.now() + USER_SESSION_MAX_AGE_MS,
+      });
+      res.setHeader("cache-control", "no-store");
+      res.json({ authenticated: true, user: publicUser(updated ?? result.user) });
+    } catch (error) {
+      passkeyFailure(res, error);
+    }
+  },
+);
+
+app.post("/admin/auth/passkey/register/options", adminGuard, async (req, res) => {
+  const auth = getAuth(req);
+  if (!auth?.userId) {
+    return res.status(400).json({ error: "passkey_requires_account" });
+  }
+  const user = await store.findUser(auth.userId);
+  if (!user) return res.status(401).json({ error: "unauthorized" });
+  try {
+    const { flowId, options } = await registrationOptions(user, req);
+    res.setHeader("cache-control", "no-store");
+    res.json({ flowId, options });
+  } catch (error) {
+    passkeyFailure(res, error);
+  }
+});
+
+app.post("/admin/auth/passkey/register", adminGuard, async (req, res) => {
+  const auth = getAuth(req);
+  if (!auth?.userId) {
+    return res.status(400).json({ error: "passkey_requires_account" });
+  }
+  const user = await store.findUser(auth.userId);
+  if (!user) return res.status(401).json({ error: "unauthorized" });
+  try {
+    const passkey = await finishRegistration(
+      req,
+      user,
+      req.body?.flowId,
+      req.body?.response,
+      req.body?.name,
+    );
+    const updated = await store.patchUser(user.id, {
+      passkeys: [...(user.passkeys ?? []).filter((entry) => entry.id !== passkey.id), passkey],
+    });
+    res.json({ user: publicUser(updated ?? user) });
+  } catch (error) {
+    passkeyFailure(res, error);
+  }
+});
+
+app.delete("/admin/auth/passkey/:id", adminGuard, async (req, res) => {
+  const auth = getAuth(req);
+  if (!auth?.userId) {
+    return res.status(400).json({ error: "passkey_requires_account" });
+  }
+  const user = await store.findUser(auth.userId);
+  if (!user) return res.status(401).json({ error: "unauthorized" });
+  const remaining = (user.passkeys ?? []).filter((passkey) => passkey.id !== req.params.id);
+  const updated = await store.patchUser(user.id, { passkeys: remaining });
+  res.json({ user: publicUser(updated ?? user) });
+});
+
+app.post(
+  "/admin/auth/password",
+  adminGuard,
+  createAuthRateLimiter({ limit: 20 }),
+  async (req, res) => {
+    const auth = getAuth(req);
+    if (!auth?.userId) return res.status(400).json({ error: "password_managed_by_token" });
+    const user = await store.findUser(auth.userId);
+    if (!user) return res.status(401).json({ error: "unauthorized" });
+    const next = String(req.body?.newPassword ?? "");
+    if (!isValidPassword(next)) return res.status(400).json({ error: "weak_password" });
+    if (user.password) {
+      const current = String(req.body?.currentPassword ?? "");
+      if (!(await verifyPassword(current, user.password))) {
+        return res.status(403).json({ error: "invalid_password" });
+      }
+    }
+    await store.patchUser(user.id, { password: await hashPassword(next) });
+    res.json({ ok: true });
+  },
+);
+
+app.get("/admin/me", adminGuard, async (req, res) => {
+  const auth = getAuth(req);
+  if (!auth) return res.status(401).json({ error: "unauthorized" });
+  if (!auth.userId) {
+    return res.json({
+      role: "admin",
+      via: auth.via,
+      adminToken: true,
+      ...(ADMIN_TOKEN ? {} : { authDisabled: true }),
+    });
+  }
+  const user = await store.findUser(auth.userId);
+  if (!user) return res.status(401).json({ error: "unauthorized" });
+  res.setHeader("cache-control", "no-store");
+  res.json({ role: user.role, via: auth.via, user: publicUser(user) });
+});
+
+app.use("/admin/users", adminGuard, createAdminUsersRouter({ store }));
+app.use("/admin/model-billing", adminGuard, createAdminModelBillingRouter({ store }));
+app.use("/admin/billing", adminGuard, createBillingRouter({ store, payments: paymentsService }));
+app.use("/admin/payments", adminGuard, createAdminPaymentsRouter({ store, payments: paymentsService }));
 
 app.use("/admin", adminGuard, adminRouter);
 
@@ -835,6 +1135,11 @@ if (ADMIN_TOKEN && INSECURE_ADMIN_TOKENS.has(ADMIN_TOKEN)) {
   );
 }
 
+const paymentsPoller = startPaymentsPoller(paymentsService, {
+  intervalMs: MARKETPLACE_POLL_INTERVAL_MS,
+});
+void paymentsPoller.tick();
+
 server.listen(nodeHost ? { port: nodePort, host: nodeHost } : { port: nodePort }, () => {
   smartRouting.startHealthMonitoring();
   hostHarnessIntegrations?.startCatalogSynchronization();
@@ -848,6 +1153,7 @@ server.listen(nodeHost ? { port: nodePort, host: nodeHost } : { port: nodePort }
 
 let shuttingDown = false;
 async function shutdown(signal: NodeJS.Signals) {
+  paymentsPoller.stop();
   multivibeCloud.stop();
   instanceRelay?.stop();
   if (shuttingDown) return;

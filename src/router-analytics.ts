@@ -17,8 +17,8 @@ export async function recordRouterUsage(value: any, context: ModuleContext) {
   const decision = await context.storage.get(`decision:${context.requestId}`) as { requestedModel: string; baselineModel?: string } | null;
   if (!decision) return;
   const measured = value.usageStatus === "measured" && typeof value.tokensInput === "number" && typeof value.tokensOutput === "number";
-  const actual = measured ? estimateCostUsd(value.model, value.tokensInput, value.tokensOutput, value.tokensInputCached ?? 0, value.tokensInputCacheWrite ?? 0) : undefined;
-  const baseline = measured ? estimateCostUsd(decision.baselineModel ?? decision.requestedModel, value.tokensInput, value.tokensOutput, value.tokensInputCached ?? 0, value.tokensInputCacheWrite ?? 0) : undefined;
+  const actual = measured ? estimateCostUsd(value.model, value.tokensInput, value.tokensOutput, value.tokensInputCached ?? 0, value.tokensInputCacheWrite ?? 0, value.startedAt ?? value.at) : undefined;
+  const baseline = measured ? estimateCostUsd(decision.baselineModel ?? decision.requestedModel, value.tokensInput, value.tokensOutput, value.tokensInputCached ?? 0, value.tokensInputCacheWrite ?? 0, value.startedAt ?? value.at) : undefined;
   const comparable = actual !== undefined && baseline !== undefined && value.status < 400;
   await context.storage.recordEvent({ id: `usage:${value.traceId}`, type: "routing.usage",
     data: { baselineModel: decision.baselineModel ?? decision.requestedModel, requestedModel: decision.requestedModel, actualModel: value.model, status: value.status, pricingVersion: MODEL_PRICING_VERSION,

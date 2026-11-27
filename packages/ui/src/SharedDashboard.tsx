@@ -1,6 +1,7 @@
 import React from 'react';
 import App from './App';
 import { DashboardProvider, type DashboardRuntime } from './adapter';
+import { I18nProvider, type Locale } from './i18n';
 import type { Account, ExposedModel } from './types';
 export interface DashboardPageContext { accounts: Account[]; models: ExposedModel[]; refresh: () => Promise<void> }
 export interface DashboardPage {
@@ -23,7 +24,13 @@ export interface SharedDashboardProps extends DashboardRuntime {
   workspaceSelector?: React.ReactNode;
   brandSubtitle?: string;
   chatUrl?: string;
+  /** Force a UI language; otherwise the browser language is detected automatically. */
+  locale?: Locale;
 }
 export default function SharedDashboard(props: SharedDashboardProps) {
-  return <DashboardProvider value={props}><App {...props} /></DashboardProvider>;
+  return (
+    <I18nProvider initialLocale={props.locale}>
+      <DashboardProvider value={props}><App {...props} /></DashboardProvider>
+    </I18nProvider>
+  );
 }

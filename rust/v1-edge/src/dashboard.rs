@@ -1,6 +1,6 @@
 use super::{
     EdgeConfig, EdgeState, admin_session_value, constant_time_equal, cookie_value, header_value,
-    json_response, now_ms, proxy_api_key_preview, trim_slashes,
+    json_response, now_ms, parse_session_value, proxy_api_key_preview, trim_slashes,
 };
 use axum::{
     body::{Body, to_bytes},
@@ -50,9 +50,14 @@ pub(super) struct DashboardState {
     desktop_sessions: Mutex<VecDeque<(String, u64)>>,
 }
 
+#[derive(Clone, Debug)]
+pub(super) struct DashboardAuth {
+    pub role: &'static str,
+    pub user_id: Option<String>,
+}
+
 fn has_session(headers: &HeaderMap, config: &EdgeConfig) -> bool {
-    cookie_value(headers, ADMIN_SESSION_COOKIE)
-        .is_some_and(|value| constant_time_equal(&value, &admin_session_value(&config.admin_token)))
+    request_auth(headers, config).is_some()
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<String> {
@@ -66,15 +71,55 @@ fn bearer_token(headers: &HeaderMap) -> Option<String> {
     (scheme.eq_ignore_ascii_case("bearer") && parts.next().is_none()).then(|| token.to_owned())
 }
 
+/// Resolve the dashboard caller. The admin token is admin-only; a cookie can
+/// name either an admin or a member.
+pub(super) fn request_auth(headers: &HeaderMap, config: &EdgeConfig) -> Option<DashboardAuth> {
+    if config.admin_token.is_empty() {
+        return Some(DashboardAuth {
+            role: "admin",
+            user_id: None,
+        });
+    }
+    if bearer_token(headers)
+        .is_some_and(|token| constant_time_equal(&token, &config.admin_token))
+    {
+        return Some(DashboardAuth {
+            role: "admin",
+            user_id: None,
+        });
+    }
+    let claims =
+        parse_session_value(&cookie_value(headers, ADMIN_SESSION_COOKIE)?, &config.admin_token)?;
+    match claims.role.as_deref() {
+        Some("admin") => Some(DashboardAuth {
+            role: "admin",
+            user_id: None,
+        }),
+        Some("member") => Some(DashboardAuth {
+            role: "member",
+            user_id: claims.user_id,
+        }),
+        _ => None,
+    }
+}
+
 pub(super) fn request_authorized(headers: &HeaderMap, config: &EdgeConfig) -> bool {
-    config.admin_token.is_empty()
-        || has_session(headers, config)
-        || bearer_token(headers)
-            .is_some_and(|token| constant_time_equal(&token, &config.admin_token))
+    request_auth(headers, config).is_some()
+}
+
+/// Admin-only surface: control-plane policy, capacity admission, enrollment and
+/// desktop bootstrap. Members must not reach these.
+pub(super) fn request_is_admin(headers: &HeaderMap, config: &EdgeConfig) -> bool {
+    request_auth(headers, config).is_some_and(|auth| auth.role == "admin")
 }
 
 pub(super) fn path_requires_session(path: &str) -> bool {
     if path != "/admin" && !path.starts_with("/admin/") {
+        return false;
+    }
+    // Login, invite acceptance and logout are the unauthenticated entry points;
+    // Node owns them so passwords never reach the edge.
+    if path.starts_with("/admin/auth/") {
         return false;
     }
     !matches!(
@@ -241,7 +286,7 @@ pub(super) async fn desktop_session_create(
     State(state): State<EdgeState>,
     headers: HeaderMap,
 ) -> Response {
-    if !request_authorized(&headers, &state.config) {
+    if !request_is_admin(&headers, &state.config) {
         return json_response(StatusCode::UNAUTHORIZED, json!({"error": "unauthorized"}));
     }
     let now = now_ms();
@@ -354,6 +399,18 @@ async fn control_plane_api_keys(state: &EdgeState, headers: &HeaderMap) -> Optio
 }
 
 pub(super) async fn proxy_api_keys(state: &EdgeState, headers: HeaderMap) -> Response {
+    let Some(auth) = request_auth(&headers, &state.config) else {
+        return json_response(StatusCode::UNAUTHORIZED, json!({"error": "unauthorized"}));
+    };
+    let scope = match auth.role {
+        "member" => match auth.user_id {
+            Some(id) => Some(id),
+            // A member session without an identity cannot be scoped; refuse it
+            // rather than falling back to the shared admin view.
+            None => return json_response(StatusCode::UNAUTHORIZED, json!({"error": "unauthorized"})),
+        },
+        _ => None,
+    };
     let store = match state.store.snapshot().await {
         Ok(store) => store,
         Err(_) => {
@@ -363,39 +420,60 @@ pub(super) async fn proxy_api_keys(state: &EdgeState, headers: HeaderMap) -> Res
             );
         }
     };
-    let mut entries = state
-        .config
-        .configured_api_keys
-        .iter()
-        .map(|(application, key)| {
-            json!({
-                // Stable identity shared with trace attribution so usage can join.
-                "id": format!("configured:{application}"),
-                "application": application,
-                "keyPreview": proxy_api_key_preview(key),
-                "source": "environment",
+    // Members only see the credentials they own; environment keys belong to
+    // the shared admin pool and never appear in a member view.
+    let mut entries = if scope.is_some() {
+        Vec::new()
+    } else {
+        state
+            .config
+            .configured_api_keys
+            .iter()
+            .map(|(application, key)| {
+                json!({
+                    // Stable identity shared with trace attribution so usage can join.
+                    "id": format!("configured:{application}"),
+                    "application": application,
+                    "keyPreview": proxy_api_key_preview(key),
+                    "source": "environment",
+                })
             })
-        })
-        .collect::<Vec<_>>();
-    entries.extend(store.proxy_api_keys.iter().map(|entry| {
-        let mut value = json!({
-            "id": entry.id,
-            "application": entry.application,
-            "keyPreview": proxy_api_key_preview(&entry.key),
-            "source": "dashboard",
-        });
-        if let Some(created_at) = entry.created_at {
-            value["createdAt"] = json!(created_at);
-        }
-        if let Some(cloudflare_access) = &entry.cloudflare_access {
-            value["cloudflareAccess"] = cloudflare_access.clone();
-        }
-        value
-    }));
+            .collect::<Vec<_>>()
+    };
+    entries.extend(
+        store
+            .proxy_api_keys
+            .iter()
+            .filter(|entry| {
+                scope
+                    .as_deref()
+                    .is_none_or(|id| entry.owner_id.as_deref() == Some(id))
+            })
+            .map(|entry| {
+                let mut value = json!({
+                    "id": entry.id,
+                    "application": entry.application,
+                    "keyPreview": proxy_api_key_preview(&entry.key),
+                    "source": "dashboard",
+                });
+                if let Some(created_at) = entry.created_at {
+                    value["createdAt"] = json!(created_at);
+                }
+                if let Some(cloudflare_access) = &entry.cloudflare_access {
+                    value["cloudflareAccess"] = cloudflare_access.clone();
+                }
+                value
+            }),
+    );
 
     if let Some(remote_entries) = control_plane_api_keys(state, &headers).await {
         let remote = remote_entries
             .iter()
+            .filter(|entry| {
+                scope.as_deref().is_none_or(|id| {
+                    entry.get("ownerId").and_then(Value::as_str) == Some(id)
+                })
+            })
             .filter_map(|entry| {
                 let id = entry.get("id")?.as_str()?.to_owned();
                 Some((id, entry.clone()))
@@ -434,6 +512,11 @@ pub(super) async fn proxy_api_keys(state: &EdgeState, headers: HeaderMap) -> Res
             remote_entries
                 .into_iter()
                 .filter(|entry| {
+                    scope.as_deref().is_none_or(|id| {
+                        entry.get("ownerId").and_then(Value::as_str) == Some(id)
+                    })
+                })
+                .filter(|entry| {
                     entry
                         .get("id")
                         .and_then(Value::as_str)
@@ -445,7 +528,10 @@ pub(super) async fn proxy_api_keys(state: &EdgeState, headers: HeaderMap) -> Res
     json_response(StatusCode::OK, json!({"proxyApiKeys": entries}))
 }
 
-pub(super) async fn application_policies(state: &EdgeState) -> Response {
+pub(super) async fn application_policies(state: &EdgeState, headers: &HeaderMap) -> Response {
+    if !request_is_admin(headers, &state.config) {
+        return json_response(StatusCode::FORBIDDEN, json!({"error": "forbidden"}));
+    }
     let store = match state.store.snapshot().await {
         Ok(store) => store,
         Err(_) => {

@@ -71,3 +71,14 @@ test("demo invoice sources match configured billable providers and enforce the b
   assert.equal(createDemoApi(now, "member")("GET", "/admin/invoices").status, 403);
   assert.equal(createDemoApi(now, "billing")("GET", "/admin/invoices").status, 200);
 });
+
+test("demo users surface exposes roles and denies member administration", () => {
+  const users = read("/admin/users").users;
+  assert.ok(users.length >= 2);
+  assert.ok(users.some((user: any) => user.role === "member"));
+  assert.ok(users.some((user: any) => user.hasPassword));
+  assert.equal(createDemoApi(now, "member")("GET", "/admin/users").status, 403);
+  assert.equal(createDemoApi(now, "member")("GET", "/admin/me").body.role, "member");
+  assert.equal(createDemoApi(now, "admin")("GET", "/admin/me").body.role, "admin");
+  assert.equal(api("POST", "/admin/users").status, 403);
+});

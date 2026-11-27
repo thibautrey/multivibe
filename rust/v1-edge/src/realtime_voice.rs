@@ -190,6 +190,7 @@ impl Config {
 struct EphemeralSecret {
     application: String,
     api_key: Option<ApiKeyIdentity>,
+    user_id: Option<String>,
     model: String,
     session: Value,
     expires_at_ms: u64,
@@ -210,6 +211,7 @@ impl SecretStore {
         &self,
         application: String,
         api_key: Option<ApiKeyIdentity>,
+        user_id: Option<String>,
         model: String,
         session: Value,
         ttl: Duration,
@@ -234,6 +236,7 @@ impl SecretStore {
             EphemeralSecret {
                 application,
                 api_key,
+                user_id,
                 model,
                 session,
                 expires_at_ms,
@@ -255,6 +258,7 @@ impl SecretStore {
                 application: entry.application,
                 // Ephemeral realtime secrets inherit the key that minted them.
                 api_key: entry.api_key,
+                user_id: entry.user_id,
             },
             session: entry.session,
         })
@@ -392,7 +396,7 @@ pub async fn client_secret_handler(
     }
     let (value, expires_at_ms) = state
         .realtime_secrets
-        .issue(auth.application, auth.api_key, model.clone(), session, ttl)
+        .issue(auth.application, auth.api_key, auth.user_id, model.clone(), session, ttl)
         .await;
     super::json_response(
         StatusCode::OK,
@@ -480,6 +484,7 @@ pub async fn websocket_handler(
             headers,
             grant.auth.application,
             grant.auth.api_key,
+            grant.auth.user_id,
             requested_model,
             preset,
         )
@@ -808,6 +813,7 @@ async fn run_session(
     headers: HeaderMap,
     application: String,
     api_key: Option<ApiKeyIdentity>,
+    user_id: Option<String>,
     requested_model: String,
     preset: Option<Value>,
 ) {
@@ -1049,6 +1055,7 @@ async fn run_session(
                                         &headers,
                                         &application,
                                         api_key.as_ref(),
+                                        user_id.as_deref(),
                                         &sender,
                                         &conversation,
                                         &options,
@@ -1062,6 +1069,7 @@ async fn run_session(
                                             &headers,
                                             &application,
                                             api_key.as_ref(),
+                                            user_id.clone(),
                                             &options,
                                             &conversation,
                                             &sender,
@@ -1078,6 +1086,7 @@ async fn run_session(
                                     &headers,
                                     &application,
                                     api_key.as_ref(),
+                                    user_id.as_deref(),
                                     &sender,
                                     &conversation,
                                     &options,
@@ -1100,6 +1109,7 @@ async fn run_session(
                                         &headers,
                                         &application,
                                         api_key.as_ref(),
+                                        user_id.as_deref(),
                                         &sender,
                                         &conversation,
                                         &options,
@@ -1117,6 +1127,7 @@ async fn run_session(
                                     &headers,
                                     &application,
                                     api_key.as_ref(),
+                                    user_id.clone(),
                                     &options,
                                     &conversation,
                                     &sender,
@@ -1316,6 +1327,7 @@ async fn commit_audio(
     headers: &HeaderMap,
     application: &str,
     api_key: Option<&ApiKeyIdentity>,
+    user_id: Option<&str>,
     sender: &EventSender,
     conversation: &Conversation,
     options: &SessionOptions,
@@ -1366,6 +1378,7 @@ async fn commit_audio(
         headers,
         application,
         api_key,
+        user_id,
         &item_id,
         &pcm,
         options.language.as_deref(),
@@ -1446,6 +1459,7 @@ async fn transcribe(
     headers: &HeaderMap,
     application: &str,
     api_key: Option<&ApiKeyIdentity>,
+    user_id: Option<&str>,
     request_id: &str,
     pcm: &[u8],
     language: Option<&str>,
@@ -1457,6 +1471,7 @@ async fn transcribe(
         headers,
         application,
         api_key,
+        user_id,
         request_id,
         "/v1/realtime/stt",
         &state.config.realtime_voice.stt_model,
@@ -1544,6 +1559,7 @@ async fn record_adapter_trace<T>(
     headers: &HeaderMap,
     application: &str,
     api_key: Option<&ApiKeyIdentity>,
+    user_id: Option<&str>,
     request_id: &str,
     route: &str,
     model: &str,
@@ -1558,6 +1574,7 @@ async fn record_adapter_trace<T>(
         &metadata,
         application,
         api_key,
+        user_id,
         request_id,
         model,
         model,
@@ -1617,6 +1634,7 @@ async fn start_response(
     headers: &HeaderMap,
     application: &str,
     api_key: Option<&ApiKeyIdentity>,
+    user_id: Option<String>,
     options: &SessionOptions,
     conversation: &Conversation,
     sender: &EventSender,
@@ -1648,6 +1666,7 @@ async fn start_response(
         headers.clone(),
         application.to_owned(),
         api_key.cloned(),
+        user_id.clone(),
         options.clone(),
         conversation.clone(),
         sender.for_generation(generation),
@@ -1748,6 +1767,7 @@ async fn run_response(
     mut headers: HeaderMap,
     application: String,
     api_key: Option<ApiKeyIdentity>,
+    user_id: Option<String>,
     options: SessionOptions,
     conversation: Conversation,
     sender: EventSender,
@@ -1763,6 +1783,7 @@ async fn run_response(
         &mut headers,
         &application,
         api_key.as_ref(),
+        user_id.as_deref(),
         &options,
         &conversation,
         &sender,
@@ -1813,6 +1834,7 @@ async fn run_response_inner(
     headers: &mut HeaderMap,
     application: &str,
     api_key: Option<&ApiKeyIdentity>,
+    user_id: Option<&str>,
     options: &SessionOptions,
     conversation: &Conversation,
     sender: &EventSender,
@@ -1946,6 +1968,7 @@ async fn run_response_inner(
         let response_id = response_id.to_owned();
         let item_id = item_id.to_owned();
         let api_key = api_key.cloned();
+        let trace_user_id = user_id.map(str::to_owned);
         let trace_headers = headers.clone();
         let trace_application = application.to_owned();
         let voice = response_options
@@ -1963,6 +1986,7 @@ async fn run_response_inner(
                 trace_headers,
                 trace_application,
                 api_key,
+                trace_user_id,
                 response_id,
                 item_id,
                 voice,
@@ -1981,6 +2005,7 @@ async fn run_response_inner(
         &body,
         application,
         api_key,
+        user_id,
         Some(ActivityKind::WebsocketTurn),
         None,
     )
@@ -2456,6 +2481,7 @@ async fn synthesize_segments(
     headers: HeaderMap,
     application: String,
     api_key: Option<ApiKeyIdentity>,
+    user_id: Option<String>,
     response_id: String,
     item_id: String,
     voice: String,
@@ -2478,6 +2504,7 @@ async fn synthesize_segments(
                 &headers,
                 &application,
                 api_key.as_ref(),
+                user_id.as_deref(),
                 &response_id,
                 &item_id,
                 &voice,
@@ -2497,6 +2524,7 @@ async fn synthesize_segment(
     headers: &HeaderMap,
     application: &str,
     api_key: Option<&ApiKeyIdentity>,
+    user_id: Option<&str>,
     response_id: &str,
     item_id: &str,
     voice: &str,
@@ -2511,6 +2539,7 @@ async fn synthesize_segment(
         headers,
         application,
         api_key,
+        user_id,
         response_id,
         "/v1/realtime/tts",
         &state.config.realtime_voice.tts_model,
@@ -2725,6 +2754,7 @@ mod tests {
         let (token, _) = store
             .issue(
                 "app-a".to_owned(),
+                None,
                 None,
                 "multivibe/voice".to_owned(),
                 session.clone(),

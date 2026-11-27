@@ -18,6 +18,6 @@ test("coding tools stay in one horizontally scrollable row on every viewport", (
 });
 
 test("the coding tools scroll region is named and keyboard focusable", () => {
-  assert.match(component, /className="host-harness-rail" role="region" tabIndex=\{0\} aria-label="Detected coding tools"/);
+  assert.match(component, /className="host-harness-rail" role="region" tabIndex=\{0\} aria-label=\{t\("Detected coding tools"\)\}/);
   assert.match(refresh, /\.host-harness-rail:focus-visible\s*\{[^}]*outline:/);
 });

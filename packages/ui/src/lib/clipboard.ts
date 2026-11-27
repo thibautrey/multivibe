@@ -1,3 +1,5 @@
+import { t } from "../i18n/core";
+
 export async function copyTextToClipboard(value: string): Promise<void> {
   if (navigator.clipboard && window.isSecureContext) {
     await navigator.clipboard.writeText(value);
@@ -15,7 +17,7 @@ export async function copyTextToClipboard(value: string): Promise<void> {
 
   try {
     if (!document.execCommand("copy")) {
-      throw new Error("Clipboard access is unavailable in this browser");
+      throw new Error(t("Clipboard access is unavailable in this browser"));
     }
   } finally {
     textarea.remove();

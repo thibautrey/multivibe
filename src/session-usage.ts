@@ -154,6 +154,7 @@ function traceCostUsdWithoutCache(trace: TraceEntry): number {
       trace.tokensOutput ?? 0,
       0,
       cacheWrite,
+      trace.startedAt ?? trace.completedAt ?? trace.at,
     ) ?? 0
   );
 }

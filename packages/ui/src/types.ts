@@ -429,7 +429,10 @@ export type Tab =
   | "plugins"
   | "updates"
   | "tracing"
-  | "docs";
+  | "docs"
+  | "billing"
+  | "users"
+  | "payments";
 
 export type HostUpdateStatus = {
   schema_version: "multivibe-host-updater-state-v1";
@@ -636,4 +639,217 @@ export type ApplicationPolicy = {
   application: string;
   fairnessWeight: number;
   webhooks: ApplicationWebhook[];
+};
+
+export type DashboardUserRole = "admin" | "member";
+export type DashboardUserStatus = "active" | "suspended";
+export type DashboardUserQuotaPeriod = "day" | "month" | "total";
+export type DashboardUserQuotaWindowPeriod = "5h" | "day" | "week" | "month";
+
+export type DashboardUserQuota = {
+  period: DashboardUserQuotaPeriod;
+  creditUsd?: number;
+  maxTokens?: number;
+  maxRequests?: number;
+};
+
+export type DashboardUserQuotaWindow = {
+  id: string;
+  label?: string;
+  period: DashboardUserQuotaWindowPeriod;
+  creditUsd?: number;
+  maxTokens?: number;
+  maxRequests?: number;
+};
+
+export type DashboardUserPlan = {
+  mode: "usage" | "subscription";
+  name?: string;
+  priceUsd?: number;
+  windows?: DashboardUserQuotaWindow[];
+};
+
+export type DashboardModelBillingRate = {
+  inputPer1M: number;
+  outputPer1M: number;
+  cachedInputPer1M?: number;
+  offPeak?: {
+    inputPer1M: number;
+    outputPer1M: number;
+    cachedInputPer1M?: number;
+  };
+};
+
+export type DashboardOffPeakDay = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
+
+export type DashboardOffPeakWindow = { start: string; end: string };
+
+export type DashboardOffPeakSchedule = {
+  enabled: boolean;
+  timezone: string;
+  days: Partial<Record<DashboardOffPeakDay, DashboardOffPeakWindow[]>>;
+};
+
+export type DashboardUserQuotaWindowState = DashboardUserQuotaWindow & {
+  startedAt: number;
+  resetsAt?: number;
+  usage: { requests: number; tokens: number; costUsd: number };
+  remaining: { creditUsd?: number; tokens?: number; requests?: number };
+  blocked: boolean;
+};
+
+export type DashboardUserUsage = {
+  periodStart?: string;
+  updatedAt?: number;
+  requests: number;
+  tokens: number;
+  costUsd: number;
+  remainingCreditUsd?: number;
+};
+
+export type DashboardCreditEntryKind =
+  | "allowance"
+  | "topup"
+  | "adjust"
+  | "refund"
+  | "debit";
+
+/** One audited movement of the prepaid balance. */
+export type DashboardCreditEntry = {
+  id: string;
+  kind: DashboardCreditEntryKind;
+  amountUsd: number;
+  balanceAfterUsd: number;
+  at: number;
+  actor?: string;
+  note?: string;
+  paymentId?: string;
+};
+
+export type DashboardUser = {
+  id: string;
+  email: string;
+  name?: string;
+  role: DashboardUserRole;
+  status: DashboardUserStatus;
+  createdAt: number;
+  updatedAt: number;
+  lastLoginAt?: number;
+  hasPassword: boolean;
+  passkeys: Array<{
+    id: string;
+    name?: string;
+    createdAt: number;
+    lastUsedAt?: number;
+  }>;
+  quota: DashboardUserQuota;
+  usage: DashboardUserUsage;
+  /** Prepaid balance, when the member has one. Never reset by the quota period. */
+  walletUsd?: number;
+  plan?: DashboardUserPlan;
+  allowedModels?: string[];
+  quotaWindows?: DashboardUserQuotaWindowState[];
+  invitePending?: boolean;
+  inviteExpiresAt?: number;
+};
+
+export type DashboardSession = {
+  role: DashboardUserRole;
+  via?: "token" | "session";
+  adminToken?: boolean;
+  authDisabled?: boolean;
+  user?: DashboardUser;
+};
+
+/** Marketplace billing: Stripe Connect through the MultiVibe broker. */
+export type DashboardPaymentPack = {
+  id: string;
+  label?: string;
+  amountCents: number;
+  currency: string;
+  creditUsd: number;
+  bonusUsd?: number;
+  enabled?: boolean;
+};
+
+export type DashboardConnectStatus = {
+  status: "not_connected" | "pending" | "restricted" | "active";
+  chargesEnabled: boolean;
+  payoutsEnabled: boolean;
+  requirementsDue: string[];
+  accountId?: string;
+  dashboardUrl?: string;
+  updatedAt?: number;
+};
+
+export type DashboardPaymentStatus =
+  | "open"
+  | "paid"
+  | "expired"
+  | "refunded"
+  | "disputed";
+
+export type DashboardPayment = {
+  paymentId: string;
+  sessionId?: string;
+  userRef: string;
+  kind: "topup" | "subscription";
+  status: DashboardPaymentStatus;
+  amountCents: number;
+  feeCents: number;
+  netCents: number;
+  currency: string;
+  creditUsd?: number;
+  planRef?: string;
+  createdAt: number;
+  paidAt?: number;
+  refundedCents?: number;
+};
+
+export type DashboardMemberBilling = {
+  enabled: boolean;
+  connected: boolean;
+  currency: string;
+  walletUsd: number;
+  remainingCreditUsd?: number;
+  packs: DashboardPaymentPack[];
+  payments: DashboardPayment[];
+  connect: DashboardConnectStatus;
+};
+
+export type DashboardPaymentsSettings = {
+  enabled: boolean;
+  brokerUrl?: string;
+  instanceId?: string;
+  commissionBps?: number;
+  chargeMode?: "direct" | "destination";
+  currency: string;
+  packs: DashboardPaymentPack[];
+  lastEventCursor?: number;
+  lastSyncAt?: number;
+  connect?: DashboardConnectStatus;
+  brokerConfigured: boolean;
+  secretConfigured: boolean;
+  pendingEnrollment?: {
+    code: string;
+    verificationUrl: string;
+    expiresAt: number;
+  };
+};
+
+export type DashboardEarnings = {
+  currency: string;
+  grossCents: number;
+  feeCents: number;
+  netCents: number;
+  refundedCents: number;
+  paidCount: number;
+  payments: DashboardPayment[];
+  refunds: { refundId: string; paymentId: string; amountCents: number; createdAt: number }[];
+};
+
+export type DashboardPaymentsOverview = {
+  settings: DashboardPaymentsSettings;
+  earnings?: DashboardEarnings;
+  payments: DashboardPayment[];
 };

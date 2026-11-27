@@ -3,6 +3,7 @@ import { memo, useState } from "react";
 import type { ProviderId } from "../types";
 import "./ProviderSetup.css";
 import { providerAccess, matchesAccessFilter, type AccessFilter } from "../lib/providerAccess";
+import { useT } from "../i18n";
 
 export type SetupProvider = ProviderId;
 export const SETUP_PROVIDERS: { id: SetupProvider; name: string; description: string; method: string; icon?: string }[] = [
@@ -41,36 +42,49 @@ export const ProviderPicker = memo(function ProviderPicker({ value, sdkProvider,
   error: string;
   onChange: (provider: SetupProvider, sdkProvider?: string) => void;
 }) {
+  const t = useT();
   const {providerIds, capabilities} = useDashboardRuntime();
   const [query, setQuery] = useState("");
   const [accessFilter, setAccessFilter] = useState<AccessFilter | null>(null);
   const providers = [
-    ...SETUP_PROVIDERS.filter(provider => (!providerIds || providerIds.includes(provider.id))),
+    ...SETUP_PROVIDERS.filter(provider => (!providerIds || providerIds.includes(provider.id))).map((provider) => ({
+      ...provider, description: t(provider.description), method: t(provider.method) })),
     ...cloudProviders.filter((item) => item.id !== "openai").map((item) => ({ id: "ai-sdk" as const, sdkProvider: item.id, name: item.name,
-      description: `Connect ${item.name} with your ${item.credentialLabel ?? "API key"}.`, method: item.credentialLabel ?? "API key" })),
+      description: t("Connect {name} with your {credential}.", {
+        name: item.name,
+        credential: item.credentialLabel ? t(item.credentialLabel) : t("API key"),
+      }),
+      method: item.credentialLabel ? t(item.credentialLabel) : t("API key") })),
   ];
   const normalized = query.trim().toLocaleLowerCase();
   const matches = providers.filter((item) =>
     matchesAccessFilter("sdkProvider" in item ? item.sdkProvider : item.id, accessFilter, "sdkProvider" in item) &&
     `${item.name} ${item.description} ${item.method}`.toLocaleLowerCase().includes(normalized));
+  const filtered = Boolean(normalized || accessFilter);
+  const filterLabel = accessFilter ? t(accessFilter) : "";
+  const providerCount = matches.length === 1
+    ? filtered ? t("1 provider found") : t("1 provider available")
+    : filtered
+      ? t("{count} providers found", { count: matches.length })
+      : t("{count} providers available", { count: matches.length });
   return <div className="provider-setup-picker">
     <div className="provider-picker-controls">
-      <label className="provider-setup-search">Search providers
-        <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find a provider…" />
+      <label className="provider-setup-search">{t("Search providers")}
+        <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("Find a provider…")} />
       </label>
-      <div className="provider-picker-toolbar"><label className="provider-pricing-select">Pricing<select value={accessFilter ?? "all"} onChange={event => setAccessFilter(event.target.value === "all" ? null : event.target.value as AccessFilter)}><option value="all">All pricing</option><option value="Paid">Paid</option><option value="Free">Free tier available</option><option value="Freemium">Free & paid</option></select></label><span className="muted">Free tiers may have limits.</span></div>
-      <p className="muted provider-setup-results" role="status">{matches.length} provider{matches.length === 1 ? "" : "s"}{normalized || accessFilter ? " found" : " available"}</p>
+      <div className="provider-picker-toolbar"><label className="provider-pricing-select">{t("Pricing")}<select value={accessFilter ?? "all"} onChange={event => setAccessFilter(event.target.value === "all" ? null : event.target.value as AccessFilter)}><option value="all">{t("All pricing")}</option><option value="Paid">{t("Paid")}</option><option value="Free">{t("Free tier available")}</option><option value="Freemium">{t("Free & paid")}</option></select></label><span className="muted">{t("Free tiers may have limits.")}</span></div>
+      <p className="muted provider-setup-results" role="status">{providerCount}</p>
     </div>
     {error && <p className="provider-setup-error" role="alert">{error}</p>}
-    {!cloudProviders.length && !error && <p className="muted" role="status">Loading cloud providers…</p>}
-    <div className="provider-setup-cards" role="group" aria-label="Choose a provider">
+    {!cloudProviders.length && !error && <p className="muted" role="status">{t("Loading cloud providers…")}</p>}
+    <div className="provider-setup-cards" role="group" aria-label={t("Choose a provider")}>
       {matches.map((item) => {
         const cloudId = "sdkProvider" in item ? item.sdkProvider : undefined;
         const access = providerAccess(cloudId ?? item.id, Boolean(cloudId));
         const selected = value === item.id && (item.id !== "ai-sdk" || sdkProvider === cloudId);
         return <button key={cloudId ? `sdk:${cloudId}` : `setup:${item.id}`} type="button" className={`provider-setup-card${selected ? " selected" : ""}`} aria-pressed={selected} onClick={() => onChange(item.id, cloudId)}>
           <ProviderMark provider={item.id} sdkProvider={cloudId} name={item.name} />
-          <span className="provider-setup-card-copy"><strong>{item.name}</strong><small>{item.method}</small><span className="provider-access-label" title={access?.note}>{access?.reviewPricing ? "Pricing unverified" : access ? access.free ? access.paid ? "Free & paid" : "Free tier" : "Paid" : "Depends on endpoint"}</span></span>
+          <span className="provider-setup-card-copy"><strong>{item.name}</strong><small>{item.method}</small><span className="provider-access-label" title={access?.note}>{access?.reviewPricing ? t("Pricing unverified") : access ? access.free ? access.paid ? t("Free & paid") : t("Free tier") : t("Paid") : t("Depends on endpoint")}</span></span>
           <span className="provider-setup-check" aria-hidden="true">{selected ? "✓" : ""}</span>
         </button>;
       })}
@@ -79,6 +93,12 @@ export const ProviderPicker = memo(function ProviderPicker({ value, sdkProvider,
       const selected = providers.find(item => item.id === value && (item.id !== "ai-sdk" || ("sdkProvider" in item && item.sdkProvider === sdkProvider)));
       return selected ? <div className="provider-selection-summary"><strong>{selected.name}</strong><span>{selected.description}</span></div> : null;
     })()}
-    {!matches.length && <p className="provider-setup-empty">No providers match{query.trim() ? ` “${query}”` : ""}{accessFilter ? ` with the ${accessFilter} filter` : ""}. Try another search or clear the filter.</p>}
+    {!matches.length && <p className="provider-setup-empty">{query.trim() && accessFilter
+      ? t("No providers match “{query}” with the {filter} filter. Try another search or clear the filter.", { query, filter: filterLabel })
+      : query.trim()
+        ? t("No providers match “{query}”. Try another search or clear the filter.", { query })
+        : accessFilter
+          ? t("No providers match with the {filter} filter. Try another search or clear the filter.", { filter: filterLabel })
+          : t("No providers match. Try another search or clear the filter.")}</p>}
   </div>;
 });

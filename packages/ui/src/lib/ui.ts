@@ -1,4 +1,5 @@
 import type { SessionsResponse, TracePagination, TraceStats } from "../types";
+import { activeLocale, t } from "../i18n/core";
 
 export const TRACE_PAGE_SIZE = 100;
 export const CHART_COLORS = ["#147d72", "#45a99c", "#dda15e", "#8d79d6", "#d96270", "#55c7b8", "#efb26f", "#6b7d77"];
@@ -98,22 +99,22 @@ export const EMPTY_TRACE_PAGINATION: TracePagination = {
   hasNext: false,
 };
 
-export const fmt = (ts?: number) => (!ts ? "-" : new Date(ts).toLocaleString());
+export const fmt = (ts?: number) => (!ts ? "-" : new Date(ts).toLocaleString(activeLocale()));
 export const clampPct = (v: number) => Math.max(0, Math.min(100, v));
 export const compactNumber = (v: number) =>
-  new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(v);
+  new Intl.NumberFormat(activeLocale(), { notation: "compact", maximumFractionDigits: 1 }).format(v);
 export type DisplayMetric = number | null | undefined;
 export const isMeasured = (value: DisplayMetric): value is number => typeof value === "number" && Number.isFinite(value);
-export const metricCount = (value: DisplayMetric) => isMeasured(value) ? value.toLocaleString() : "Unavailable";
-export const formatLatency = (value: DisplayMetric) => isMeasured(value) ? `${Math.round(value).toLocaleString()}ms` : "Unavailable";
-export const pct = (v: DisplayMetric) => isMeasured(v) ? `${(v * 100).toFixed(1)}%` : "Unavailable";
+export const metricCount = (value: DisplayMetric) => isMeasured(value) ? value.toLocaleString(activeLocale()) : t("Unavailable");
+export const formatLatency = (value: DisplayMetric) => isMeasured(value) ? `${Math.round(value).toLocaleString(activeLocale())}ms` : t("Unavailable");
+export const pct = (v: DisplayMetric) => isMeasured(v) ? `${(v * 100).toFixed(1)}%` : t("Unavailable");
 export const sumMeasured = (values: DisplayMetric[]): number | null => values.every(isMeasured) ? values.reduce((sum, value) => sum + value, 0) : null;
 
-const usdFormatter = new Intl.NumberFormat(undefined, {
+const usdFormatter = () => new Intl.NumberFormat(activeLocale(), {
   minimumFractionDigits: 2,
   maximumFractionDigits: 4,
 });
-const compactUsdFormatter = new Intl.NumberFormat(undefined, {
+const compactUsdFormatter = () => new Intl.NumberFormat(activeLocale(), {
   minimumFractionDigits: 0,
   maximumFractionDigits: 1,
 });
@@ -124,10 +125,10 @@ const costUnits = [
 ];
 
 export const usd = (v: DisplayMetric) => {
-  if (!isMeasured(v)) return "Unavailable";
+  if (!isMeasured(v)) return t("Unavailable");
   const absoluteValue = Math.abs(v);
   const unitIndex = costUnits.findIndex((unit) => absoluteValue >= unit.value);
-  if (unitIndex === -1) return `${usdFormatter.format(v)} $US`;
+  if (unitIndex === -1) return `${usdFormatter().format(v)} ${t("$US")}`;
 
   let unit = costUnits[unitIndex];
   let scaledValue = v / unit.value;
@@ -136,11 +137,11 @@ export const usd = (v: DisplayMetric) => {
     scaledValue = v / unit.value;
   }
 
-  return `${compactUsdFormatter.format(scaledValue)}${unit.suffix} $US`;
+  return `${compactUsdFormatter().format(scaledValue)}${unit.suffix} ${t("$US")}`;
 };
 
 export function formatTokenCount(v: DisplayMetric): string {
-  if (!isMeasured(v)) return "Unavailable";
+  if (!isMeasured(v)) return t("Unavailable");
   const n = Math.max(0, v);
   if (n < 1_000) return `${Math.round(n)}`;
 
@@ -157,7 +158,7 @@ export function formatTokenCount(v: DisplayMetric): string {
 }
 
 export function formatTokenRate(v: DisplayMetric): string {
-  if (!isMeasured(v)) return "Unavailable";
+  if (!isMeasured(v)) return t("Unavailable");
   const n = Math.max(0, v);
   if (n > 0 && n < 10) return `${n.toFixed(1)} tok/s`;
   return `${formatTokenCount(n)} tok/s`;

@@ -1,5 +1,6 @@
 import { formatLatency, formatTokenCount, usd } from "../lib/ui";
 import type { ModuleAnalyticsValue } from "../types";
+import { useT } from "../i18n";
 
 function display(value: ModuleAnalyticsValue): string {
   if (value.unit === "tokens") return formatTokenCount(value.value);
@@ -15,16 +16,17 @@ function moduleLabel(id: string): string {
 
 /** Renders only metrics declared by extensions through the module manifest. */
 export function ExtensionImpact({ modules }: { modules?: Record<string, ModuleAnalyticsValue[]> }) {
+  const t = useT();
   const groups = Object.entries(modules ?? {}).filter(([, metrics]) => metrics.length > 0);
   if (!groups.length) return null;
   return (
-    <section className="panel trace-extension-panel" aria-label="Extension impact">
+    <section className="panel trace-extension-panel" aria-label={t("Extension impact")}>
       <div className="section-split-header">
         <div>
-          <h2>Extension impact</h2>
-          <p className="muted">Metrics declared by extensions for the selected range.</p>
+          <h2>{t("Extension impact")}</h2>
+          <p className="muted">{t("Metrics declared by extensions for the selected range.")}</p>
         </div>
-        <span className="badge">{groups.length} extension{groups.length === 1 ? "" : "s"}</span>
+        <span className="badge">{groups.length === 1 ? t("1 extension") : t("{count} extensions", { count: groups.length })}</span>
       </div>
       <div className="trace-extension-groups">
         {groups.map(([moduleId, metrics]) => (
@@ -33,7 +35,7 @@ export function ExtensionImpact({ modules }: { modules?: Record<string, ModuleAn
             <dl className="trace-compact-stats">
               {metrics.map((metric) => (
                 <div key={metric.id} title={metric.description}>
-                  <dt>{metric.label}</dt>
+                  <dt>{t(metric.label)}</dt>
                   <dd>{display(metric)}</dd>
                 </div>
               ))}

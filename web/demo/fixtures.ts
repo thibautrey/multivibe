@@ -53,6 +53,60 @@ export function createDemoFixtures(now = Date.now()) {
     id: `demo-key-${index}`, application: workload.application, keyPreview: `demo-only-••••${1000 + index}`,
     source: "dashboard", createdAt: now - (index + 3) * 24 * HOUR, lastUsedAt: now - (index + 1) * HOUR,
   }));
+  const monthStart = new Date(now);
+  monthStart.setUTCHours(0, 0, 0, 0);
+  monthStart.setUTCDate(1);
+  const users = [
+    {
+      id: "demo-user-admin", email: "admin@example.com", name: "Alex Rivera", role: "admin", status: "active",
+      createdAt: now - 120 * 24 * HOUR, updatedAt: now - 2 * HOUR, lastLoginAt: now - 2 * HOUR,
+      hasPassword: true, passkeys: [],
+      quota: { period: "month" },
+      usage: { periodStart: monthStart.toISOString(), updatedAt: now, requests: 0, tokens: 0, costUsd: 0 },
+    },
+    {
+      id: "demo-user-member", email: "sam@example.com", name: "Sam Laurent", role: "member", status: "active",
+      createdAt: now - 45 * 24 * HOUR, updatedAt: now - 6 * HOUR, lastLoginAt: now - 6 * HOUR,
+      hasPassword: true,
+      passkeys: [{ id: "demo-passkey-sam", name: "MacBook", createdAt: now - 40 * 24 * HOUR, lastUsedAt: now - 6 * HOUR }],
+      allowedModels: ["gpt-5.4", "gpt-5.4-mini", "coding"],
+      quota: { period: "month" },
+      walletUsd: 12.5,
+      usage: {
+        periodStart: monthStart.toISOString(), updatedAt: now,
+        requests: 412, tokens: 1_240_000, costUsd: 7.42, remainingCreditUsd: 14.32,
+      },
+      plan: {
+        mode: "subscription", name: "Pro", priceUsd: 20,
+        windows: [
+          { id: "5h", period: "5h", creditUsd: 3, maxTokens: 200_000, maxRequests: 120 },
+          { id: "week", period: "week", creditUsd: 18, maxTokens: 2_000_000, maxRequests: 900 },
+        ],
+      },
+      quotaWindows: [
+        {
+          id: "5h", period: "5h", creditUsd: 3, maxTokens: 200_000, maxRequests: 120,
+          startedAt: now - 2 * HOUR, resetsAt: now + 3 * HOUR,
+          usage: { requests: 41, tokens: 96_000, costUsd: 1.18 },
+          remaining: { requests: 79, tokens: 104_000, creditUsd: 1.82 }, blocked: false,
+        },
+        {
+          id: "week", period: "week", creditUsd: 18, maxTokens: 2_000_000, maxRequests: 900,
+          startedAt: now - 2 * 24 * HOUR, resetsAt: now + 5 * 24 * HOUR,
+          usage: { requests: 412, tokens: 1_240_000, costUsd: 7.42 },
+          remaining: { requests: 488, tokens: 760_000, creditUsd: 10.58 }, blocked: false,
+        },
+      ],
+    },
+    {
+      id: "demo-user-invited", email: "jordan@example.com", role: "member", status: "active",
+      createdAt: now - 2 * 24 * HOUR, updatedAt: now - 2 * 24 * HOUR,
+      hasPassword: false, passkeys: [],
+      quota: { period: "month", creditUsd: 10, maxRequests: 500 },
+      usage: { periodStart: monthStart.toISOString(), updatedAt: now, requests: 0, tokens: 0, costUsd: 0, remainingCreditUsd: 10 },
+      invitePending: true, inviteExpiresAt: now + 5 * 24 * HOUR,
+    },
+  ];
   const modules: ModuleView[] = [{
     id: "security", origin: "bundled:security", commit: "demo-fixture", enabled: true, source: "bundled", loaded: true,
     healthy: true, removable: false, settings: {},
@@ -99,7 +153,7 @@ export function createDemoFixtures(now = Date.now()) {
     }
   }
   traces.sort((left, right) => right.at - left.at || left.id.localeCompare(right.id));
-  return { now, accounts, models, aliases, apiKeys, modules, traces };
+  return { now, accounts, models, aliases, apiKeys, users, modules, traces };
 }
 
 export type DemoFixtures = ReturnType<typeof createDemoFixtures>;

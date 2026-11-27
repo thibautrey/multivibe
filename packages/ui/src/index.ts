@@ -1,6 +1,9 @@
 export { default as SharedDashboard } from './SharedDashboard';
 export type { SharedDashboardProps, DashboardPage, DashboardPageContext } from './SharedDashboard';
 export { DashboardProvider, useDashboardRuntime, useDashboardApi } from './adapter';
+export { I18nProvider, useI18n, useT, detectLocale, detectBrowserLocale, translate, normalizeLocale, LOCALES, LOCALE_LABELS, LOCALE_STORAGE_KEY } from './i18n';
+export type { Locale, Translate, TranslateVars } from './i18n';
+export { LanguageSwitcher } from './components/ui/LanguageSwitcher';
 export { CORE_CAPABILITIES, CLOUD_CAPABILITIES, dashboardResourceAllowed } from './capabilities';
 export type { DashboardCapabilities } from './capabilities';
 export { ApiError } from './lib/api';

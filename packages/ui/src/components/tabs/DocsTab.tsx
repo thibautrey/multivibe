@@ -1,5 +1,6 @@
 import { useDashboardRuntime } from "../../adapter";
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { t, useT } from "../../i18n";
 import { copyTextToClipboard } from "../../lib/clipboard";
 import type { ExposedModel } from "../../types";
 import {
@@ -89,6 +90,11 @@ function methodClass(method: HttpMethod) {
   return "docs-method docs-method-" + method.toLowerCase();
 }
 
+/** Group names double as data keys, so only their display label is translated. */
+function groupLabel(group: EndpointGroup) {
+  return t(group);
+}
+
 function tryFormatJson(value: string) {
   try {
     return JSON.stringify(JSON.parse(value), null, 2);
@@ -102,6 +108,7 @@ function shellQuote(value: string) {
 }
 
 export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
+  const t = useT();
   const {adapter, capabilities, endpoints} = useDashboardRuntime();
   const ENDPOINTS = endpoints?.length ? endpoints : CORE_ENDPOINTS.filter(endpoint => capabilities.host || !endpoint.path.startsWith('/admin/'));
   const fetch = adapter.fetch;
@@ -246,8 +253,8 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
     if (missingPathField) {
       setResult({
         status: null,
-        statusText: "Request not sent",
-        body: missingPathField.name + " is required.",
+        statusText: t("Request not sent"),
+        body: t("{name} is required.", { name: missingPathField.name }),
         error: true,
       });
       return;
@@ -260,7 +267,7 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
       } catch (error: any) {
         setResult({
           status: null,
-          statusText: "Invalid JSON",
+          statusText: t("Invalid JSON"),
           body: error?.message ?? String(error),
           error: true,
         });
@@ -271,11 +278,10 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
     if (
       selected.destructive &&
       !window.confirm(
-        "Send " +
-          selected.method +
-          " " +
-          resolvedPath() +
-          "? This request changes server state.",
+        t("Send {method} {path}? This request changes server state.", {
+          method: selected.method,
+          path: resolvedPath(),
+        }),
       )
     ) {
       return;
@@ -303,9 +309,9 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
         status: response.status,
         statusText:
           response.statusText ||
-          (response.ok ? "Success" : "Request failed"),
+          (response.ok ? t("Success") : t("Request failed")),
         durationMs: Math.round(performance.now() - startedAt),
-        body: raw ? tryFormatJson(raw) : "No response body.",
+        body: raw ? tryFormatJson(raw) : t("No response body."),
         contentType: response.headers.get("content-type") ?? undefined,
         error: !response.ok,
       });
@@ -314,10 +320,10 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
       const aborted = error?.name === "AbortError";
       setResult({
         status: null,
-        statusText: aborted ? "Cancelled" : "Network error",
+        statusText: aborted ? t("Cancelled") : t("Network error"),
         durationMs: Math.round(performance.now() - startedAt),
         body: aborted
-          ? "The request was cancelled."
+          ? t("The request was cancelled.")
           : (error?.message ?? String(error)),
         error: !aborted,
       });
@@ -338,25 +344,25 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
     <div className="docs-page">
       <section className="docs-hero">
         <div className="docs-hero-copy">
-          <h2>API explorer</h2>
-          <p>Choose an endpoint and test a request.</p>
+          <h2>{t("API explorer")}</h2>
+          <p>{t("Choose an endpoint and test a request.")}</p>
         </div>
         <div className="docs-base-url-card">
           <div className="docs-copy-row">
-            <span className="control-label">Base URL</span>
+            <span className="control-label">{t("Base URL")}</span>
             <code title={origin}>{origin}</code>
             <button
               className="docs-icon-button"
               onClick={() => void copy(origin, "origin")}
-              aria-label="Copy base URL"
-              title="Copy base URL"
+              aria-label={t("Copy base URL")}
+              title={t("Copy base URL")}
             >
               <Icon name={copied === "origin" ? "check" : "copy"} />
             </button>
           </div>
           <div className="docs-session-note">
             <span className="status-dot" />
-            <span>Uses your dashboard session</span>
+            <span>{t("Uses your dashboard session")}</span>
           </div>
         </div>
       </section>
@@ -369,22 +375,22 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
           aria-controls="docs-catalog"
           onClick={() => setCatalogOpen((open) => !open)}
         >
-          <span><small>Choose an endpoint</small><strong>{selected.title}</strong></span>
-          <span>{catalogOpen ? "Close" : "Browse"} <Icon name="chevron" /></span>
+          <span><small>{t("Choose an endpoint")}</small><strong>{t(selected.title)}</strong></span>
+          <span>{catalogOpen ? t("Close") : t("Browse")} <Icon name="chevron" /></span>
         </button>
-        <aside id="docs-catalog" className={"docs-catalog" + (catalogOpen ? " is-open" : "")} aria-label="API endpoint catalog">
+        <aside id="docs-catalog" className={"docs-catalog" + (catalogOpen ? " is-open" : "")} aria-label={t("API endpoint catalog")}>
           <div className="docs-search">
             <Icon name="search" />
             <input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search endpoints"
-              aria-label="Search API endpoints"
+              placeholder={t("Search endpoints")}
+              aria-label={t("Search API endpoints")}
             />
             {search && (
               <button
                 onClick={() => setSearch("")}
-                aria-label="Clear endpoint search"
+                aria-label={t("Clear endpoint search")}
               >
                 ×
               </button>
@@ -392,18 +398,18 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
           </div>
 
           <label className="docs-group-filter">
-            <span className="control-label">Endpoint group</span>
+            <span className="control-label">{t("Endpoint group")}</span>
             <select value={activeGroup} onChange={(event) => setActiveGroup(event.target.value as EndpointGroup | "All")}>
               {(["All", ...GROUPS] as const).map((group) => (
-                <option key={group} value={group}>{group === "All" ? "All endpoints" : group} ({group === "All" ? ENDPOINTS.length : ENDPOINTS.filter((endpoint) => endpoint.group === group).length})</option>
+                <option key={group} value={group}>{group === "All" ? t("All endpoints") : groupLabel(group)} ({group === "All" ? ENDPOINTS.length : ENDPOINTS.filter((endpoint) => endpoint.group === group).length})</option>
               ))}
             </select>
           </label>
 
           <div className="docs-catalog-status">
-            <span role="status">{filteredEndpoints.length} {filteredEndpoints.length === 1 ? "endpoint" : "endpoints"}</span>
+            <span role="status">{filteredEndpoints.length === 1 ? t("1 endpoint") : t("{count} endpoints", { count: filteredEndpoints.length })}</span>
             {(search || activeGroup !== "All") && (
-              <button onClick={() => { setSearch(""); setActiveGroup("All"); }}>Clear filters</button>
+              <button onClick={() => { setSearch(""); setActiveGroup("All"); }}>{t("Clear filters")}</button>
             )}
           </div>
           <div className="docs-endpoint-list">
@@ -414,7 +420,7 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
               if (!endpoints.length) return null;
               return (
                 <section key={group}>
-                  <h3>{group}</h3>
+                  <h3>{groupLabel(group)}</h3>
                   {endpoints.map((endpoint) => (
                     <button
                       key={endpoint.id}
@@ -427,7 +433,7 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
                         {endpoint.method}
                       </span>
                       <span>
-                        <strong>{endpoint.title}</strong>
+                        <strong>{t(endpoint.title)}</strong>
                         <code>{endpoint.path}</code>
                       </span>
                       <Icon name="chevron" />
@@ -438,15 +444,15 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
             })}
             {!filteredEndpoints.length && (
               <div className="docs-empty-search">
-                <strong>No endpoint found</strong>
-                <small>Try a path, method or broader keyword.</small>
-                <button className="docs-copy-button" onClick={() => { setSearch(""); setActiveGroup("All"); }}>Clear filters</button>
+                <strong>{t("No endpoint found")}</strong>
+                <small>{t("Try a path, method or broader keyword.")}</small>
+                <button className="docs-copy-button" onClick={() => { setSearch(""); setActiveGroup("All"); }}>{t("Clear filters")}</button>
               </div>
             )}
           </div>
         </aside>
 
-        <article ref={referenceRef} className="docs-reference" tabIndex={-1} aria-label={selected.title}>
+        <article ref={referenceRef} className="docs-reference" tabIndex={-1} aria-label={t(selected.title)}>
           <header className="docs-endpoint-header">
             <div className="docs-endpoint-route">
               <span className={methodClass(selected.method)}>
@@ -454,22 +460,22 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
               </span>
               <code>{selected.path}</code>
             </div>
-            <span className="docs-endpoint-group">{selected.group}</span>
-            <h2>{selected.title}</h2>
-            <p>{selected.description}</p>
+            <span className="docs-endpoint-group">{groupLabel(selected.group)}</span>
+            <h2>{t(selected.title)}</h2>
+            <p>{t(selected.description)}</p>
           </header>
 
-          <div className="docs-view-switch" aria-label="Endpoint view">
-            <button aria-pressed={view === "request"} onClick={() => setView("request")}><Icon name="terminal" /> Try a request</button>
-            <button aria-pressed={view === "reference"} onClick={() => setView("reference")}>Documentation</button>
+          <div className="docs-view-switch" aria-label={t("Endpoint view")}>
+            <button aria-pressed={view === "request"} onClick={() => setView("request")}><Icon name="terminal" /> {t("Try a request")}</button>
+            <button aria-pressed={view === "reference"} onClick={() => setView("reference")}>{t("Documentation")}</button>
           </div>
           <div className="docs-reference-grid">
             <section className="docs-reference-content" hidden={view !== "reference"}>
               <div className="docs-section">
                 <div className="docs-section-heading">
                   <div>
-                    <span>Overview</span>
-                    <h3>{selected.summary}</h3>
+                    <span>{t("Overview")}</span>
+                    <h3>{t(selected.summary)}</h3>
                   </div>
                 </div>
                 <div className="docs-auth-callout">
@@ -477,15 +483,13 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
                   <div>
                     <strong>
                       {selected.path.startsWith("/admin/")
-                        ? "Admin authentication"
-                        : "Application authentication"}
+                        ? t("Admin authentication")
+                        : t("Application authentication")}
                     </strong>
                     <p>
-                      The interactive console uses your secure dashboard
-                      session. External clients should send
                       {selected.path.startsWith("/admin/")
-                        ? " x-admin-token or a Bearer admin token."
-                        : " a proxy API key as Bearer or x-api-key."}
+                        ? t("The interactive console uses your secure dashboard session. External clients should send x-admin-token or a Bearer admin token.")
+                        : t("The interactive console uses your secure dashboard session. External clients should send a proxy API key as Bearer or x-api-key.")}
                     </p>
                   </div>
                 </div>
@@ -495,8 +499,8 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
                 <div className="docs-section">
                   <div className="docs-section-heading">
                     <div>
-                      <span>Reference</span>
-                      <h3>Parameters</h3>
+                      <span>{t("Reference")}</span>
+                      <h3>{t("Parameters")}</h3>
                     </div>
                   </div>
                   <div className="docs-parameter-table">
@@ -507,9 +511,9 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
                         <span
                           className={field.required ? "required" : "optional"}
                         >
-                          {field.required ? "Required" : "Optional"}
+                          {field.required ? t("Required") : t("Optional")}
                         </span>
-                        <p>{field.description}</p>
+                        <p>{t(field.description)}</p>
                       </div>
                     ))}
                   </div>
@@ -518,16 +522,16 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
 
               {selected.note && (
                 <div className="docs-note">
-                  <strong>Good to know</strong>
-                  <p>{selected.note}</p>
+                  <strong>{t("Good to know")}</strong>
+                  <p>{t(selected.note)}</p>
                 </div>
               )}
 
               <div className="docs-section">
                 <div className="docs-section-heading">
                   <div>
-                    <span>Example</span>
-                    <h3>Response</h3>
+                    <span>{t("Example")}</span>
+                    <h3>{t("Response")}</h3>
                   </div>
                   <button
                     className="docs-copy-button"
@@ -544,7 +548,7 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
                     <Icon
                       name={copied === "response" ? "check" : "copy"}
                     />
-                    {copied === "response" ? "Copied" : "Copy"}
+                    {copied === "response" ? t("Copied") : t("Copy")}
                   </button>
                 </div>
                 <pre className="docs-code">
@@ -560,12 +564,12 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
                 <div>
                   <Icon name="terminal" />
                   <span>
-                    <strong>Request builder</strong>
-                    <small>Edit the example and send when ready</small>
+                    <strong>{t("Request builder")}</strong>
+                    <small>{t("Edit the example and send when ready")}</small>
                   </span>
                 </div>
                 <span className="docs-live-pill">
-                  <Icon name="lock" /> Dashboard session
+                  <Icon name="lock" /> {t("Dashboard session")}
                 </span>
               </div>
 
@@ -578,16 +582,16 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
 
               {!!selected.pathParams?.length && (
                 <div className="docs-console-section">
-                  <span className="control-label">Path parameters</span>
+                  <span className="control-label">{t("Path parameters")}</span>
                   <div className="docs-field-grid">
                     {selected.pathParams.map((field) => (
                       <label key={field.name}>
                         <span>
                           <code>{field.name}</code>
-                          {field.required && <b>Required</b>}
+                          {field.required && <b>{t("Required")}</b>}
                         </span>
                         <input
-                          title={field.description}
+                          title={t(field.description)}
                           required={field.required}
                           value={pathValues[field.name] ?? ""}
                           onChange={(event) =>
@@ -609,16 +613,16 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
 
               {!!selected.queryParams?.length && (
                 <div className="docs-console-section">
-                  <span className="control-label">Query parameters</span>
+                  <span className="control-label">{t("Query parameters")}</span>
                   <div className="docs-field-grid">
                     {selected.queryParams.map((field) => (
                       <label key={field.name}>
                         <span>
                           <code>{field.name}</code>
-                          {field.required && <b>Required</b>}
+                          {field.required && <b>{t("Required")}</b>}
                         </span>
                         <input
-                          title={field.description}
+                          title={t(field.description)}
                           required={field.required}
                           value={queryValues[field.name] ?? ""}
                           onChange={(event) =>
@@ -629,7 +633,7 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
                           }
                           placeholder={
                             hydrateExample(field.example, defaultModel) ||
-                            "Optional"
+                            t("Optional")
                           }
                         />
                       </label>
@@ -641,10 +645,10 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
               {selected.requestBody !== undefined && (
                 <div className="docs-console-section">
                   <div className="docs-console-label">
-                    <span className="control-label">JSON body</span>
+                    <span className="control-label">{t("JSON body")}</span>
                     <div className="docs-editor-tools">
-                      <button className="docs-copy-button" onClick={() => setRequestBody(tryFormatJson(requestBody))}>Format JSON</button>
-                      <button className="docs-copy-button" onClick={() => setRequestBody(hydrateExample(selected.requestBody, defaultModel))}>Reset example</button>
+                      <button className="docs-copy-button" onClick={() => setRequestBody(tryFormatJson(requestBody))}>{t("Format JSON")}</button>
+                      <button className="docs-copy-button" onClick={() => setRequestBody(hydrateExample(selected.requestBody, defaultModel))}>{t("Reset example")}</button>
                     </div>
                   </div>
                   <textarea
@@ -653,7 +657,7 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
                     onChange={(event) => setRequestBody(event.target.value)}
                     rows={12}
                     spellCheck={false}
-                    aria-label="JSON request body"
+                    aria-label={t("JSON request body")}
                   />
                 </div>
               )}
@@ -664,18 +668,18 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
                     className="btn danger"
                     onClick={() => abortRef.current?.abort()}
                   >
-                    <Icon name="stop" /> Cancel request
+                    <Icon name="stop" /> {t("Cancel request")}
                   </button>
                 ) : (
                   <button
                     className={selected.destructive ? "btn danger" : "btn"}
                     onClick={() => void runRequest()}
                   >
-                    <Icon name="send" /> Send request
+                    <Icon name="send" /> {t("Send request")}
                   </button>
                 )}
                 <small>
-                   {selected.destructive ? "This endpoint changes server state. You’ll confirm before sending." : "Sent to this server using your dashboard session."}
+                   {selected.destructive ? t("This endpoint changes server state. You’ll confirm before sending.") : t("Sent to this server using your dashboard session.")}
                 </small>
               </div>
 
@@ -688,7 +692,7 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
               >
                 <div className="docs-response-header">
                   <div>
-                    <span className="control-label">Response</span>
+                    <span className="control-label">{t("Response")}</span>
                     {running && <span className="docs-running-dot" />}
                   </div>
                   {result && (
@@ -715,22 +719,22 @@ export function DocsTab({ models, initialEndpointId, initialModel }: Props) {
                 <pre>
                   <code>
                     {running
-                      ? "Sending request…"
+                      ? t("Sending request…")
                       : (result?.body ??
-                        "Run the request to inspect its response here.")}
+                        t("Run the request to inspect its response here."))}
                   </code>
                 </pre>
                 {result?.contentType && <small>{result.contentType}</small>}
               </div>
               <details className="docs-curl-block">
-                <summary>Use in your terminal · cURL</summary>
+                <summary>{t("Use in your terminal · cURL")}</summary>
                 <div className="docs-console-label">
                   <span className="control-label">cURL</span>
                   <button
                     onClick={() => void copy(curlSnippet(), "curl")}
                   >
                     <Icon name={copied === "curl" ? "check" : "copy"} />
-                    {copied === "curl" ? "Copied" : "Copy"}
+                    {copied === "curl" ? t("Copied") : t("Copy")}
                   </button>
                 </div>
                 <pre>

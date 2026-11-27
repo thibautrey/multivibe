@@ -6,6 +6,7 @@ import {
   type GuidedAliasScenario,
 } from "../../domain/alias-policy-presets";
 import type { ExposedModel, ModelAlias, RoutingRule } from "../../types";
+import { useT } from "../../i18n";
 import { ModelSelector } from "../ui/ModelSelector";
 
 type ScenarioPickerProps = {
@@ -13,11 +14,12 @@ type ScenarioPickerProps = {
 };
 
 export function AliasScenarioPicker({ onSelect }: ScenarioPickerProps) {
+  const t = useT();
   return (
     <div className="alias-wizard">
       <WizardProgress step={1} complete={false} />
       <div className="alias-wizard-intro">
-        <h3>What do you want this alias to do?</h3>
+        <h3>{t("What do you want this alias to do?")}</h3>
       </div>
       <div className="alias-scenario-grid">
         {ALIAS_CREATION_SCENARIOS.map((scenario) => (
@@ -28,12 +30,12 @@ export function AliasScenarioPicker({ onSelect }: ScenarioPickerProps) {
             onClick={() => onSelect(scenario.id)}
           >
             <span className="alias-scenario-card-heading">
-              <strong>{scenario.title}</strong>
-              {scenario.badge && <span className="badge">{scenario.badge}</span>}
+              <strong>{t(scenario.title)}</strong>
+              {scenario.badge && <span className="badge">{t(scenario.badge)}</span>}
             </span>
-            <span>{scenario.description}</span>
-            <small>{scenario.outcome}</small>
-            <span className="alias-scenario-action">Choose this goal →</span>
+            <span>{t(scenario.description)}</span>
+            <small>{t(scenario.outcome)}</small>
+            <span className="alias-scenario-action">{t("Choose this goal")} →</span>
           </button>
         ))}
       </div>
@@ -100,6 +102,7 @@ export function GuidedAliasCreation({
   onAdvanced,
   onCreate,
 }: GuidedWizardProps) {
+  const t = useT();
   const definition = ALIAS_CREATION_SCENARIOS.find((item) => item.id === scenario)!;
   const copy = scenarioCopy[scenario];
   const duplicateFallback = scenarioNeedsFallback(scenario)
@@ -119,50 +122,50 @@ export function GuidedAliasCreation({
       <WizardProgress step={2} complete={complete} />
       <div className="section-split-header alias-wizard-selected-goal">
         <div>
-          <span className="eyebrow">Selected goal</span>
-          <h3>{definition.title}</h3>
-          <p className="muted">{definition.description}</p>
+          <span className="eyebrow">{t("Selected goal")}</span>
+          <h3>{t(definition.title)}</h3>
+          <p className="muted">{t(definition.description)}</p>
         </div>
-        <button className="btn ghost" type="button" onClick={onChangeGoal}>Change goal</button>
+        <button className="btn ghost" type="button" onClick={onChangeGoal}>{t("Change goal")}</button>
       </div>
 
       <div className="alias-guided-layout">
         <div className="alias-guided-fields">
           <label>
-            <span className="field-label">Model name requested by your application</span>
+            <span className="field-label">{t("Model name requested by your application")}</span>
             <ModelSelector models={models} value={draft.id} onChange={(value) => onDraftChange({ ...draft, id: value })} allowCustom />
-            <small>{copy.requestedNameHelp}</small>
+            <small>{t(copy.requestedNameHelp)}</small>
           </label>
 
           <label>
-            <span className="field-label">{copy.primaryLabel}</span>
+            <span className="field-label">{t(copy.primaryLabel)}</span>
             <ModelSelector models={models} value={primaryModel} onChange={onPrimaryModelChange} />
-            <small>{copy.primaryHelp}</small>
+            <small>{t(copy.primaryHelp)}</small>
           </label>
 
           {scenarioNeedsFallback(scenario) && (
             <label>
-              <span className="field-label">{copy.fallbackLabel}</span>
+              <span className="field-label">{t(copy.fallbackLabel!)}</span>
               <ModelSelector models={models} value={fallbackModel} onChange={onFallbackModelChange} />
-              <small>{copy.fallbackHelp}</small>
-              {duplicateFallback && <span className="field-error">Choose a different fallback model.</span>}
+              <small>{t(copy.fallbackHelp!)}</small>
+              {duplicateFallback && <span className="field-error">{t("Choose a different fallback model.")}</span>}
             </label>
           )}
 
           <label>
-            <span className="field-label">If every configured model is unavailable</span>
+            <span className="field-label">{t("If every configured model is unavailable")}</span>
             <select
               value={firstRule?.onNoCapacity ?? "reject"}
               onChange={(event) => updateNoCapacity(event.target.value as RoutingRule["onNoCapacity"])}
             >
-              <option value="queue">Wait in the queue</option>
-              <option value="reject">Return an error immediately</option>
+              <option value="queue">{t("Wait in the queue")}</option>
+              <option value="reject">{t("Return an error immediately")}</option>
             </select>
-            <small>This only applies after all choices above have been tried.</small>
+            <small>{t("This only applies after all choices above have been tried.")}</small>
           </label>
 
           <label>
-            <span className="field-label">Description <span className="muted">(optional)</span></span>
+            <span className="field-label">{t("Description")} <span className="muted">({t("optional")})</span></span>
             <input
               value={draft.description ?? ""}
               onChange={(event) => onDraftChange({ ...draft, description: event.target.value })}
@@ -170,38 +173,38 @@ export function GuidedAliasCreation({
           </label>
         </div>
 
-        <aside className="alias-route-preview" aria-label="Routing preview">
-          <span className="eyebrow">Routing preview</span>
-          <h4>What will happen</h4>
+        <aside className="alias-route-preview" aria-label={t("Routing preview")}>
+          <span className="eyebrow">{t("Routing preview")}</span>
+          <h4>{t("What will happen")}</h4>
           <div className="alias-route-flow">
-            <RouteStep label="Application requests" value={draft.id || "model name"} />
+            <RouteStep label={t("Application requests")} value={draft.id || t("model name")} />
             <span className="alias-route-arrow">↓</span>
             <RouteStep
-              label={scenario === "local-cloud" ? "Local first" : "Proxy uses"}
-              value={primaryModel || copy.primaryLabel.toLowerCase()}
+              label={scenario === "local-cloud" ? t("Local first") : t("Proxy uses")}
+              value={primaryModel || t(copy.primaryLabel).toLowerCase()}
               active={Boolean(primaryModel)}
             />
             {scenarioNeedsFallback(scenario) && (
               <>
-                <span className="alias-route-arrow">↓ if unavailable</span>
+                <span className="alias-route-arrow">↓ {t("if unavailable")}</span>
                 <RouteStep
-                  label={scenario === "local-cloud" ? "Cloud overflow" : "Then fallback"}
-                  value={fallbackModel || copy.fallbackLabel!.toLowerCase()}
+                  label={scenario === "local-cloud" ? t("Cloud overflow") : t("Then fallback")}
+                  value={fallbackModel || t(copy.fallbackLabel!).toLowerCase()}
                   active={Boolean(fallbackModel)}
                 />
               </>
             )}
           </div>
           <p className="muted">
-            Your application only sends the requested model name. MultiVibe handles the redirection and fallback.
+            {t("Your application only sends the requested model name. MultiVibe handles the redirection and fallback.")}
           </p>
         </aside>
       </div>
 
       <div className="alias-wizard-actions">
-        <button className="btn ghost" type="button" onClick={onAdvanced}>Open advanced settings</button>
+        <button className="btn ghost" type="button" onClick={onAdvanced}>{t("Open advanced settings")}</button>
         <button className="btn" type="button" disabled={!complete || saving} onClick={onCreate}>
-          {saving ? "Creating…" : "Create policy"}
+          {saving ? t("Creating…") : t("Create policy")}
         </button>
       </div>
     </div>
@@ -209,11 +212,12 @@ export function GuidedAliasCreation({
 }
 
 function WizardProgress({ step, complete }: { step: 1 | 2; complete: boolean }) {
+  const t = useT();
   return (
-    <ol className="alias-wizard-progress" aria-label="Policy creation progress">
-      <li className={step >= 1 ? "active" : ""}><span>{step > 1 ? "✓" : "1"}</span>Choose a goal</li>
-      <li className={step >= 2 ? "active" : ""}><span>2</span>Configure</li>
-      <li className={complete ? "active" : ""}><span>{complete ? "✓" : "3"}</span>Ready to create</li>
+    <ol className="alias-wizard-progress" aria-label={t("Policy creation progress")}>
+      <li className={step >= 1 ? "active" : ""}><span>{step > 1 ? "✓" : "1"}</span>{t("Choose a goal")}</li>
+      <li className={step >= 2 ? "active" : ""}><span>2</span>{t("Configure")}</li>
+      <li className={complete ? "active" : ""}><span>{complete ? "✓" : "3"}</span>{t("Ready to create")}</li>
     </ol>
   );
 }

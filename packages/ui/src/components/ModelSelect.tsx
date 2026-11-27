@@ -1,4 +1,5 @@
 import { useDashboardApi, useDashboardRuntime } from "../adapter";
+import { useT } from "../i18n";
 import { useEffect, useState } from "react";
 
 
@@ -9,6 +10,7 @@ export const listPluginModels = (request: import("../lib/api").DashboardRequest)
 export function ModelSelect({ id, value, onChange, disabled = false, excludeVirtual = false }: {
   id: string; value: string; onChange: (model: string) => void; disabled?: boolean; excludeVirtual?: boolean;
 }) {
+  const t = useT();
   const api = useDashboardApi();
   const { capabilities } = useDashboardRuntime();
   const [models, setModels] = useState<ConfiguredPluginModel[]>([]);
@@ -17,13 +19,13 @@ export function ModelSelect({ id, value, onChange, disabled = false, excludeVirt
   useEffect(() => {
     let active = true;
     listPluginModels(api).then((items) => { if (active) setModels(items); })
-      .catch(() => { if (active) setError("Could not load configured models. Reopen settings to retry."); })
+      .catch(() => { if (active) setError(t("Could not load configured models. Reopen settings to retry.")); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, []);
   return <><select id={id} value={value} disabled={disabled || loading || Boolean(error)} onChange={(event) => onChange(event.target.value)}>
-    <option value="">{loading ? "Loading models…" : "No model selected"}</option>
-    {value && !models.some((model) => model.id === value) && <option value={value}>{value} (unavailable)</option>}
+    <option value="">{loading ? t("Loading models…") : t("No model selected")}</option>
+    {value && !models.some((model) => model.id === value) && <option value={value}>{value} {t("(unavailable)")}</option>}
     {models.filter((model) => !excludeVirtual || !model.metadata?.is_virtual).map((model) => <option key={model.id} value={model.id}>{model.id}{model.metadata?.provider ? ` · ${model.metadata.provider}` : ""}</option>)}
   </select>{error && <span role="alert">{error}</span>}</>;
 }

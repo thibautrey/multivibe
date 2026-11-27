@@ -79,6 +79,88 @@ accepts a publicly known value. Set `ADMIN_TOKEN` in `.env` next to
 `docker-compose.yml`; local overrides belong in an untracked
 `docker-compose.override.yml`.
 
+#### Users, quotas and plans
+
+Dashboard accounts live in `accounts.json` and sign in with email + password.
+An admin creates users, sets quotas and plans, and can send a one-time invite
+link from the **Users** tab. Members only see their own providers, API keys,
+activity and quota.
+
+Billing is pay-as-you-go by default: a per-user USD credit cap plus optional
+token and request caps over a day, month or total period. The admin can also
+enable a subscription plan per user with rolling windows such as 5 hours and
+weekly. Each window caps credit, tokens or requests, and the edge enforces
+every window alongside the usage quota. A user's counters roll over at the
+window boundary, anchored at first use.
+
+A user can also hold a **prepaid balance** (`walletUsd`), credited by an admin
+from the **Users** tab or, later, by a Stripe top-up. It never resets with the
+quota period: a request spends the period allowance first, then the prepaid
+balance, and the account is blocked once both are exhausted. Each movement is
+recorded in a bounded audit trail (allowance grant, top-up, adjustment, refund,
+debit) visible in the same panel. Members see their own balance, remaining
+credit and subscription windows in the **Credit** tab; with neither an
+allowance nor a balance they simply have unlimited credit, as on a plain
+self-hosted instance. A request that is already running is never cut off, so
+the prepaid balance may end slightly negative (or deeply negative after one
+expensive request); it stays visible, and every new request is refused until
+the balance is topped up.
+
+#### Marketplace billing (Stripe Connect)
+
+An instance can also let members buy that prepaid balance by card. The
+**Payments** tab enrolls the instance with the MultiVibe marketplace, opens a
+Stripe Connect v2 onboarding link in one click, and edits the credit packs the
+**Credit** tab sells. The admin stays the merchant of record: the charge is a
+direct charge on the admin's own Stripe account, MultiVibe keeps a per-instance
+commission (5% by default), and refunds are issued from the same panel.
+
+The marketplace broker is a separate service in `services/marketplace`; see its
+README for deployment. This instance only needs:
+
+```sh
+MULTIVIBE_MARKETPLACE_URL=https://marketplace.example.com
+# Optional: default is data/payments-credentials.json (mode 0600)
+MULTIVIBE_MARKETPLACE_SECRET_PATH=/data/payments-credentials.json
+# Optional: outbox polling interval, 60 s by default
+MULTIVIBE_MARKETPLACE_POLL_INTERVAL_MS=60000
+```
+
+Enrollment uses a short code, never an OAuth redirect, so an instance behind
+NAT or plain HTTP still works: the admin approves the code on the marketplace,
+and the instance receives its signing secret exactly once. That secret lives in
+the 0600 credentials file, not in `accounts.json`.
+
+Payments are pull-based and idempotent. The browser return page never credits
+anything; the instance verifies the Checkout session with the broker and credits
+the wallet through the same `paymentId` guard used by the signed event outbox.
+A background poller pulls new events, and a daily reconciliation re-reads recent
+sessions so a missed event cannot leave a paid member uncredited. Refunds and
+disputes debit the wallet proportionally, and a chargeback can push it negative
+so the debt stays visible and blocks new requests.
+
+The **Models** tab lets an admin set the billed price per model in USD per
+million input, cached-input and output tokens. Custom rates override the
+upstream estimate in usage accounting and dashboards; clearing one restores the
+catalog price. The **Users** tab also limits which exposed models each member may
+call, matching the exposed id and alias names. The edge rejects other models and
+hides them from that member's catalog.
+
+An optional off-peak calendar discounts those billed rates during chosen hours.
+The schedule holds one or more local time ranges per weekday and is evaluated in
+an explicit IANA timezone (UTC by default). A range whose end precedes its start
+continues into the next day, so `22:00 → 06:00` declared on Friday also covers
+Saturday morning. Models with off-peak rates use them while the calendar is
+enabled and a range matches the request time; other models keep the standard
+rate. Prices are resolved when a trace is priced, so activities, dashboards and
+quota debits stay consistent.
+
+Passkeys are optional. After signing in, **Add passkey** in the sidebar
+registers a credential for the current account; the login page can then sign
+in without a password. WebAuthn binds a credential to the dashboard hostname,
+so behind a proxy set `MULTIVIBE_PUBLIC_ORIGIN` (and, when the RP ID differs
+from that hostname, `MULTIVIBE_WEBAUTHN_RP_ID`) to the public origin.
+
 </details>
 
 ### Find your way

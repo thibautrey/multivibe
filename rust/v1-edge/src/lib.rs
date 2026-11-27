@@ -41,6 +41,7 @@ use axum::{
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use bytes::Bytes;
+use chrono::{DateTime, Datelike, TimeZone, Utc};
 use futures_util::{StreamExt, future::join_all};
 use hmac::{Hmac, Mac};
 use reqwest::redirect::Policy;
@@ -640,6 +641,9 @@ pub struct TeamProviderPolicy {
 #[serde(rename_all = "camelCase")]
 pub struct Account {
     pub id: String,
+    /// Owning dashboard user; absent for the shared, admin-managed pool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<String>,
     pub provider: Option<String>,
     pub sdk_provider: Option<String>,
     pub sdk_models: Option<Vec<String>>,
@@ -712,6 +716,12 @@ pub struct StoredProxyApiKey {
     /// needed to revoke the service token later.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cloudflare_access: Option<Value>,
+    /// Owning dashboard user; absent for admin/global keys.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<String>,
+    /// Team principal metadata, round-tripped verbatim for the control plane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal: Option<Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -760,6 +770,13 @@ fn default_share_multiplier() -> f64 {
 #[serde(rename_all = "camelCase")]
 pub struct StoreSettings {
     pub image_request_model_override: Option<String>,
+    /// Billed model rates are owned by the control plane; round-trip them so an
+    /// edge rewrite never drops the operator's pricing.
+    #[serde(default)]
+    pub model_billing: Option<Value>,
+    /// Weekly off-peak calendar; also owned by the control plane.
+    #[serde(default)]
+    pub off_peak: Option<Value>,
     #[serde(default)]
     pub voice_local_model: Option<String>,
     #[serde(default)]
@@ -781,6 +798,10 @@ pub struct StoreFile {
     pub proxy_api_keys: Vec<StoredProxyApiKey>,
     #[serde(default)]
     pub application_policies: Vec<ApplicationPolicy>,
+    /// Dashboard users, kept as opaque JSON so edge rewrites never drop the
+    /// password hashes, passkeys or quota snapshots the control plane owns.
+    #[serde(default)]
+    pub users: Vec<Value>,
     #[serde(default)]
     pub settings: StoreSettings,
 }
@@ -949,6 +970,8 @@ impl AccountStore {
             key: key.to_owned(),
             created_at: Some(now_ms()),
             cloudflare_access: None,
+            owner_id: None,
+            principal: None,
         });
         if !data
             .application_policies
@@ -1041,6 +1064,9 @@ pub struct ApiKeyIdentity {
 pub struct AuthContext {
     pub application: String,
     pub api_key: Option<ApiKeyIdentity>,
+    /// Dashboard user behind this request. `None` for admin-token, anonymous
+    /// and internal-job calls, which are not quota-accounted.
+    pub user_id: Option<String>,
 }
 
 pub(crate) fn proxy_api_key_preview(key: &str) -> String {
@@ -1130,6 +1156,282 @@ fn admin_session_value(token: &str) -> String {
     URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
 }
 
+/// Claims carried by the control plane's signed dashboard cookie.
+#[derive(Clone, Debug)]
+pub(crate) struct SessionClaims {
+    pub user_id: Option<String>,
+    pub role: Option<String>,
+    pub expires_at: u64,
+}
+
+fn session_mac(payload: &str, token: &str) -> String {
+    let mut mac = HmacSha256::new_from_slice(token.as_bytes()).expect("HMAC accepts any key");
+    mac.update(format!("multivibe-session-v1.{payload}").as_bytes());
+    URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+}
+
+/// Validate the cookie value without trusting its contents.
+///
+/// The legacy admin cookie (an HMAC of a constant) stays valid; the newer
+/// `v1.<payload>.<mac>` format additionally names a user and a role.
+pub(crate) fn parse_session_value(value: &str, token: &str) -> Option<SessionClaims> {
+    if token.is_empty() {
+        return None;
+    }
+    if constant_time_equal(value, &admin_session_value(token)) {
+        return Some(SessionClaims {
+            user_id: None,
+            role: Some("admin".to_owned()),
+            expires_at: u64::MAX,
+        });
+    }
+    let mut parts = value.split('.');
+    let version = parts.next()?;
+    let payload = parts.next()?;
+    let mac = parts.next()?;
+    if version != "v1" || parts.next().is_some() {
+        return None;
+    }
+    if !constant_time_equal(mac, &session_mac(payload, token)) {
+        return None;
+    }
+    let decoded = URL_SAFE_NO_PAD.decode(payload).ok()?;
+    let claims: Value = serde_json::from_slice(&decoded).ok()?;
+    let expires_at = claims.get("e").and_then(Value::as_u64).unwrap_or_default();
+    if expires_at == 0 || expires_at <= now_ms() {
+        return None;
+    }
+    let role = claims
+        .get("r")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let user_id = claims
+        .get("u")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    Some(SessionClaims {
+        user_id,
+        role,
+        expires_at,
+    })
+}
+
+/// Quota accounting uses UTC boundaries, matching the control plane.
+fn quota_period_start(period: &str, now: DateTime<Utc>) -> DateTime<Utc> {
+    match period {
+        "day" => Utc
+            .with_ymd_and_hms(now.year(), now.month(), now.day(), 0, 0, 0)
+            .single()
+            .unwrap_or(now),
+        "month" => Utc
+            .with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
+            .single()
+            .unwrap_or(now),
+        _ => DateTime::from_timestamp(0, 0).unwrap_or(now),
+    }
+}
+
+fn window_duration_ms(period: &str) -> Option<i64> {
+    Some(match period {
+        "5h" => 5 * 60 * 60 * 1000,
+        "day" => 24 * 60 * 60 * 1000,
+        "week" => 7 * 24 * 60 * 60 * 1000,
+        _ => return None,
+    })
+}
+
+/// Subscription windows are rolling and anchored at first use. A counter whose
+/// start is outside the current window is stale and must count as zero.
+fn window_usage_is_current(period: &str, started_at: i64, now: DateTime<Utc>) -> bool {
+    if started_at <= 0 {
+        return false;
+    }
+    if period == "month" {
+        return started_at >= quota_period_start("month", now).timestamp_millis();
+    }
+    window_duration_ms(period)
+        .is_some_and(|duration| now.timestamp_millis().saturating_sub(started_at) < duration)
+}
+
+fn user_value<'a>(users: &'a [Value], user_id: &str) -> Option<&'a Value> {
+    users
+        .iter()
+        .find(|user| user.get("id").and_then(Value::as_str) == Some(user_id))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UserAccess {
+    Allowed,
+    Suspended,
+    Exhausted,
+}
+
+/// Read the closed user record. Counters from a previous quota period are
+/// treated as zero so a rollover the control plane has not persisted yet cannot
+/// keep a user blocked for an extra flush window.
+fn user_access(users: &[Value], user_id: &str) -> UserAccess {
+    let Some(user) = user_value(users, user_id) else {
+        // A signed cookie for a deleted user must not keep working.
+        return UserAccess::Suspended;
+    };
+    if user.get("status").and_then(Value::as_str) != Some("active") {
+        return UserAccess::Suspended;
+    }
+    let quota = user.get("quota").unwrap_or(&Value::Null);
+    let usage = user.get("usage").unwrap_or(&Value::Null);
+    let period = quota
+        .get("period")
+        .and_then(Value::as_str)
+        .unwrap_or("month");
+    let current_period_start = quota_period_start(period, Utc::now());
+    let usage_is_current = usage
+        .get("periodStart")
+        .and_then(Value::as_str)
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .is_some_and(|value| value.with_timezone(&Utc) >= current_period_start);
+    let number = |target: &Value, key: &str| target.get(key).and_then(Value::as_f64).unwrap_or(0.0);
+    let (cost, tokens, requests, covered) = if usage_is_current {
+        (
+            number(usage, "costUsd"),
+            number(usage, "tokens"),
+            number(usage, "requests"),
+            usage
+                .get("grantedCostUsd")
+                .and_then(Value::as_f64)
+                .map(|value| value.max(0.0)),
+        )
+    } else {
+        (0.0, 0.0, 0.0, None)
+    };
+    let over = |target: &Value, key: &str, used: f64| {
+        target
+            .get(key)
+            .and_then(Value::as_f64)
+            .is_some_and(|limit| used >= limit)
+    };
+    // Credit stacks two sources: the period allowance (`quota.creditUsd`,
+    // consumed first) and a prepaid wallet (`walletUsd`, never reset). The
+    // account is exhausted only when both are. Records written before the
+    // wallet existed have no `grantedCostUsd`, so the allowance is derived from
+    // the total spend to preserve the original behaviour.
+    let allowance = quota.get("creditUsd").and_then(Value::as_f64);
+    let wallet = user.get("walletUsd").and_then(Value::as_f64);
+    let credit_exhausted = (allowance.is_some() || wallet.is_some()) && {
+        // A counter from a previous period is already zero, so only a current
+        // record can report its covered spend.
+        let granted = covered.unwrap_or_else(|| allowance.map_or(cost, |limit| cost.min(limit)));
+        let allowance_exhausted = allowance.is_none_or(|limit| granted >= limit);
+        let wallet_exhausted = wallet.is_none_or(|balance| balance <= 0.0);
+        allowance_exhausted && wallet_exhausted
+    };
+    if credit_exhausted || over(quota, "maxTokens", tokens) || over(quota, "maxRequests", requests)
+    {
+        return UserAccess::Exhausted;
+    }
+    // Subscription plans stack rolling windows on top of the usage quota.
+    if let Some(plan) = user.get("plan") {
+        if plan.get("mode").and_then(Value::as_str) == Some("subscription") {
+            let window_usage = user.get("windowUsage").unwrap_or(&Value::Null);
+            for window in plan
+                .get("windows")
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+            {
+                let id = window.get("id").and_then(Value::as_str).unwrap_or_default();
+                let period = window
+                    .get("period")
+                    .and_then(Value::as_str)
+                    .unwrap_or("week");
+                let record = window_usage.get(id).unwrap_or(&Value::Null);
+                let started_at = record.get("startedAt").and_then(Value::as_i64).unwrap_or(0);
+                let (window_cost, window_tokens, window_requests) =
+                    if window_usage_is_current(period, started_at, Utc::now()) {
+                        (
+                            number(record, "costUsd"),
+                            number(record, "tokens"),
+                            number(record, "requests"),
+                        )
+                    } else {
+                        (0.0, 0.0, 0.0)
+                    };
+                if over(window, "creditUsd", window_cost)
+                    || over(window, "maxTokens", window_tokens)
+                    || over(window, "maxRequests", window_requests)
+                {
+                    return UserAccess::Exhausted;
+                }
+            }
+        }
+    }
+    UserAccess::Allowed
+}
+
+/// Members may be restricted to a subset of exposed models. An absent or empty
+/// list means every model is available, which keeps existing accounts unchanged.
+fn user_model_allowed(users: &[Value], user_id: &str, model: &str) -> bool {
+    let Some(user) = user_value(users, user_id) else {
+        return false;
+    };
+    let Some(allowed) = user.get("allowedModels").and_then(Value::as_array) else {
+        return true;
+    };
+    if allowed.is_empty() {
+        return true;
+    }
+    let key = normalize_model_key(model);
+    if key.is_empty() {
+        return false;
+    }
+    allowed
+        .iter()
+        .filter_map(Value::as_str)
+        .any(|entry| !entry.trim().is_empty() && normalize_model_key(entry) == key)
+}
+
+fn model_not_allowed_denied(path: &str) -> Response {
+    let message = "This model is not available for your account.";
+    if path.ends_with("/messages") {
+        anthropic_error_response(StatusCode::FORBIDDEN, message)
+    } else {
+        error_response(StatusCode::FORBIDDEN, message, "model_not_allowed")
+    }
+}
+
+fn session_member_user(headers: &HeaderMap, config: &EdgeConfig) -> Option<String> {
+    if config.admin_token.is_empty() {
+        return None;
+    }
+    let claims = cookie_value(headers, "multivibe_admin_session")
+        .and_then(|value| parse_session_value(&value, &config.admin_token))?;
+    (claims.role.as_deref() == Some("member"))
+        .then_some(claims.user_id)
+        .flatten()
+}
+
+fn user_access_denied(path: &str, access: UserAccess) -> Option<Response> {
+    let (status, message, code) = match access {
+        UserAccess::Allowed => return None,
+        UserAccess::Suspended => (
+            StatusCode::FORBIDDEN,
+            "This account is suspended.",
+            "user_suspended",
+        ),
+        UserAccess::Exhausted => (
+            StatusCode::TOO_MANY_REQUESTS,
+            "The usage quota or prepaid balance for this account is exhausted. Ask your administrator to raise the quota or add credit.",
+            "quota_exceeded",
+        ),
+    };
+    if path.ends_with("/messages") {
+        Some(anthropic_error_response(status, message))
+    } else {
+        Some(error_response(status, message, code))
+    }
+}
+
 fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
     let cookie = header_value(headers, "cookie")?;
     cookie.split(';').find_map(|part| {
@@ -1155,6 +1457,7 @@ pub fn authorize(
                 application.clone(),
                 key.clone(),
                 format!("configured:{application}"),
+                None,
             )
         })
         .collect::<Vec<_>>();
@@ -1163,6 +1466,7 @@ pub fn authorize(
             entry.application.clone(),
             entry.key.clone(),
             entry.id.clone(),
+            entry.owner_id.clone(),
         )
     }));
     if let Some(internal) = config.internal_job_token.as_deref() {
@@ -1180,39 +1484,65 @@ pub fn authorize(
                         id,
                     }
                 }),
+                user_id: None,
             });
         }
+    }
+    // The dashboard cookie is the only source of user identity. A member
+    // session is quota-accounted; the legacy admin cookie and the admin token
+    // are not.
+    if !config.admin_token.is_empty()
+        && let Some(claims) = cookie_value(headers, "multivibe_admin_session")
+            .and_then(|value| parse_session_value(&value, &config.admin_token))
+    {
+        let role = claims.role.as_deref().unwrap_or("admin");
+        if role == "member" {
+            let user_id = claims.user_id.ok_or_else(|| {
+                user_access_denied(path, UserAccess::Suspended)
+                    .unwrap_or_else(|| error_response(StatusCode::UNAUTHORIZED, "unauthorized", "unauthorized"))
+            })?;
+            if let Some(denied) = user_access_denied(path, user_access(&store.users, &user_id)) {
+                return Err(denied);
+            }
+            return Ok(AuthContext {
+                // Express lets an authenticated dashboard session use the normal
+                // default proxy scope; keep the native edge attribution identical.
+                application: "default".to_owned(),
+                api_key: None,
+                user_id: Some(user_id),
+            });
+        }
+        return Ok(AuthContext {
+            application: "default".to_owned(),
+            api_key: None,
+            user_id: None,
+        });
     }
     if keys.is_empty() {
         return Ok(AuthContext {
             application: "default".to_owned(),
             api_key: None,
-        });
-    }
-    if !config.admin_token.is_empty()
-        && cookie_value(headers, "multivibe_admin_session").is_some_and(|value| {
-            constant_time_equal(&value, &admin_session_value(&config.admin_token))
-        })
-    {
-        return Ok(AuthContext {
-            // Express lets an authenticated dashboard session use the normal
-            // default proxy scope; keep the native edge attribution identical.
-            application: "default".to_owned(),
-            api_key: None,
+            user_id: None,
         });
     }
     let token = bearer_or_api_key(headers);
     if let Some(token) = token {
-        if let Some((application, key, id)) = keys
+        if let Some((application, key, id, owner_id)) = keys
             .iter()
-            .find(|(_, key, _)| constant_time_equal(&token, key))
+            .find(|(_, key, _, _)| constant_time_equal(&token, key))
         {
+            if let Some(owner_id) = owner_id.as_deref() {
+                if let Some(denied) = user_access_denied(path, user_access(&store.users, owner_id)) {
+                    return Err(denied);
+                }
+            }
             return Ok(AuthContext {
                 application: application.clone(),
                 api_key: Some(ApiKeyIdentity {
                     id: id.clone(),
                     preview: proxy_api_key_preview(key),
                 }),
+                user_id: owner_id.clone(),
             });
         }
     }
@@ -5345,6 +5675,8 @@ struct TraceContext {
     /// Non-secret identity of the client API key; absent for internal/admin calls.
     api_key_id: Option<String>,
     api_key_preview: Option<String>,
+    /// Dashboard user that owns the key or session; absent for admin calls.
+    user_id: Option<String>,
     requested_model: Option<String>,
     resolved_model: Option<String>,
     model: Option<String>,
@@ -6268,6 +6600,9 @@ impl TraceSink {
         if let Some(value) = context.api_key_preview.as_deref() {
             entry["apiKeyPreview"] = Value::String(value.to_owned());
         }
+        if let Some(value) = context.user_id.as_deref() {
+            entry["userId"] = Value::String(value.to_owned());
+        }
         if let Some(value) = context.codex_session_id.as_deref() {
             entry["codexSessionId"] = Value::String(value.to_owned());
         }
@@ -6999,6 +7334,7 @@ fn build_trace_context(
     body: &Value,
     application: &str,
     api_key: Option<&ApiKeyIdentity>,
+    user_id: Option<&str>,
     client_request_id: &str,
     requested_model: &str,
     resolved_model: &str,
@@ -7033,6 +7369,7 @@ fn build_trace_context(
         api_key_preview: api_key
             .map(|value| value.preview.clone())
             .filter(|value| !value.is_empty()),
+        user_id: user_id.map(str::to_owned),
         requested_model,
         resolved_model,
         model,
@@ -7777,6 +8114,7 @@ async fn proxy_inference(
     body: &Value,
     application: &str,
     api_key: Option<&ApiKeyIdentity>,
+    user_id: Option<&str>,
     activity_kind: Option<ActivityKind>,
     image_upload: Option<&Bytes>,
 ) -> Result<ProxyResult, Response> {
@@ -7819,6 +8157,21 @@ async fn proxy_inference(
     } else {
         image_aware_routing_model(&store, &catalog, body, &routing_model)
     };
+    // Model access is checked after aliases and the image override have resolved
+    // so a member cannot reach a blocked model through another name. Voice keeps
+    // its configured local/advanced models rather than exposing them as choices.
+    if let Some(user_id) = user_id
+        && !routing_model.eq_ignore_ascii_case(VOICE_MODEL)
+    {
+        let access_model = if routing_model.trim().is_empty() {
+            default_model
+        } else {
+            routing_model.as_str()
+        };
+        if !user_model_allowed(&store.users, user_id, access_model) {
+            return Err(model_not_allowed_denied(path));
+        }
+    }
     let mut routes = if routing_model.eq_ignore_ascii_case(VOICE_MODEL) {
         match voice_route_model(&store, body, &catalog, &routing_model) {
             Some(chosen) => {
@@ -8034,6 +8387,7 @@ async fn proxy_inference(
                     body,
                     application,
                     api_key,
+                    user_id,
                     &client_request_id,
                     &requested_model,
                     &route.model,
@@ -8051,6 +8405,7 @@ async fn proxy_inference(
                     body,
                     application,
                     api_key,
+                    user_id,
                     &client_request_id,
                     &requested_model,
                     &route.model,
@@ -8745,6 +9100,7 @@ async fn proxy_inference(
         body,
         application,
         api_key,
+        user_id,
         &client_request_id,
         &requested_model,
         &trace_model,
@@ -10333,6 +10689,9 @@ struct Job {
     api_key_id: Option<String>,
     #[serde(default)]
     api_key_preview: Option<String>,
+    /// Dashboard user attributed to the submitted request, replayed on execution.
+    #[serde(default)]
+    user_id: Option<String>,
     route: String,
     #[serde(default)]
     request_headers: HashMap<String, String>,
@@ -10699,6 +11058,7 @@ fn import_legacy_jobs_blocking(path: &std::path::Path) -> Result<Vec<Job>, Strin
                 application: row.get(1)?,
                 api_key_id: None,
                 api_key_preview: None,
+                user_id: None,
                 route: row.get(2)?,
                 request_headers: sqlite_json(row.get(3)?),
                 request_body: row
@@ -11171,6 +11531,7 @@ impl JobManager {
         body: &Value,
         max_attempts: u32,
         api_key: Option<&ApiKeyIdentity>,
+        user_id: Option<&str>,
     ) -> Result<JobCreateResult, JobCreateError> {
         let now = now_ms();
         let priority =
@@ -11196,6 +11557,7 @@ impl JobManager {
             api_key_preview: api_key
                 .map(|value| value.preview.clone())
                 .filter(|value| !value.is_empty()),
+            user_id: user_id.map(str::to_owned),
             route: route.to_owned(),
             request_headers: headers
                 .iter()
@@ -12372,6 +12734,7 @@ async fn run_claimed_job(
         &running.request_body,
         &running.application,
         replayed_api_key.as_ref(),
+        running.user_id.as_deref(),
         None,
         None,
     );
@@ -12852,6 +13215,7 @@ async fn inference_handler(State(state): State<EdgeState>, req: Request<Body>) -
                 &body,
                 default_job_max_attempts(),
                 auth.api_key.as_ref(),
+                auth.user_id.as_deref(),
             )
             .await
         {
@@ -12923,6 +13287,7 @@ async fn inference_handler(State(state): State<EdgeState>, req: Request<Body>) -
         &body,
         &auth.application,
         auth.api_key.as_ref(),
+        auth.user_id.as_deref(),
         Some(ActivityKind::Request),
         image_upload.as_ref(),
     )
@@ -14260,14 +14625,30 @@ async fn list_models_handler(
             return error_response(StatusCode::SERVICE_UNAVAILABLE, error, "store_unavailable");
         }
     };
-    if path == "/admin/dashboard/models" {
+    let user_id = if path == "/admin/dashboard/models" {
         if !dashboard::request_authorized(&headers, &state.config) {
             return json_response(StatusCode::UNAUTHORIZED, json!({"error": "unauthorized"}));
         }
-    } else if let Err(response) = authorize(&headers, path, &store, &state.config) {
-        return response;
-    }
+        session_member_user(&headers, &state.config)
+    } else {
+        match authorize(&headers, path, &store, &state.config) {
+            Ok(auth) => auth.user_id,
+            Err(response) => return response,
+        }
+    };
     let models = exposed_models(&state, &store, query.refresh.unwrap_or(false)).await;
+    let models = match user_id.as_deref() {
+        Some(user_id) => models
+            .into_iter()
+            .filter(|model| {
+                model
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| user_model_allowed(&store.users, user_id, id))
+            })
+            .collect(),
+        None => models,
+    };
     if is_claude_code_request(&headers) {
         return json_response(StatusCode::OK, claude_code_models_response(&models));
     }
@@ -14288,9 +14669,10 @@ async fn get_model_handler(
             return error_response(StatusCode::SERVICE_UNAVAILABLE, error, "store_unavailable");
         }
     };
-    if let Err(response) = authorize(&headers, req.uri().path(), &store, &state.config) {
-        return response;
-    }
+    let user_id = match authorize(&headers, req.uri().path(), &store, &state.config) {
+        Ok(auth) => auth.user_id,
+        Err(response) => return response,
+    };
     let models = exposed_models(&state, &store, false).await;
     let model = models.into_iter().find(|model| {
         model
@@ -14298,6 +14680,18 @@ async fn get_model_handler(
             .and_then(Value::as_str)
             .is_some_and(|value| value == id)
     });
+    if let (Some(user_id), Some(model)) = (user_id.as_deref(), model.as_ref()) {
+        let allowed = model
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| user_model_allowed(&store.users, user_id, id));
+        if !allowed {
+            return json_response(
+                StatusCode::NOT_FOUND,
+                json!({"error": {"message": format!("The model '{id}' does not exist"), "type": "invalid_request_error"}}),
+            );
+        }
+    }
     match model {
         Some(model) => json_response(StatusCode::OK, openai_model_shape(&model)),
         None => json_response(
@@ -14774,7 +15168,7 @@ struct EnrollmentMapping {
 /// code is returned once and never stored in plaintext elsewhere.
 async fn enrollment_issue_handler(State(state): State<EdgeState>, req: Request<Body>) -> Response {
     let (parts, body) = req.into_parts();
-    if !dashboard::request_authorized(&parts.headers, &state.config) {
+    if !dashboard::request_is_admin(&parts.headers, &state.config) {
         return error_response(
             StatusCode::UNAUTHORIZED,
             "admin authentication is required",
@@ -14963,7 +15357,7 @@ async fn enrollment_exchange_handler(
 /// aggregate counts an operator needs to size the share.
 async fn admission_state_handler(State(state): State<EdgeState>, req: Request<Body>) -> Response {
     let headers = req.headers().clone();
-    if !dashboard::request_authorized(&headers, &state.config) {
+    if !dashboard::request_is_admin(&headers, &state.config) {
         return error_response(
             StatusCode::UNAUTHORIZED,
             "admin authentication is required",
@@ -15074,7 +15468,7 @@ fn prometheus_label(value: &str) -> String {
 /// `/admin/admission/state` (JSON, for humans) so an operator has one obvious
 /// place to look and a scraper has one obvious place to scrape.
 async fn admission_metrics_handler(State(state): State<EdgeState>, req: Request<Body>) -> Response {
-    if !dashboard::request_authorized(req.headers(), &state.config) {
+    if !dashboard::request_is_admin(req.headers(), &state.config) {
         return error_response(
             StatusCode::UNAUTHORIZED,
             "admin authentication is required",
@@ -15829,6 +16223,7 @@ async fn realtime_call_handler(State(state): State<EdgeState>, req: Request<Body
             &trace_body,
             &auth.application,
             auth.api_key.as_ref(),
+            auth.user_id.as_deref(),
             &client_request_id,
             "realtime",
             "realtime",
@@ -16028,6 +16423,7 @@ async fn realtime_call_handler(State(state): State<EdgeState>, req: Request<Body
             &Value::Null,
             &auth.application,
             auth.api_key.as_ref(),
+            auth.user_id.as_deref(),
             &client_request_id,
             "realtime",
             "realtime",
@@ -16057,6 +16453,7 @@ async fn realtime_call_handler(State(state): State<EdgeState>, req: Request<Body
         &Value::Null,
         &auth.application,
         auth.api_key.as_ref(),
+        auth.user_id.as_deref(),
         &client_request_id,
         "realtime",
         "realtime",
@@ -16132,6 +16529,7 @@ async fn realtime_voices_handler(State(state): State<EdgeState>, req: Request<Bo
             &Value::Null,
             &auth.application,
             auth.api_key.as_ref(),
+            auth.user_id.as_deref(),
             &client_request_id,
             "realtime-voices",
             "realtime-voices",
@@ -16168,6 +16566,7 @@ async fn realtime_voices_handler(State(state): State<EdgeState>, req: Request<Bo
         &Value::Null,
         &auth.application,
         auth.api_key.as_ref(),
+        auth.user_id.as_deref(),
         &client_request_id,
         "realtime-voices",
         "realtime-voices",
@@ -16260,6 +16659,7 @@ async fn realtime_voices_handler(State(state): State<EdgeState>, req: Request<Bo
                     &Value::Null,
                     &auth.application,
                     auth.api_key.as_ref(),
+                    auth.user_id.as_deref(),
                     &client_request_id,
                     "realtime-voices",
                     "realtime-voices",
@@ -16309,6 +16709,7 @@ async fn realtime_voices_handler(State(state): State<EdgeState>, req: Request<Bo
                     &Value::Null,
                     &auth.application,
                     auth.api_key.as_ref(),
+                    auth.user_id.as_deref(),
                     &client_request_id,
                     "realtime-voices",
                     "realtime-voices",
@@ -16393,6 +16794,7 @@ async fn realtime_voices_handler(State(state): State<EdgeState>, req: Request<Bo
         &Value::Null,
         &auth.application,
         auth.api_key.as_ref(),
+        auth.user_id.as_deref(),
         &client_request_id,
         "realtime-voices",
         "realtime-voices",
@@ -16445,7 +16847,7 @@ async fn websocket_handler(
     }
     headers.remove("x-multivibe-internal-trace-redact");
     ws.on_upgrade(move |socket| {
-        handle_websocket(socket, state, headers, auth.application, auth.api_key, path)
+        handle_websocket(socket, state, headers, auth.application, auth.api_key, auth.user_id, path)
     })
 }
 
@@ -16860,6 +17262,7 @@ async fn produce_ws_response(
     frame: &Value,
     application: &str,
     api_key: Option<&ApiKeyIdentity>,
+    user_id: Option<&str>,
     events: tokio::sync::mpsc::Sender<Value>,
 ) -> WsTurnResult {
     let mut result = WsTurnResult::default();
@@ -16870,6 +17273,7 @@ async fn produce_ws_response(
         frame,
         application,
         api_key,
+        user_id,
         Some(ActivityKind::WebsocketTurn),
         None,
     )
@@ -17096,6 +17500,7 @@ async fn handle_websocket(
     headers: HeaderMap,
     application: String,
     api_key: Option<ApiKeyIdentity>,
+    user_id: Option<String>,
     path: String,
 ) {
     let mut log = WsConnectionLog::new(&headers, &application, &path);
@@ -17372,6 +17777,7 @@ async fn handle_websocket(
                             &frame,
                             &application,
                             api_key.as_ref(),
+                            user_id.as_deref(),
                             events,
                         );
                     tokio::pin!(work);
@@ -17737,7 +18143,7 @@ async fn fallback_handler(State(state): State<EdgeState>, req: Request<Body>) ->
                 return dashboard::proxy_api_keys(&state, req.headers().clone()).await;
             }
             "/admin/application-policies" => {
-                return dashboard::application_policies(&state).await;
+                return dashboard::application_policies(&state, req.headers()).await;
             }
             _ => {}
         }
@@ -19170,6 +19576,8 @@ mod tests {
             key: "mv_stored_key_value_1234".to_owned(),
             created_at: Some(1_788_803_484_000),
             cloudflare_access: None,
+            owner_id: None,
+            principal: None,
         });
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -19205,6 +19613,8 @@ mod tests {
                 "clientId": "client.access",
                 "serviceTokenId": "token-id"
             })),
+            owner_id: None,
+            principal: None,
         });
 
         let serialized = serde_json::to_string(&store).unwrap();
@@ -19222,6 +19632,8 @@ mod tests {
             key: "mv_plain_secret_1234".to_owned(),
             created_at: None,
             cloudflare_access: None,
+            owner_id: None,
+            principal: None,
         })
         .unwrap();
         assert!(plain.get("cloudflareAccess").is_none());
@@ -20105,6 +20517,7 @@ mod tests {
                 &json!({"model": "gpt-job", "input": "hello"}),
                 3,
                 None,
+            None,
             )
             .await
             .unwrap()
@@ -20171,6 +20584,7 @@ mod tests {
                 &json!({"model": "gpt-job", "input": "hello"}),
                 3,
                 None,
+            None,
             )
             .await
             .unwrap()
@@ -23083,6 +23497,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 &json!({"model": "gpt-5.3-codex", "input": "hello"}),
                 3,
                 None,
+            None,
             )
             .await
             .unwrap()
@@ -23189,6 +23604,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 &json!({"model": "gpt-job", "input": "hello"}),
                 3,
                 None,
+            None,
             )
             .await
             .unwrap()
@@ -23250,6 +23666,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 &json!({"model": "gpt-job", "input": "hello"}),
                 3,
                 None,
+            None,
             )
             .await
             .unwrap()
@@ -23305,6 +23722,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 &json!({"model": "gpt-job", "input": "retry"}),
                 3,
                 None,
+            None,
             )
             .await
             .unwrap()
@@ -23341,6 +23759,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 &json!({"model": "gpt-job", "input": "recover"}),
                 3,
                 None,
+            None,
             )
             .await
             .unwrap()
@@ -23384,6 +23803,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                     &json!({"model": "gpt-job", "input": "rejected"}),
                     3,
                     None,
+                None,
                 )
                 .await,
             Err(JobCreateError::Persistence(_))
@@ -23409,6 +23829,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 &json!({"model": "gpt-job", "input": "hello"}),
                 3,
                 None,
+            None,
             )
             .await
             .unwrap()
@@ -23464,7 +23885,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         );
         let body = json!({"model": "gpt-job", "input": "hello"});
         let created = manager
-            .create("durable-app", "/v1/responses", &headers, &body, 3, None)
+            .create("durable-app", "/v1/responses", &headers, &body, 3, None, None)
             .await
             .unwrap();
 
@@ -23472,7 +23893,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         fs::create_dir(&path).await.unwrap();
 
         let replay = manager
-            .create("durable-app", "/v1/responses", &headers, &body, 3, None)
+            .create("durable-app", "/v1/responses", &headers, &body, 3, None, None)
             .await
             .unwrap();
         assert!(!replay.created);
@@ -23486,6 +23907,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                     &json!({"model": "gpt-job", "input": "different"}),
                     3,
                     None,
+                None,
                 )
                 .await,
             Err(JobCreateError::IdempotencyConflict)
@@ -23531,6 +23953,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 &json!({"model": "gpt-job", "input": "hello"}),
                 3,
                 None,
+            None,
             )
             .await
             .unwrap()
@@ -23620,6 +24043,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 &json!({"model": "gpt-job", "input": "hello"}),
                 3,
                 None,
+            None,
             )
             .await
             .unwrap()
@@ -23757,6 +24181,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 &json!({"model": "gpt-webhook", "input": "hello"}),
                 3,
                 None,
+            None,
             )
             .await
             .unwrap()
@@ -23863,6 +24288,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 &json!({"model": "gpt-webhook", "input": "hello"}),
                 3,
                 None,
+            None,
             )
             .await
             .unwrap()
@@ -23907,12 +24333,12 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         headers.insert("x-multivibe-priority", HeaderValue::from_static("critical"));
         let body = json!({"model": "gpt-job", "input": "same"});
         let created = manager
-            .create("app-a", "/v1/responses", &headers, &body, 3, None)
+            .create("app-a", "/v1/responses", &headers, &body, 3, None, None)
             .await
             .unwrap();
         assert!(created.created);
         let replay = manager
-            .create("app-a", "/v1/responses", &headers, &body, 3, None)
+            .create("app-a", "/v1/responses", &headers, &body, 3, None, None)
             .await
             .unwrap();
         assert!(!replay.created);
@@ -23926,6 +24352,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                     &json!({"model": "gpt-job", "input": "different"}),
                     3,
                     None,
+                None,
                 )
                 .await,
             Err(JobCreateError::IdempotencyConflict)
@@ -23978,7 +24405,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
             "failed"
         );
         let other_application = manager
-            .create("app-b", "/v1/responses", &headers, &body, 3, None)
+            .create("app-b", "/v1/responses", &headers, &body, 3, None, None)
             .await
             .unwrap();
         assert!(other_application.created);
@@ -23988,7 +24415,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         invalid_deadline.insert("x-multivibe-deadline", HeaderValue::from_static("tomorrow"));
         assert!(matches!(
             manager
-                .create("app-a", "/v1/responses", &invalid_deadline, &body, 3, None)
+                .create("app-a", "/v1/responses", &invalid_deadline, &body, 3, None, None)
                 .await,
             Err(JobCreateError::InvalidDeadline)
         ));
@@ -23999,7 +24426,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
         );
         assert!(matches!(
             manager
-                .create("app-a", "/v1/responses", &invalid_deadline, &body, 3, None)
+                .create("app-a", "/v1/responses", &invalid_deadline, &body, 3, None, None)
                 .await,
             Err(JobCreateError::ExpiredDeadline)
         ));
@@ -24048,6 +24475,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 &json!({"model": "gpt-job", "input": "hello"}),
                 1,
                 None,
+            None,
             )
             .await
             .unwrap()
@@ -24215,6 +24643,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                     &json!({"model": "gpt-job", "input": format!("job-{index}")}),
                     3,
                     None,
+                None,
                 )
                 .await
                 .unwrap();
@@ -26542,6 +26971,8 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12
                 key: "mv_managed_secret_1234".to_owned(),
                 created_at: Some(1_788_803_484_000),
                 cloudflare_access: None,
+                owner_id: None,
+                principal: None,
             }],
             application_policies: vec![ApplicationPolicy {
                 application: "desktop".to_owned(),
@@ -28432,6 +28863,160 @@ mod voice_router_tests {
         store.settings.voice_local_model = None;
         store.settings.voice_advanced_model = None;
         assert_eq!(voice_route_model(&store, &complex, &catalog, VOICE_MODEL), None);
+    }
+
+    #[test]
+    fn member_sessions_round_trip_and_quota_is_enforced_per_period() {
+        let token = "admin-secret";
+        let expires = now_ms().saturating_add(60_000);
+        let payload = URL_SAFE_NO_PAD
+            .encode(serde_json::json!({"u": "usr_1", "r": "member", "e": expires}).to_string());
+        let value = format!("v1.{payload}.{}", session_mac(&payload, token));
+        let claims = parse_session_value(&value, token).expect("member session");
+        assert_eq!(claims.user_id.as_deref(), Some("usr_1"));
+        assert_eq!(claims.role.as_deref(), Some("member"));
+        assert!(parse_session_value(&value, "other-secret").is_none());
+
+        let period = quota_period_start("month", Utc::now()).to_rfc3339();
+        let users = vec![serde_json::json!({
+            "id": "usr_1",
+            "status": "active",
+            "quota": {"period": "month", "maxRequests": 2},
+            "usage": {"periodStart": period, "requests": 2, "tokens": 0, "costUsd": 0}
+        })];
+        assert_eq!(user_access(&users, "usr_1"), UserAccess::Exhausted);
+        assert_eq!(user_access(&users, "missing"), UserAccess::Suspended);
+
+        // A counter from a previous period is stale and must not keep blocking.
+        let stale = vec![serde_json::json!({
+            "id": "usr_1",
+            "status": "active",
+            "quota": {"period": "month", "maxRequests": 2},
+            "usage": {"periodStart": "2020-01-01T00:00:00Z", "requests": 99, "tokens": 0, "costUsd": 0}
+        })];
+        assert_eq!(user_access(&stale, "usr_1"), UserAccess::Allowed);
+
+        // Subscription windows stack on top of the usage quota and a stale
+        // record inside a window counts as zero.
+        let windowed = |started_at: u64| {
+            vec![serde_json::json!({
+                "id": "usr_1",
+                "status": "active",
+                "quota": {"period": "month"},
+                "plan": {"mode": "subscription", "windows": [
+                    {"id": "5h", "period": "5h", "maxRequests": 2},
+                    {"id": "week", "period": "week", "maxRequests": 100}
+                ]},
+                "windowUsage": {
+                    "5h": {"startedAt": started_at, "requests": 2, "tokens": 0, "costUsd": 0}
+                }
+            })]
+        };
+        assert_eq!(
+            user_access(&windowed(now_ms().saturating_sub(60_000)), "usr_1"),
+            UserAccess::Exhausted
+        );
+        assert_eq!(
+            user_access(&windowed(now_ms().saturating_sub(6 * 60 * 60 * 1000)), "usr_1"),
+            UserAccess::Allowed
+        );
+
+        // Model access applies to the requested (alias-resolved) name. An
+        // absent or empty list keeps every model available.
+        let restricted = vec![serde_json::json!({
+            "id": "usr_1",
+            "status": "active",
+            "quota": {"period": "month"},
+            "allowedModels": ["openai/gpt-5.4", "coding"]
+        })];
+        assert!(user_model_allowed(&restricted, "usr_1", "gpt-5.4"));
+        assert!(user_model_allowed(&restricted, "usr_1", "CODING"));
+        assert!(!user_model_allowed(&restricted, "usr_1", "gpt-5.4-mini"));
+        assert!(!user_model_allowed(&restricted, "missing", "gpt-5.4"));
+        let unrestricted = vec![serde_json::json!({
+            "id": "usr_1",
+            "status": "active",
+            "quota": {"period": "month"},
+            "allowedModels": []
+        })];
+        assert!(user_model_allowed(&unrestricted, "usr_1", "anything"));
+    }
+
+    #[test]
+    fn prepaid_wallet_stacks_with_the_period_allowance() {
+        let period = quota_period_start("month", Utc::now()).to_rfc3339();
+        let account = |allowance: Option<f64>, wallet: Option<f64>, granted: Option<f64>| {
+            let mut quota = serde_json::json!({"period": "month"});
+            if let Some(value) = allowance {
+                quota["creditUsd"] = serde_json::json!(value);
+            }
+            let mut usage = serde_json::json!({
+                "periodStart": period,
+                "requests": 1,
+                "tokens": 10,
+                "costUsd": 2.0
+            });
+            if let Some(value) = granted {
+                usage["grantedCostUsd"] = serde_json::json!(value);
+            }
+            let mut user = serde_json::json!({
+                "id": "usr_1",
+                "status": "active",
+                "quota": quota,
+                "usage": usage
+            });
+            if let Some(value) = wallet {
+                user["walletUsd"] = serde_json::json!(value);
+            }
+            vec![user]
+        };
+
+        // Allowance spent, wallet still positive: the member can keep going.
+        assert_eq!(user_access(&account(Some(2.0), Some(5.0), Some(2.0)), "usr_1"), UserAccess::Allowed);
+        // Allowance and wallet both spent: blocked.
+        assert_eq!(user_access(&account(Some(2.0), Some(0.0), Some(2.0)), "usr_1"), UserAccess::Exhausted);
+        // Wallet only, allowance absent: the wallet is the sole credit source.
+        assert_eq!(user_access(&account(None, Some(0.4), Some(2.0)), "usr_1"), UserAccess::Allowed);
+        assert_eq!(user_access(&account(None, Some(0.0), Some(2.0)), "usr_1"), UserAccess::Exhausted);
+        // Legacy record without `grantedCostUsd` and without a wallet: derived
+        // from the total spend, exactly like before prepaid credit.
+        assert_eq!(user_access(&account(Some(2.0), None, None), "usr_1"), UserAccess::Exhausted);
+        assert_eq!(user_access(&account(Some(5.0), None, None), "usr_1"), UserAccess::Allowed);
+        // A legacy record that now has a wallet is unblocked by that balance.
+        assert_eq!(user_access(&account(Some(2.0), Some(1.0), None), "usr_1"), UserAccess::Allowed);
+        // Neither source defined: unlimited credit, unchanged behaviour.
+        assert_eq!(user_access(&account(None, None, None), "usr_1"), UserAccess::Allowed);
+
+        // A counter from a previous period does not keep the account blocked,
+        // even when the stale record still carries a full covered spend.
+        let stale = vec![serde_json::json!({
+            "id": "usr_1",
+            "status": "active",
+            "quota": {"period": "month", "creditUsd": 2.0},
+            "usage": {
+                "periodStart": "2020-01-01T00:00:00Z",
+                "requests": 9,
+                "tokens": 10,
+                "costUsd": 9.0,
+                "grantedCostUsd": 2.0
+            },
+            "walletUsd": 0.0
+        })];
+        assert_eq!(user_access(&stale, "usr_1"), UserAccess::Allowed);
+    }
+
+    #[test]
+    fn control_plane_billing_and_off_peak_settings_survive_an_edge_rewrite() {
+        let settings: StoreSettings = serde_json::from_value(serde_json::json!({
+            "modelBilling": {"gpt-5.4": {"inputPer1M": 3, "outputPer1M": 18}},
+            "offPeak": {"enabled": true, "timezone": "Europe/Paris", "days": {"mon": [{"start": "22:00", "end": "06:00"}]}}
+        }))
+        .expect("settings");
+        assert!(settings.model_billing.is_some());
+        assert!(settings.off_peak.is_some());
+        let rewritten = serde_json::to_value(&settings).expect("serialize");
+        assert_eq!(rewritten["offPeak"]["timezone"], "Europe/Paris");
+        assert_eq!(rewritten["modelBilling"]["gpt-5.4"]["outputPer1M"], 18);
     }
 }
 

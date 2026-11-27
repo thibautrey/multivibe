@@ -1,3 +1,4 @@
+import { t } from "../i18n/core";
 import type { Account } from "../types.js";
 
 export type Invoice = { id: string; date?: string; amountMinor?: string; currency?: string; status?: string; documentUrl?: string };
@@ -72,6 +73,14 @@ export const INVOICE_UNSUPPORTED: Record<string, string> = {
   neuralwatt: "No public invoice destination established.",
 };
 
+const INVOICE_STATUSES = new Set(["paid", "open", "void", "uncollectible"]);
+
+/** Display label for a vendor invoice status; provider-specific values stay untouched. */
+export function invoiceStatusLabel(status?: string): string {
+  if (!status) return "—";
+  return INVOICE_STATUSES.has(status) ? t(status) : status;
+}
+
 export function configuredInvoiceProviders(accounts: readonly Pick<Account, "provider" | "sdkProvider" | "localRuntime" | "location" | "multivibeCloud" | "email">[]): InvoiceProvider[] {
   const groups = new Map<string, InvoiceProvider>();
   for (const account of accounts) {
@@ -84,7 +93,7 @@ export function configuredInvoiceProviders(accounts: readonly Pick<Account, "pro
       group = { id, provider: id, name: entry.name, accounts: [], billingUrl: entry.url, instruction: entry.instruction, invoices: [], status: "portal" };
       groups.set(id, group);
     }
-    const label = account.email || `Account ${group.accounts.length + 1}`;
+    const label = account.email || t("Account {number}", { number: group.accounts.length + 1 });
     if (!group.accounts.includes(label)) group.accounts.push(label);
   }
   return [...groups.values()].sort((a, b) => a.name.localeCompare(b.name));

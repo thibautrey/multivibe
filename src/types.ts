@@ -122,6 +122,8 @@ export type LocalRuntimeMetadata = {
 
 export type Account = {
   id: string;
+  /** Owning dashboard user. Absent means the admin-managed shared pool. */
+  ownerId?: string;
   provider?: ProviderId;
   sdkProvider?: string;
   sdkModels?: string[];
@@ -270,7 +272,43 @@ export type LegacyModelAlias = {
   description?: string;
 };
 
+/** Operator-set price billed to users for one model, in USD per 1M tokens. */
+export type OffPeakDay = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
+
+/** Local wall-clock range, `HH:MM` in the schedule timezone. */
+export type OffPeakWindow = {
+  start: string;
+  /** An end before the start continues into the next day. */
+  end: string;
+};
+
+export type OffPeakSchedule = {
+  enabled: boolean;
+  /** IANA zone, e.g. `UTC` or `Europe/Paris`. */
+  timezone: string;
+  days: Partial<Record<OffPeakDay, OffPeakWindow[]>>;
+};
+
+export type ModelBillingRate = {
+  inputPer1M: number;
+  outputPer1M: number;
+  /** Cached input is usually cheaper; absent falls back to the input rate. */
+  cachedInputPer1M?: number;
+  /** Discounted rates used while the off-peak schedule is active. */
+  offPeak?: {
+    inputPer1M: number;
+    outputPer1M: number;
+    cachedInputPer1M?: number;
+  };
+};
+
 export type StoreSettings = {
+  /** Billed model rates override the upstream estimate for usage and dashboards. */
+  modelBilling?: Record<string, ModelBillingRate>;
+  /** Optional weekly off-peak calendar, evaluated in its own timezone. */
+  offPeak?: OffPeakSchedule;
+  /** Self-hosted marketplace billing: Stripe Connect through the broker. */
+  payments?: PaymentsSettings;
   defaultPassthroughAccountId?: string;
   imageRequestModelOverride?: string;
   /** Concrete local model behind multivibe/voice. */
@@ -328,6 +366,8 @@ export type StoredProxyApiKey = {
   application: string;
   key: string;
   createdAt: number;
+  /** Owning dashboard user. Absent means an admin/global key. */
+  ownerId?: string;
   principal?: {
     type: "member" | "service";
     id: string;
@@ -367,11 +407,245 @@ export type ApplicationPolicy = {
   webhooks: ApplicationWebhook[];
 };
 
+export type UserRole = "admin" | "member";
+export type UserStatus = "active" | "suspended";
+export type UserQuotaPeriod = "day" | "month" | "total";
+
+export type UserPassword = {
+  algo: "scrypt";
+  salt: string;
+  hash: string;
+  updatedAt: number;
+};
+
+export type UserPasskey = {
+  /** Base64url WebAuthn credential id. */
+  id: string;
+  publicKey: string;
+  counter: number;
+  transports?: string[];
+  name?: string;
+  createdAt: number;
+  lastUsedAt?: number;
+};
+
+export type UserQuota = {
+  /** Granted credit for the current period, in USD. Absent means unlimited. */
+  creditUsd?: number;
+  /** Maximum total tokens for the current period. Absent means unlimited. */
+  maxTokens?: number;
+  /** Maximum requests for the current period. Absent means unlimited. */
+  maxRequests?: number;
+  period: UserQuotaPeriod;
+};
+
+/** Rolling subscription windows. `5h` and `week` mirror the usual plan shape. */
+export type UserQuotaWindowPeriod = "5h" | "day" | "week" | "month";
+
+export type UserQuotaWindow = {
+  /** Stable id used to keep per-window counters across edits. */
+  id: string;
+  label?: string;
+  period: UserQuotaWindowPeriod;
+  /** Spend cap for the window, in USD. Absent means unlimited. */
+  creditUsd?: number;
+  maxTokens?: number;
+  maxRequests?: number;
+};
+
+export type UserPlanMode = "usage" | "subscription";
+
+/**
+ * Billing shape for one user. `usage` keeps the pay-as-you-go `quota` above;
+ * `subscription` adds rolling windows that are enforced in addition to it.
+ */
+export type UserPlan = {
+  mode: UserPlanMode;
+  name?: string;
+  /** Display-only monthly price of the plan, in USD. */
+  priceUsd?: number;
+  windows?: UserQuotaWindow[];
+};
+
+/** Counters for one subscription window, anchored at `startedAt`. */
+export type UserWindowUsage = {
+  /** Epoch ms when the current window opened; an older window is treated as empty. */
+  startedAt: number;
+  requests: number;
+  tokens: number;
+  costUsd: number;
+  updatedAt?: number;
+};
+
+/** A subscription window with its current counters, for the dashboard. */
+export type PublicUserQuotaWindow = UserQuotaWindow & {
+  startedAt: number;
+  /** Epoch ms when the window rolls over, when it is known. */
+  resetsAt?: number;
+  usage: { requests: number; tokens: number; costUsd: number };
+  remaining: { creditUsd?: number; tokens?: number; requests?: number };
+  blocked: boolean;
+};
+
+export type UserUsage = {
+  /** Start of the accounting period the counters below belong to. */
+  periodStart?: string;
+  updatedAt?: number;
+  requests: number;
+  tokens: number;
+  costUsd: number;
+  /**
+   * Part of `costUsd` covered by the period allowance. Undefined on records
+   * written before prepaid credit existed; it is then derived from `costUsd`.
+   */
+  grantedCostUsd?: number;
+};
+
+export type CreditEntryKind =
+  /** Admin changed the period allowance (`quota.creditUsd`). */
+  | "allowance"
+  /** Purchased or manually credited balance. */
+  | "topup"
+  /** Signed manual correction of the prepaid balance. */
+  | "adjust"
+  /** Balance returned after a refund or a dispute. */
+  | "refund"
+  /** Explicit debit that is not request usage (usage is traced separately). */
+  | "debit";
+
+/**
+ * Append-only audit trail for balance movements. Per-request spending is not
+ * logged here: traces already record it, and logging every request would bloat
+ * `accounts.json`.
+ */
+export type CreditEntry = {
+  id: string;
+  kind: CreditEntryKind;
+  /** Signed USD amount. */
+  amountUsd: number;
+  /** Prepaid balance after the entry. */
+  balanceAfterUsd: number;
+  at: number;
+  actor?: string;
+  note?: string;
+  /** Broker payment reference, when the entry came from a top-up. */
+  paymentId?: string;
+};
+
+/** How much of one broker payment has been applied to a wallet. */
+export type AppliedPayment = {
+  /** Credit granted by the payment, in USD. */
+  creditUsd: number;
+  /** Part already returned to the platform by refunds or disputes, in USD. */
+  refundedUsd: number;
+};
+
+export type PaymentPack = {
+  id: string;
+  /** Display label; falls back to the credit amount. */
+  label?: string;
+  amountCents: number;
+  currency: string;
+  creditUsd: number;
+  bonusUsd?: number;
+  enabled?: boolean;
+};
+
+export type PaymentsSettings = {
+  /** Master switch. Absent means disabled. */
+  enabled: boolean;
+  /** Broker base URL, also stored with the instance credentials. */
+  brokerUrl?: string;
+  /** Broker-side instance id, informational. */
+  instanceId?: string;
+  /** Commission fixed by the broker (informational, snapshotted per payment). */
+  commissionBps?: number;
+  chargeMode?: "direct" | "destination";
+  currency: string;
+  packs: PaymentPack[];
+  /** Last broker outbox sequence applied to the local ledger. */
+  lastEventCursor?: number;
+  /** Last successful event sync. */
+  lastSyncAt?: number;
+  connect?: {
+    status: "not_connected" | "pending" | "restricted" | "active";
+    chargesEnabled: boolean;
+    payoutsEnabled: boolean;
+    requirementsDue: string[];
+    accountId?: string;
+    updatedAt?: number;
+  };
+};
+
+export type UserInvite = {
+  tokenHash: string;
+  createdAt: number;
+  expiresAt: number;
+};
+
+export type User = {
+  id: string;
+  email: string;
+  name?: string;
+  role: UserRole;
+  status: UserStatus;
+  password?: UserPassword;
+  passkeys?: UserPasskey[];
+  quota: UserQuota;
+  usage: UserUsage;
+  /**
+   * Prepaid balance in USD. Once defined, the member is on prepaid billing:
+   * requests consume the period allowance first, then this balance, and the
+   * account is blocked when both are exhausted. It never resets with the
+   * quota period.
+   */
+  walletUsd?: number;
+  /** Bounded audit trail of balance movements. */
+  creditLedger?: CreditEntry[];
+  /**
+   * Stripe payments already applied to this balance, keyed by broker payment
+   * id. Keeps webhook replays and event re-delivery idempotent even after the
+   * bounded ledger has rotated.
+   */
+  paymentAwards?: Record<string, AppliedPayment>;
+  plan?: UserPlan;
+  /** Model ids this member may call. Absent or empty means every exposed model. */
+  allowedModels?: string[];
+  windowUsage?: Record<string, UserWindowUsage>;
+  createdAt: number;
+  updatedAt: number;
+  lastLoginAt?: number;
+  invite?: UserInvite | null;
+};
+
+export type PublicUser = {
+  id: string;
+  email: string;
+  name?: string;
+  role: UserRole;
+  status: UserStatus;
+  createdAt: number;
+  updatedAt: number;
+  lastLoginAt?: number;
+  hasPassword: boolean;
+  passkeys: Array<Pick<UserPasskey, "id" | "name" | "createdAt" | "lastUsedAt">>;
+  quota: UserQuota;
+  usage: Omit<UserUsage, "grantedCostUsd"> & { remainingCreditUsd?: number };
+  /** Prepaid balance, when the member has one. */
+  walletUsd?: number;
+  plan?: UserPlan;
+  allowedModels?: string[];
+  quotaWindows?: PublicUserQuotaWindow[];
+  invitePending?: boolean;
+  inviteExpiresAt?: number;
+};
+
 export type StoreFile = {
   accounts: Account[];
   modelAliases?: ModelAlias[];
   proxyApiKeys?: StoredProxyApiKey[];
   applicationPolicies?: ApplicationPolicy[];
+  users?: User[];
   settings?: StoreSettings;
 };
 
@@ -382,6 +656,8 @@ export type OAuthFlowState = {
   /** Exact callback used by a user-hosted MultiVibe Cloud authorization flow. */
   redirectUri?: string;
   createdAt: number;
+  /** Dashboard user that started the flow. Absent for legacy/admin flows. */
+  ownerId?: string;
   method?: "browser" | "device";
   provider?: "openai" | "opencode" | "xai" | "github-copilot";
   targetAccountId?: string;

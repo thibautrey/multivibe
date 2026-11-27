@@ -3,6 +3,8 @@ import ModalPortal from "../ModalPortal";
 import React, { useState } from "react";
 import { HostHarnessCards } from "../../host/HostHarnessCarousel";
 import { copyTextToClipboard } from "../../lib/clipboard";
+import { buildAgentSetupPrompt } from "../../lib/agentSetupPrompt";
+import { activeLocale, useT } from "../../i18n";
 import type {
   ApplicationPolicy,
   ApplicationWebhook,
@@ -22,6 +24,16 @@ export type CloudflareAccessConfig = {
   applications: string[];
   error?: string;
 };
+/**
+ * Renders a translated sentence while keeping emphasis around an interpolated
+ * value: the sentence comes from a single catalog key, so translators keep
+ * control of the word order. Remaining placeholders must already be filled in.
+ */
+function withEmphasis(template: string, slot: string, node: React.ReactNode) {
+  const [before, after = ""] = template.split(`{${slot}}`);
+  return <>{before}{node}{after}</>;
+}
+
 type Props = {
   extensions?: ApiKeyExtensions;
   apiKeys: ProxyApiKey[];
@@ -47,15 +59,18 @@ export function ApiKeysTab({
   onHarnessesChanged,
   extensions,
 }: Props) {
-  const {capabilities} = useDashboardRuntime();
+  const {capabilities, adapter} = useDashboardRuntime();
+  const t = useT();
   const [error, setError] = useState("");
-  const showError = (value: unknown) => setError(value instanceof Error ? value.message : "The action could not be completed.");
+  const showError = (value: unknown) => setError(value instanceof Error ? value.message : t("The action could not be completed."));
   const [extraFields, setExtraFields] = useState<Record<string, unknown>>({});
   const [application, setApplication] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [createdKey, setCreatedKey] = useState<CreatedProxyApiKey | null>(null);
   const [copied, setCopied] = useState(false);
+  const [promptCopied, setPromptCopied] = useState(false);
+  const [promptExpanded, setPromptExpanded] = useState(false);
   const [cloudflareCopied, setCloudflareCopied] = useState(false);
   const [webhookApplication, setWebhookApplication] = useState("");
   const [webhookUrl, setWebhookUrl] = useState("");
@@ -87,6 +102,8 @@ export function ApiKeysTab({
       setApplication("");
       setExtraFields({});
       setCopied(false);
+      setPromptCopied(false);
+      setPromptExpanded(false);
       setCloudflareCopied(false);
     } catch (error) { showError(error); } finally {
       setIsCreating(false);
@@ -94,10 +111,15 @@ export function ApiKeysTab({
   };
 
   const revoke = async (entry: ProxyApiKey) => {
-    const linked = entry.cloudflareAccess
-      ? ` This also deletes its Cloudflare Access service token (${entry.cloudflareAccess.clientId}).`
-      : "";
-    if (!confirm(`Revoke the API key for ${entry.application}? Clients using it will immediately lose access.${linked}`)) return;
+    const message = entry.cloudflareAccess
+      ? t("Revoke the API key for {application}? Clients using it will immediately lose access. This also deletes its Cloudflare Access service token ({clientId}).", {
+          application: entry.application,
+          clientId: entry.cloudflareAccess.clientId,
+        })
+      : t("Revoke the API key for {application}? Clients using it will immediately lose access.", {
+          application: entry.application,
+        });
+    if (!confirm(message)) return;
     setDeletingId(entry.id);
     setError("");
     try {
@@ -111,6 +133,19 @@ export function ApiKeysTab({
     if (!createdKey) return;
     await copyTextToClipboard(createdKey.key);
     setCopied(true);
+  };
+
+  // The prompt embeds the freshly created secret, so keep it derived from the
+  // created key instead of storing another copy of the credential in state.
+  const apiOrigin = (adapter.apiOrigin ?? (typeof window !== "undefined" ? window.location.origin : "")).replace(/\/+$/, "");
+  const agentPrompt = createdKey
+    ? buildAgentSetupPrompt({ apiBaseUrl: `${apiOrigin}/v1`, apiKey: createdKey.key })
+    : "";
+
+  const copyAgentPrompt = async () => {
+    if (!createdKey) return;
+    await copyTextToClipboard(agentPrompt);
+    setPromptCopied(true);
   };
 
   const copyCloudflareCredentials = async () => {
@@ -137,13 +172,13 @@ export function ApiKeysTab({
       <section className="panel">
         <div className="section-split-header">
           <div>
-            <h2>Create an API key</h2>
-            <p className="muted">Use a short application name such as mobile, litellm, or staging-worker.</p>
+            <h2>{t("Create an API key")}</h2>
+            <p className="muted">{t("Use a short application name such as mobile, litellm, or staging-worker.")}</p>
           </div>
         </div>
         <form className="api-key-create" onSubmit={create}>
           <label className="control-field">
-            <span className="control-label">Application</span>
+            <span className="control-label">{t("Application")}</span>
             <input
               value={application}
               onChange={(event) => setApplication(event.target.value)}
@@ -168,21 +203,22 @@ export function ApiKeysTab({
                 }
               />
               <span>
-                Also create a Cloudflare Access service token
+                {t("Also create a Cloudflare Access service token")}
                 <small className="muted">
+                  {" — "}
                   {cloudflareAccess?.error
-                    ? ` — ${cloudflareAccess.error}`
+                    ? cloudflareAccess.error
                     : !cloudflareAccess?.configured
-                      ? " — Cloudflare Access provisioning is not configured."
+                      ? t("Cloudflare Access provisioning is not configured.")
                       : application.trim() && !cloudflareMapped
-                        ? ` — No Access application is mapped for “${application.trim()}”.`
-                        : " — One token per key, scoped to the mapped application."}
+                        ? t("No Access application is mapped for “{application}”.", { application: application.trim() })
+                        : t("One token per key, scoped to the mapped application.")}
                 </small>
               </span>
             </label>
           )}
           <button className="btn" type="submit" disabled={isCreating || !application.trim()}>
-            {isCreating ? "Creating..." : "Create secret key"}
+            {isCreating ? t("Creating...") : t("Create secret key")}
           </button>
         </form>
       </section>
@@ -190,24 +226,24 @@ export function ApiKeysTab({
       <section className="panel api-key-list-panel">
         <div className="section-split-header">
           <div>
-            <h2>Active keys</h2>
+            <h2>{t("Active keys")}</h2>
           </div>
         </div>
         {!apiKeys.length ? (
           <div className="compact-empty-state">
-            <strong>No application keys yet</strong>
-            <span>{extensions?.emptyDescription ?? (capabilities.host ? "Proxy access is unrestricted until you create the first key." : "Create an application key to access the API.")}</span>
+            <strong>{t("No application keys yet")}</strong>
+            <span>{extensions?.emptyDescription ?? (capabilities.host ? t("Proxy access is unrestricted until you create the first key.") : t("Create an application key to access the API."))}</span>
           </div>
         ) : <div className="table-wrap">
           <table className="data-table">
             <thead>
               <tr>
-                <th>Application</th>
-                <th>Key</th>
-                <th>Created</th>
-                <th>Last used</th>
-                <th>Managed by</th>
-                <th>Fairness weight</th>
+                <th>{t("Application")}</th>
+                <th>{t("Key")}</th>
+                <th>{t("Created")}</th>
+                <th>{t("Last used")}</th>
+                <th>{t("Managed by")}</th>
+                <th>{t("Fairness weight")}</th>
                 <th />
               </tr>
             </thead>
@@ -220,7 +256,7 @@ export function ApiKeysTab({
                       <div className="muted" style={{ fontSize: 11 }}>
                         <span
                           className="badge"
-                          title={`Cloudflare Access application ${entry.cloudflareAccess.applicationId}`}
+                          title={t("Cloudflare Access application {applicationId}", { applicationId: entry.cloudflareAccess.applicationId })}
                         >
                           Cloudflare Access
                         </span>{" "}
@@ -230,11 +266,11 @@ export function ApiKeysTab({
                     {extensions?.renderKeyMetadata?.(entry)}
                   </td>
                   <td className="mono">{entry.keyPreview}</td>
-                  <td>{entry.createdAt ? new Date(entry.createdAt).toLocaleDateString() : "—"}</td>
-                  <td>{entry.lastUsedAt ? new Date(entry.lastUsedAt).toLocaleString() : "—"}</td>
+                  <td>{entry.createdAt ? new Date(entry.createdAt).toLocaleDateString(activeLocale()) : "—"}</td>
+                  <td>{entry.lastUsedAt ? new Date(entry.lastUsedAt).toLocaleString(activeLocale()) : "—"}</td>
                   <td>
                     <span className={entry.source === "dashboard" ? "badge badge-live" : "badge"}>
-                      {entry.source === "dashboard" ? "Dashboard" : "Environment"}
+                      {entry.source === "dashboard" ? t("Dashboard") : t("Environment")}
                     </span>
                   </td>
                   <td>
@@ -244,7 +280,7 @@ export function ApiKeysTab({
                       max="100"
                       step="0.1"
                       defaultValue={policyFor(entry.application).fairnessWeight}
-                      aria-label={`Fairness weight for ${entry.application}`}
+                      aria-label={t("Fairness weight for {application}", { application: entry.application })}
                       onBlur={(event) =>
                         void setApplicationWeight(
                           entry.application,
@@ -261,7 +297,7 @@ export function ApiKeysTab({
                         disabled={deletingId === entry.id}
                         onClick={() => void revoke(entry)}
                       >
-                        {deletingId === entry.id ? "Revoking..." : "Revoke"}
+                        {deletingId === entry.id ? t("Revoking...") : t("Revoke")}
                       </button>
                     )}
                   </td>
@@ -274,8 +310,8 @@ export function ApiKeysTab({
 
       <details className="panel advanced-disclosure">
         <summary>
-          <span><strong>Advanced: signed result webhooks</strong><small>Register destinations for deferred results.</small></span>
-          <span className="advanced-disclosure-toggle">Show</span>
+          <span><strong>{t("Advanced: signed result webhooks")}</strong><small>{t("Register destinations for deferred results.")}</small></span>
+          <span className="advanced-disclosure-toggle">{t("Show")}</span>
         </summary>
         <div className="advanced-disclosure-content">
         <form
@@ -289,21 +325,21 @@ export function ApiKeysTab({
             }).catch(showError);
           }}
         >
-          <label className="control-field"><span className="control-label">Application</span>
+          <label className="control-field"><span className="control-label">{t("Application")}</span>
             <select value={webhookApplication} onChange={(event) => setWebhookApplication(event.target.value)}>
-              <option value="">Select application</option>
+              <option value="">{t("Select application")}</option>
               {Array.from(new Set(apiKeys.map((entry) => entry.application))).map((name) => <option key={name}>{name}</option>)}
             </select>
           </label>
-          <label className="control-field"><span className="control-label">HTTPS endpoint</span><input type="url" value={webhookUrl} onChange={(event) => setWebhookUrl(event.target.value)} placeholder="https://worker.example.com/multivibe" /></label>
-          <button className="btn" type="submit" disabled={!webhookApplication || !webhookUrl}>Register webhook</button>
+          <label className="control-field"><span className="control-label">{t("HTTPS endpoint")}</span><input type="url" value={webhookUrl} onChange={(event) => setWebhookUrl(event.target.value)} placeholder="https://worker.example.com/multivibe" /></label>
+          <button className="btn" type="submit" disabled={!webhookApplication || !webhookUrl}>{t("Register webhook")}</button>
         </form>
         {policies.some((policy) => policy.webhooks.length) && <div className="table-wrap">
           <table className="data-table">
-            <thead><tr><th>Application</th><th>ID</th><th>URL</th><th>Status</th><th /></tr></thead>
+            <thead><tr><th>{t("Application")}</th><th>ID</th><th>URL</th><th>{t("Status")}</th><th /></tr></thead>
             <tbody>
               {policies.flatMap((policy) => policy.webhooks.map((webhook) => (
-                <tr key={webhook.id}><td>{policy.application}</td><td className="mono">{webhook.id}</td><td className="mono">{webhook.url}</td><td><span className="badge badge-live">{webhook.enabled ? "Enabled" : "Disabled"}</span></td><td><button className="btn danger" onClick={() => void deleteWebhook(policy.application, webhook.id).catch(showError)}>Delete</button></td></tr>
+                <tr key={webhook.id}><td>{policy.application}</td><td className="mono">{webhook.id}</td><td className="mono">{webhook.url}</td><td><span className="badge badge-live">{webhook.enabled ? t("Enabled") : t("Disabled")}</span></td><td><button className="btn danger" onClick={() => void deleteWebhook(policy.application, webhook.id).catch(showError)}>{t("Delete")}</button></td></tr>
               )))}
             </tbody>
           </table>
@@ -315,28 +351,63 @@ export function ApiKeysTab({
         <ModalPortal><div className="modal-backdrop" role="presentation">
           <div className="modal panel api-key-modal" role="dialog" aria-modal="true" aria-labelledby="created-key-title">
             <div>
-              <span className="badge badge-live">Key created</span>
-              <h2 id="created-key-title">Copy your secret key</h2>
-              <p className="muted">This is the only time the full key for <strong>{createdKey.application}</strong> will be displayed.</p>
+              <span className="badge badge-live">{t("Key created")}</span>
+              <h2 id="created-key-title">{t("Copy your secret key")}</h2>
+              <p className="muted">
+                {withEmphasis(
+                  t("This is the only time the full key for {application} will be displayed."),
+                  "application",
+                  <strong>{createdKey.application}</strong>,
+                )}
+              </p>
               {createdKey.warning && <p role="alert">{createdKey.warning}</p>}
               {extensions?.renderCreatedKeyMetadata?.(createdKey)}
             </div>
             <div className="api-key-secret">
               <code>{createdKey.key}</code>
               <button className="btn secondary" onClick={() => void copyCreatedKey()}>
-                {copied ? "Copied" : "Copy"}
+                {copied ? t("Copied") : t("Copy")}
               </button>
             </div>
+            <section className={`api-key-agent-prompt${promptExpanded ? " expanded" : " collapsed"}`}>
+              <div className="api-key-agent-prompt-header">
+                <div>
+                  <h3>{t("Set up your AI agents")}</h3>
+                  <p className="muted">
+                    {t("Copy this prompt and paste it into your AI agent. It will configure the main harnesses installed on this machine and test each connection with a minimal request.")}
+                  </p>
+                </div>
+                <button
+                  className="btn secondary"
+                  type="button"
+                  onClick={() => void copyAgentPrompt()}
+                >
+                  {promptCopied ? t("Prompt copied") : t("Copy prompt")}
+                </button>
+              </div>
+              <pre className="api-key-agent-prompt-text">{agentPrompt}</pre>
+              <button
+                className="btn ghost api-key-agent-prompt-toggle"
+                type="button"
+                aria-expanded={promptExpanded}
+                onClick={() => setPromptExpanded((current) => !current)}
+              >
+                {promptExpanded ? t("Show less") : t("Show more")}
+              </button>
+            </section>
             {createdKey.cloudflareAccess && (
               <div>
                 <span className="badge">Cloudflare Access</span>
                 <p className="muted">
-                  Service token for application{" "}
-                  <strong className="mono">{createdKey.cloudflareAccess.applicationId}</strong>.
-                  The client secret is shown only once.
-                  {createdKey.cloudflareAccess.expiresAt
-                    ? ` Expires ${new Date(createdKey.cloudflareAccess.expiresAt).toLocaleDateString()}.`
-                    : ""}
+                  {withEmphasis(
+                    createdKey.cloudflareAccess.expiresAt
+                      ? t("Service token for application {applicationId}. The client secret is shown only once. Expires {date}.", {
+                          date: new Date(createdKey.cloudflareAccess.expiresAt).toLocaleDateString(activeLocale()),
+                        })
+                      : t("Service token for application {applicationId}. The client secret is shown only once."),
+                    "applicationId",
+                    <strong className="mono">{createdKey.cloudflareAccess.applicationId}</strong>,
+                  )}
                 </p>
                 <div className="api-key-secret">
                   <code>CF-Access-Client-Id: {createdKey.cloudflareAccess.clientId}</code>
@@ -348,12 +419,12 @@ export function ApiKeysTab({
                   className="btn secondary"
                   onClick={() => void copyCloudflareCredentials()}
                 >
-                  {cloudflareCopied ? "Copied" : "Copy both headers"}
+                  {cloudflareCopied ? t("Copied") : t("Copy both headers")}
                 </button>
               </div>
             )}
             <div className="inline wrap">
-              <button className="btn" onClick={() => setCreatedKey(null)}>I have saved this key</button>
+              <button className="btn" onClick={() => setCreatedKey(null)}>{t("I have saved this key")}</button>
             </div>
           </div>
         </div></ModalPortal>
@@ -362,11 +433,11 @@ export function ApiKeysTab({
       {createdWebhook?.secret && (
         <ModalPortal><div className="modal-backdrop" role="presentation">
           <div className="modal panel api-key-modal" role="dialog" aria-modal="true">
-            <span className="badge badge-live">Webhook registered</span>
-            <h2>Copy the HMAC secret</h2>
-            <p className="muted">This secret is shown once. Verify x-multivibe-signature before accepting an event.</p>
-            <div className="api-key-secret"><code>{createdWebhook.secret}</code><button className="btn secondary" onClick={() => void copyTextToClipboard(createdWebhook.secret!)}>Copy</button></div>
-            <button className="btn" onClick={() => setCreatedWebhook(null)}>I have saved this secret</button>
+            <span className="badge badge-live">{t("Webhook registered")}</span>
+            <h2>{t("Copy the HMAC secret")}</h2>
+            <p className="muted">{t("This secret is shown once. Verify x-multivibe-signature before accepting an event.")}</p>
+            <div className="api-key-secret"><code>{createdWebhook.secret}</code><button className="btn secondary" onClick={() => void copyTextToClipboard(createdWebhook.secret!)}>{t("Copy")}</button></div>
+            <button className="btn" onClick={() => setCreatedWebhook(null)}>{t("I have saved this secret")}</button>
           </div>
         </div></ModalPortal>
       )}

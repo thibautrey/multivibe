@@ -72,6 +72,8 @@ export type TraceEntry = {
   apiKeyId?: string;
   /** Masked key form shown in the dashboard; never the secret itself. */
   apiKeyPreview?: string;
+  /** Dashboard user that owns the credential or session which made the request. */
+  userId?: string;
   codexSessionId?: string;
   /** Privacy-preserving session fingerprint retained in long-term stats. */
   sessionKey?: string;
@@ -181,6 +183,7 @@ function estimateTraceCostWithoutCache(trace: TraceEntry): number | undefined {
     trace.tokensInput ?? 0,
     trace.tokensOutput ?? 0,
     trace.tokensInputCacheWrite ?? 0,
+    trace.startedAt ?? trace.completedAt ?? trace.at,
   );
 }
 
@@ -672,6 +675,7 @@ export function normalizeTrace(raw: any): TraceEntry | null {
           normalizedTokens.tokensOutput ?? 0,
           normalizedTokens.tokensInputCached ?? 0,
           normalizedTokens.tokensInputCacheWrite ?? 0,
+          safeNumber(raw.startedAt) ?? safeNumber(raw.completedAt) ?? at,
         )
       : undefined;
   const costUsd = preservedCostUsd ?? estimatedCostUsd;
@@ -735,6 +739,10 @@ export function normalizeTrace(raw: any): TraceEntry | null {
     apiKeyPreview:
       typeof raw.apiKeyPreview === "string" && raw.apiKeyPreview.trim()
         ? raw.apiKeyPreview.trim().slice(0, 120)
+        : undefined,
+    userId:
+      typeof raw.userId === "string" && raw.userId.trim()
+        ? raw.userId.trim().slice(0, 200)
         : undefined,
     codexSessionId:
       typeof raw.codexSessionId === "string" && raw.codexSessionId.trim()
@@ -2267,7 +2275,7 @@ export function createTraceManager(config: TraceManagerConfig) {
   async function getTraceStats(
     sinceMs?: number,
     untilMs?: number,
-    filters: { application?: string; projectId?: string; apiKeyId?: string } = {},
+    filters: { application?: string; projectId?: string; apiKeyId?: string; userId?: string } = {},
   ): Promise<{ totalStored: number; matched: number; stats: TraceStats }> {
     await syncExternalTraces();
     // Only narrow through the durable index: legacy in-memory buckets carry no
@@ -2278,7 +2286,7 @@ export function createTraceManager(config: TraceManagerConfig) {
 
   async function queryModuleAnalytics(
     descriptors: readonly ModuleAnalyticsDescriptor[],
-    filters: { sinceMs?: number; untilMs?: number; application?: string; projectId?: string; apiKeyId?: string } = {},
+    filters: { sinceMs?: number; untilMs?: number; application?: string; projectId?: string; apiKeyId?: string; userId?: string } = {},
   ): Promise<ModuleAnalyticsResult> {
     if (!descriptors.length) return {};
     if (analytics) return analytics.call("module-analytics", { ...filters, descriptors });
@@ -2287,6 +2295,7 @@ export function createTraceManager(config: TraceManagerConfig) {
       if (filters.application && trace.application !== filters.application) return false;
       if (filters.projectId && trace.projectId !== filters.projectId) return false;
       if (filters.apiKeyId && trace.apiKeyId !== filters.apiKeyId) return false;
+      if (filters.userId && trace.userId !== filters.userId) return false;
       return true;
     });
     return aggregateModuleAnalytics(traces, descriptors);
@@ -2369,6 +2378,7 @@ export function createTraceManager(config: TraceManagerConfig) {
             normalizedTokens.tokensOutput ?? 0,
             normalizedTokens.tokensInputCached ?? 0,
             normalizedTokens.tokensInputCacheWrite ?? 0,
+            entry.startedAt ?? entry.completedAt ?? entry.at,
           )
         : undefined;
     const completedAt =

@@ -15,6 +15,7 @@ import {
 import { TTFT_BUCKET_ORDER, TTFT_CONTEXT_LABELS, fmt, formatLatency, isMeasured, sumMeasured, formatTokenCount, pct, usd } from "../../lib/ui";
 import { Metric } from "../Metric";
 import { WidgetGrid } from "../WidgetGrid";
+import { t, useT } from "../../i18n";
 import type { SessionTurn, SessionsResponse } from "../../types";
 
 type Props = {
@@ -40,9 +41,9 @@ function formatTtftDuration(value: number): string {
 function formatDuration(ms: number): string {
   if (!Number.isFinite(ms) || ms <= 0) return "—";
   if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
-  if (ms < 3_600_000) return `${Math.round(ms / 60_000)} min`;
-  if (ms < 86_400_000) return `${(ms / 3_600_000).toFixed(1)} h`;
-  return `${(ms / 86_400_000).toFixed(1)} d`;
+  if (ms < 3_600_000) return t("{value} min", { value: Math.round(ms / 60_000) });
+  if (ms < 86_400_000) return t("{value} h", { value: (ms / 3_600_000).toFixed(1) });
+  return t("{value} d", { value: (ms / 86_400_000).toFixed(1) });
 }
 
 function formatSignedTokens(value: number | null | undefined): string {
@@ -62,8 +63,9 @@ function average(values: number[]): number | undefined {
 }
 
 function SessionTurnDetails({ turns, loading }: { turns: SessionTurn[]; loading: boolean }) {
-  if (loading) return <div className="muted trace-loading">Loading session turns...</div>;
-  if (!turns.length) return <div className="muted trace-loading">No turns recorded for this session in the selected range.</div>;
+  const t = useT();
+  if (loading) return <div className="muted trace-loading">{t("Loading session turns...")}</div>;
+  if (!turns.length) return <div className="muted trace-loading">{t("No turns recorded for this session in the selected range.")}</div>;
   let previousInput: number | null | undefined;
   const chartRows = turns.map((turn, index) => {
     const growth = index === 0 || !isMeasured(previousInput) || !isMeasured(turn.inputTokens) ? undefined : turn.inputTokens - previousInput;
@@ -80,9 +82,9 @@ function SessionTurnDetails({ turns, loading }: { turns: SessionTurn[]; loading:
   return (
     <>
       <div className="session-turn-summary">
-        <span>New tokens per turn (avg) <strong>{formatSignedTokens(averageGrowth)}</strong></span>
-        <span>Cache read <strong>{formatTokenCount(sumMeasured(turns.map(turn => turn.cachedInputTokens)))}</strong></span>
-        <span>Cache written <strong>{formatTokenCount(sumMeasured(turns.map(turn => turn.cacheWriteTokens)))}</strong></span>
+        <span>{t("New tokens per turn (avg)")} <strong>{formatSignedTokens(averageGrowth)}</strong></span>
+        <span>{t("Cache read")} <strong>{formatTokenCount(sumMeasured(turns.map(turn => turn.cachedInputTokens)))}</strong></span>
+        <span>{t("Cache written")} <strong>{formatTokenCount(sumMeasured(turns.map(turn => turn.cacheWriteTokens)))}</strong></span>
       </div>
       <div className="chart-wrap session-turn-chart">
         <ResponsiveContainer width="100%" height={220}>
@@ -92,16 +94,16 @@ function SessionTurnDetails({ turns, loading }: { turns: SessionTurn[]; loading:
             <YAxis tickFormatter={(value: any) => formatTokenCount(value == null ? null : Number(value))} />
             <Tooltip formatter={(value: any, name: any) => [formatTokenCount(value == null ? null : Number(value)), name]} />
             <Legend />
-            <Line isAnimationActive={false} type="monotone" dataKey="inputTokens" name="input" stroke={TOKEN_CHART_COLORS[0]} strokeWidth={2} dot={false} />
-            <Line isAnimationActive={false} type="monotone" dataKey="cachedInputTokens" name="cached input" stroke={TOKEN_CHART_COLORS[1]} strokeWidth={2} dot={false} />
-            <Line isAnimationActive={false} type="monotone" dataKey="outputTokens" name="output" stroke={TOKEN_CHART_COLORS[2]} strokeWidth={2} dot={false} />
+            <Line isAnimationActive={false} type="monotone" dataKey="inputTokens" name={t("input")} stroke={TOKEN_CHART_COLORS[0]} strokeWidth={2} dot={false} />
+            <Line isAnimationActive={false} type="monotone" dataKey="cachedInputTokens" name={t("cached input")} stroke={TOKEN_CHART_COLORS[1]} strokeWidth={2} dot={false} />
+            <Line isAnimationActive={false} type="monotone" dataKey="outputTokens" name={t("output")} stroke={TOKEN_CHART_COLORS[2]} strokeWidth={2} dot={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>
       <div className="table-wrap">
         <table className="data-table session-turn-table">
           <thead>
-            <tr><th>#</th><th>Time</th><th>Model</th><th>Input</th><th>Cached</th><th>Cache write</th><th>Output</th><th>Δ context</th><th>TTFT</th><th>Latency</th><th>Attempts</th><th>Status</th></tr>
+            <tr><th>#</th><th>{t("Time")}</th><th>{t("Model")}</th><th>{t("Input")}</th><th>{t("Cached")}</th><th>{t("Cache write")}</th><th>{t("Output")}</th><th>{t("Δ context")}</th><th>TTFT</th><th>{t("Latency")}</th><th>{t("Attempts")}</th><th>{t("Status")}</th></tr>
           </thead>
           <tbody>
             {chartRows.map((turn) => (
@@ -138,6 +140,7 @@ export function TracingSessions({
   loadSessionTurnsPage,
   toggleSession,
 }: Props) {
+  const t = useT();
   const summary = sessionStats.summary;
   const sessions = sessionStats.sessions;
   const coverage = sessionStats.coverage;
@@ -147,27 +150,27 @@ export function TracingSessions({
     sessions: summary.initialInputTokenBuckets[bucket] ?? 0,
   })).filter((row) => row.sessions > 0);
   const tokenComposition = [
-    { label: "Cache read", tokens: summary.cachedInputTokens },
-    { label: "Cache write", tokens: summary.cacheWriteTokens },
-    { label: "Uncached", tokens: isMeasured(summary.inputTokens) && isMeasured(summary.cachedInputTokens) && isMeasured(summary.cacheWriteTokens) ? Math.max(0, summary.inputTokens - summary.cachedInputTokens - summary.cacheWriteTokens) : null },
+    { label: t("Cache read"), tokens: summary.cachedInputTokens },
+    { label: t("Cache write"), tokens: summary.cacheWriteTokens },
+    { label: t("Uncached"), tokens: isMeasured(summary.inputTokens) && isMeasured(summary.cachedInputTokens) && isMeasured(summary.cacheWriteTokens) ? Math.max(0, summary.inputTokens - summary.cachedInputTokens - summary.cacheWriteTokens) : null },
   ];
 
   return (
     <>
-      <WidgetGrid storageKey="activity-sessions" label="Session metrics">
-        <Metric loading={sessionStatsLoading} widgetId="sessions" title="Sessions" value={`${summary.sessions}`} detail={`${summary.turns} turns in this range`} />
-        <Metric loading={sessionStatsLoading} widgetId="session-coverage" title="Session coverage" value={pct(summary.coverage)} detail={`${coverage.identifiedAttempts}/${coverage.totalAttempts} attempts carry a session id`} tone={summary.coverage < 0.5 ? "warning" : "default"} />
-        <Metric loading={sessionStatsLoading} widgetId="initial-context" title="Median initial context" value={summary.initialInputTokensMedian === undefined ? "—" : formatTokenCount(summary.initialInputTokensMedian)} detail="First turn input tokens" />
-        <Metric loading={sessionStatsLoading} widgetId="turns-per-session" title="Turns / session" value={summary.turnsPerSessionMedian ? summary.turnsPerSessionMedian.toFixed(1) : "—"} detail="Median interactions per session" />
-        <Metric loading={sessionStatsLoading} widgetId="cache-reads" title="Cache reads" value={summary.cachedInputRatio === undefined ? "—" : pct(summary.cachedInputRatio)} detail={`${formatTokenCount(summary.cachedInputTokens)} cached input tokens`} />
-        <Metric loading={sessionStatsLoading} widgetId="cache-savings" title="Cache savings" value={usd(summary.cacheSavingsUsd)} detail={`${formatTokenCount(summary.cacheWriteTokens)} tokens written to cache`} />
+      <WidgetGrid storageKey="activity-sessions" label={t("Session metrics")}>
+        <Metric loading={sessionStatsLoading} widgetId="sessions" title={t("Sessions")} value={`${summary.sessions}`} detail={t("{count} turns in this range", { count: summary.turns })} />
+        <Metric loading={sessionStatsLoading} widgetId="session-coverage" title={t("Session coverage")} value={pct(summary.coverage)} detail={t("{identified}/{total} attempts carry a session id", { identified: coverage.identifiedAttempts, total: coverage.totalAttempts })} tone={summary.coverage < 0.5 ? "warning" : "default"} />
+        <Metric loading={sessionStatsLoading} widgetId="initial-context" title={t("Median initial context")} value={summary.initialInputTokensMedian === undefined ? "—" : formatTokenCount(summary.initialInputTokensMedian)} detail={t("First turn input tokens")} />
+        <Metric loading={sessionStatsLoading} widgetId="turns-per-session" title={t("Turns / session")} value={summary.turnsPerSessionMedian ? summary.turnsPerSessionMedian.toFixed(1) : "—"} detail={t("Median interactions per session")} />
+        <Metric loading={sessionStatsLoading} widgetId="cache-reads" title={t("Cache reads")} value={summary.cachedInputRatio === undefined ? "—" : pct(summary.cachedInputRatio)} detail={t("{tokens} cached input tokens", { tokens: formatTokenCount(summary.cachedInputTokens) })} />
+        <Metric loading={sessionStatsLoading} widgetId="cache-savings" title={t("Cache savings")} value={usd(summary.cacheSavingsUsd)} detail={t("{tokens} tokens written to cache", { tokens: formatTokenCount(summary.cacheWriteTokens) })} />
       </WidgetGrid>
 
       <section className="grid cards2 trace-chart-grid">
         <section className="panel">
           <div className="section-split-header">
-            <div><h2>Initial context size</h2><p className="muted">Sessions by first-turn input tokens.</p></div>
-            <span className="badge">sessions</span>
+            <div><h2>{t("Initial context size")}</h2><p className="muted">{t("Sessions by first-turn input tokens.")}</p></div>
+            <span className="badge">{t("sessions")}</span>
           </div>
           <div className="chart-wrap">
             <ResponsiveContainer width="100%" height={260}>
@@ -176,15 +179,15 @@ export function TracingSessions({
                 <XAxis dataKey="label" interval={0} />
                 <YAxis allowDecimals={false} />
                 <Tooltip />
-                <Bar isAnimationActive={false} dataKey="sessions" name="sessions" fill="var(--chart-1)" radius={[5, 5, 0, 0]} />
+                <Bar isAnimationActive={false} dataKey="sessions" name={t("sessions")} fill="var(--chart-1)" radius={[5, 5, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
         </section>
         <section className="panel">
           <div className="section-split-header">
-            <div><h2>Input token composition</h2><p className="muted">How prompts were served across sessions.</p></div>
-            <span className="badge">tokens</span>
+            <div><h2>{t("Input token composition")}</h2><p className="muted">{t("How prompts were served across sessions.")}</p></div>
+            <span className="badge">{t("tokens")}</span>
           </div>
           <div className="chart-wrap">
             <ResponsiveContainer width="100%" height={260}>
@@ -193,7 +196,7 @@ export function TracingSessions({
                 <XAxis type="number" tickFormatter={(value: any) => formatTokenCount(value == null ? null : Number(value))} />
                 <YAxis type="category" dataKey="label" width={100} />
                 <Tooltip formatter={(value: any) => formatTokenCount(value == null ? null : Number(value))} />
-                <Bar isAnimationActive={false} dataKey="tokens" name="tokens" radius={[0, 5, 5, 0]}>
+                <Bar isAnimationActive={false} dataKey="tokens" name={t("tokens")} radius={[0, 5, 5, 0]}>
                   {tokenComposition.map((entry, index) => (
                     <Cell key={entry.label} fill={TOKEN_CHART_COLORS[index % TOKEN_CHART_COLORS.length]} />
                   ))}
@@ -207,18 +210,18 @@ export function TracingSessions({
       <section className="panel session-table-panel">
         <div className="section-split-header">
           <div>
-            <h2>Sessions</h2>
-            <p className="muted">Sessions are grouped by the id sent by the harness. Requests without one are excluded from this view.</p>
+            <h2>{t("Sessions")}</h2>
+            <p className="muted">{t("Sessions are grouped by the id sent by the harness. Requests without one are excluded from this view.")}</p>
           </div>
           <span className={`badge ${summary.coverage === 1 ? "badge-live" : "badge-warn"}`}>
-            {coverage.identifiedAttempts}/{coverage.totalAttempts} attributed
+            {t("{identified}/{total} attributed", { identified: coverage.identifiedAttempts, total: coverage.totalAttempts })}
           </span>
         </div>
         <div className="table-wrap">
           <table className="data-table session-table">
             <thead>
               <tr>
-                <th>Session</th><th>Project</th><th>Models</th><th>Turns</th><th>Initial context</th><th>Median input</th><th>Growth</th><th>Output / turn</th><th>Cache read</th><th>Cache turns</th><th>Cache write</th><th>Cost</th><th>Savings</th><th>Duration</th><th><span className="sr-only">Details</span></th>
+                <th>{t("Session")}</th><th>{t("Project")}</th><th>{t("Models")}</th><th>{t("Turns")}</th><th>{t("Initial context")}</th><th>{t("Median input")}</th><th>{t("Growth")}</th><th>{t("Output / turn")}</th><th>{t("Cache read")}</th><th>{t("Cache turns")}</th><th>{t("Cache write")}</th><th>{t("Cost")}</th><th>{t("Savings")}</th><th>{t("Duration")}</th><th><span className="sr-only">{t("Details")}</span></th>
               </tr>
             </thead>
             <tbody>
@@ -230,7 +233,7 @@ export function TracingSessions({
                       <td>
                         <div className="trace-cell-stack">
                           <strong className="mono">{session.sessionKey.slice(0, 8)}</strong>
-                          <span className="muted">{session.application ?? "Unknown harness"}</span>
+                          <span className="muted">{session.application ?? t("Unknown harness")}</span>
                         </div>
                       </td>
                       <td>{session.projectId ? session.projectName ?? session.projectId : "—"}</td>
@@ -239,7 +242,7 @@ export function TracingSessions({
                       <td>
                         <div className="trace-cell-stack">
                           <strong>{session.initialInputTokens === undefined ? "—" : formatTokenCount(session.initialInputTokens)}</strong>
-                          <span className="muted">{TTFT_CONTEXT_LABELS[session.initialInputTokenBucket] ?? "Unknown"}</span>
+                          <span className="muted">{TTFT_CONTEXT_LABELS[session.initialInputTokenBucket] ?? t("Unknown")}</span>
                         </div>
                       </td>
                       <td>{session.medianInputTokens === undefined ? "—" : formatTokenCount(session.medianInputTokens)}</td>
@@ -251,26 +254,26 @@ export function TracingSessions({
                       <td>
                         <div className="trace-cell-stack">
                           <strong>{usd(session.costUsd)}</strong>
-                          <span className="muted">{session.errorTurns > 0 ? `${session.errorTurns} failed turns` : `${formatTokenCount(session.outputTokens)} output`}</span>
+                          <span className="muted">{session.errorTurns > 0 ? t("{count} failed turns", { count: session.errorTurns }) : t("{tokens} output", { tokens: formatTokenCount(session.outputTokens) })}</span>
                         </div>
                       </td>
                       <td>{usd(session.cacheSavingsUsd)}</td>
                       <td>{formatDuration(session.durationMs)}</td>
-                      <td><button type="button" className="trace-expand-button" onClick={() => toggleSession(session.sessionKey)} aria-expanded={isExpanded}>{isExpanded ? "Hide" : "Inspect"}</button></td>
+                      <td><button type="button" className="trace-expand-button" onClick={() => toggleSession(session.sessionKey)} aria-expanded={isExpanded}>{isExpanded ? t("Hide") : t("Inspect")}</button></td>
                     </tr>
                     {isExpanded && (
                       <tr className="trace-expanded-row">
                         <td colSpan={15}>
                           <div className="expanded-trace session-expanded">
                             <div className="expanded-trace-heading">
-                              <div><span className="eyebrow">Session detail</span><strong className="mono">{session.sessionKey}</strong></div>
-                              <span className="badge">{session.turns} turns · {fmt(session.firstAt)}</span>
+                              <div><span className="eyebrow">{t("Session detail")}</span><strong className="mono">{session.sessionKey}</strong></div>
+                              <span className="badge">{t("{count} turns · {time}", { count: session.turns, time: fmt(session.firstAt) })}</span>
                             </div>
                             <SessionTurnDetails turns={sessionTurns} loading={sessionTurnsLoading} />
                             {sessionTurnsTotal > 200 && <div className="pagination">
-                              <button className="btn secondary" disabled={sessionTurnsLoading || sessionTurnsOffset === 0} onClick={() => loadSessionTurnsPage?.(Math.max(0, sessionTurnsOffset - 200))}>Previous turns</button>
-                              <span>Turns {sessionTurnsOffset + 1}–{Math.min(sessionTurnsOffset + 200, sessionTurnsTotal)} of {sessionTurnsTotal}</span>
-                              <button className="btn secondary" disabled={sessionTurnsLoading || sessionTurnsOffset + 200 >= sessionTurnsTotal} onClick={() => loadSessionTurnsPage?.(sessionTurnsOffset + 200)}>Next turns</button>
+                              <button className="btn secondary" disabled={sessionTurnsLoading || sessionTurnsOffset === 0} onClick={() => loadSessionTurnsPage?.(Math.max(0, sessionTurnsOffset - 200))}>{t("Previous turns")}</button>
+                              <span>{t("Turns {from}–{to} of {total}", { from: sessionTurnsOffset + 1, to: Math.min(sessionTurnsOffset + 200, sessionTurnsTotal), total: sessionTurnsTotal })}</span>
+                              <button className="btn secondary" disabled={sessionTurnsLoading || sessionTurnsOffset + 200 >= sessionTurnsTotal} onClick={() => loadSessionTurnsPage?.(sessionTurnsOffset + 200)}>{t("Next turns")}</button>
                             </div>}
                           </div>
                         </td>
@@ -282,7 +285,7 @@ export function TracingSessions({
               {!sessions.length && (
                 <tr>
                   <td colSpan={15} className="trace-empty-state">
-                    No session-attributed traffic in this range. {coverage.totalAttempts > 0 ? `${coverage.identifiedAttempts} of ${coverage.totalAttempts} provider attempts carried a session id.` : ""}
+                    {t("No session-attributed traffic in this range.")} {coverage.totalAttempts > 0 ? t("{identified} of {total} provider attempts carried a session id.", { identified: coverage.identifiedAttempts, total: coverage.totalAttempts }) : ""}
                   </td>
                 </tr>
               )}

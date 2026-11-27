@@ -2,6 +2,7 @@ import React, { createContext, useContext, useMemo } from 'react';
 import { ApiError, type DashboardAdapter } from './lib/api';
 import { dashboardResourceAllowed, type DashboardCapabilities } from './capabilities';
 import type { ApiEndpoint } from './components/tabs/docsCatalog';
+import { t } from './i18n';
 export interface DashboardRuntime {
   adapter: DashboardAdapter;
   capabilities: DashboardCapabilities;
@@ -16,14 +17,14 @@ export function DashboardProvider({ value, children }: { value: DashboardRuntime
   const guarded = useMemo(() => ({ ...value, adapter: {
     ...value.adapter,
     request: async (resource: string, init?: RequestInit) => {
-      if (!dashboardResourceAllowed(resource, value.capabilities)) throw new ApiError(403, 'This dashboard capability is unavailable.');
+      if (!dashboardResourceAllowed(resource, value.capabilities)) throw new ApiError(403, t('This dashboard capability is unavailable.'));
       return value.adapter.request(resource, init);
     },
     fetch: async (path: string, init?: RequestInit) => {
       // Never let an embedded playground regain local administrative authority.
       if (path.startsWith('/admin/')) {
         const resource = path.slice('/admin/'.length);
-        if (!value.capabilities.host || !dashboardResourceAllowed(resource, value.capabilities)) throw new ApiError(403, 'Host administration is unavailable.');
+        if (!value.capabilities.host || !dashboardResourceAllowed(resource, value.capabilities)) throw new ApiError(403, t('Host administration is unavailable.'));
       }
       return value.adapter.fetch(path, init);
     },
@@ -32,7 +33,7 @@ export function DashboardProvider({ value, children }: { value: DashboardRuntime
 }
 export function useDashboardRuntime() {
   const value = useContext(RuntimeContext);
-  if (!value) throw new Error('Dashboard components require DashboardProvider.');
+  if (!value) throw new Error(t('Dashboard components require DashboardProvider.'));
   return value;
 }
 export function useDashboardApi() { return useDashboardRuntime().adapter.request; }

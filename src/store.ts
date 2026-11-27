@@ -5,26 +5,63 @@ import { isDeepStrictEqual } from "node:util";
 import type {
   Account,
   ApplicationPolicy,
+  AppliedPayment,
+  CreditEntry,
   ModelAlias,
   OAuthFlowState,
   OAuthStateFile,
   StoredProxyApiKey,
   StoreSettings,
   StoreFile,
+  User,
 } from "./types.js";
 import { ACCOUNT_FLUSH_INTERVAL_MS } from "./config.js";
 import { inferAccountLocation, migrateModelAlias } from "./smart-routing.js";
+import { grantedCostOf, normalizeEmail, rollUsagePeriod, rollUserWindows } from "./users.js";
 
 const DEFAULT_FILE: StoreFile = {
   accounts: [],
   modelAliases: [],
   proxyApiKeys: [],
   applicationPolicies: [],
+  users: [],
   settings: {},
 };
 const DEFAULT_OAUTH_FILE: OAuthStateFile = { states: [] };
 
 type AccountCatalogSnapshot = Omit<Account, "usage" | "state">;
+
+const MAX_CREDIT_LEDGER = 500;
+const MAX_PAYMENT_AWARDS = 500;
+const roundUsd = (value: number) => Math.round(value * 1e6) / 1e6;
+
+function appendCreditEntry(
+  user: User,
+  entry: {
+    kind: CreditEntry["kind"];
+    amountUsd: number;
+    actor?: string;
+    note?: string;
+    paymentId?: string;
+  },
+): void {
+  const record: CreditEntry = {
+    id: randomUUID(),
+    at: Date.now(),
+    balanceAfterUsd: roundUsd(user.walletUsd ?? 0),
+    ...entry,
+  };
+  user.creditLedger = [record, ...(user.creditLedger ?? [])].slice(0, MAX_CREDIT_LEDGER);
+}
+
+/** Keep the idempotency map bounded; oldest payment ids are forgotten first. */
+function prunePaymentAwards(user: User): void {
+  const awards = user.paymentAwards;
+  if (!awards) return;
+  const keys = Object.keys(awards);
+  if (keys.length <= MAX_PAYMENT_AWARDS) return;
+  for (const key of keys.slice(0, keys.length - MAX_PAYMENT_AWARDS)) delete awards[key];
+}
 
 function accountCatalogSnapshot(account: Account): AccountCatalogSnapshot {
   const { usage: _usage, state: _state, ...catalogConfiguration } = account;
@@ -118,6 +155,7 @@ export class AccountStore {
   private inMemoryModelAliases: ModelAlias[] = [];
   private inMemoryProxyApiKeys: StoredProxyApiKey[] = [];
   private inMemoryApplicationPolicies: ApplicationPolicy[] = [];
+  private inMemoryUsers: User[] = [];
   // Tombstones for entries this process removed on purpose. Without them the
   // read-before-write merge would re-adopt a key the operator just revoked,
   // because the Rust edge may still hold the pre-deletion document.
@@ -181,6 +219,51 @@ export class AccountStore {
             ? policy.webhooks.map((webhook) => ({ ...webhook }))
             : [],
         }))
+      : [];
+    this.inMemoryUsers = Array.isArray(data.users)
+      ? data.users
+          .filter((user) => user && typeof user.id === "string")
+          .map((user) => ({
+            ...user,
+            email: normalizeEmail(user.email),
+            role: user.role === "admin" ? "admin" : "member",
+            status: user.status === "suspended" ? "suspended" : "active",
+            quota: user.quota ?? { period: "month" },
+            usage: user.usage ?? { requests: 0, tokens: 0, costUsd: 0 },
+            walletUsd:
+              typeof user.walletUsd === "number" && Number.isFinite(user.walletUsd)
+                ? roundUsd(user.walletUsd)
+                : undefined,
+            ...(Array.isArray(user.creditLedger)
+              ? {
+                  creditLedger: user.creditLedger
+                    .filter((entry) => entry && typeof entry.id === "string")
+                    .slice(0, MAX_CREDIT_LEDGER),
+                }
+              : {}),
+            ...(user.paymentAwards && typeof user.paymentAwards === "object"
+              ? {
+                  paymentAwards: Object.fromEntries(
+                    Object.entries(user.paymentAwards)
+                      .filter(
+                        ([key, award]) =>
+                          key &&
+                          award &&
+                          typeof award === "object" &&
+                          Number.isFinite(Number((award as AppliedPayment).creditUsd)),
+                      )
+                      .map(([key, award]) => [
+                        key,
+                        {
+                          creditUsd: roundUsd(Math.max(0, Number(award.creditUsd))),
+                          refundedUsd: roundUsd(Math.max(0, Number(award.refundedUsd) || 0)),
+                        },
+                      ])
+                      .slice(-MAX_PAYMENT_AWARDS),
+                  ),
+                }
+              : {}),
+          }))
       : [];
     this.inMemorySettings =
       data.settings && typeof data.settings === "object"
@@ -316,6 +399,7 @@ export class AccountStore {
               modelAliases: this.inMemoryModelAliases,
               proxyApiKeys: merged.proxyApiKeys,
               applicationPolicies: merged.applicationPolicies,
+              users: this.inMemoryUsers,
               settings: this.inMemorySettings,
             });
           });
@@ -638,6 +722,346 @@ export class AccountStore {
     this.catalogRevision += 1;
     await this.flushIfDirty();
     return true;
+  }
+
+  private rollUserPeriods(): void {
+    const now = new Date();
+    let changed = false;
+    for (const user of this.inMemoryUsers) {
+      if (rollUsagePeriod(user, now)) changed = true;
+      if (rollUserWindows(user, now)) changed = true;
+    }
+    if (!changed) return;
+    this.dirty = true;
+    this.revision += 1;
+    this.scheduleFlush();
+  }
+
+  getCachedUsers(): User[] {
+    this.rollUserPeriods();
+    return this.inMemoryUsers.map((user) => structuredClone(user));
+  }
+
+  async listUsers(): Promise<User[]> {
+    return this.getCachedUsers();
+  }
+
+  async findUser(id: string): Promise<User | undefined> {
+    this.rollUserPeriods();
+    const user = this.inMemoryUsers.find((candidate) => candidate.id === id);
+    return user ? structuredClone(user) : undefined;
+  }
+
+  async findUserByEmail(email: string): Promise<User | undefined> {
+    this.rollUserPeriods();
+    const normalized = normalizeEmail(email);
+    const user = this.inMemoryUsers.find((candidate) => candidate.email === normalized);
+    return user ? structuredClone(user) : undefined;
+  }
+
+  async addUser(user: User): Promise<User> {
+    if (this.inMemoryUsers.some((candidate) => candidate.id === user.id)) {
+      throw new Error("user id already exists");
+    }
+    if (this.inMemoryUsers.some((candidate) => candidate.email === normalizeEmail(user.email))) {
+      throw new Error("user email already exists");
+    }
+    this.inMemoryUsers.push(structuredClone(user));
+    this.dirty = true;
+    this.revision += 1;
+    await this.flushIfDirty();
+    return structuredClone(user);
+  }
+
+  async patchUser(id: string, patch: Partial<User>): Promise<User | null> {
+    const index = this.inMemoryUsers.findIndex((candidate) => candidate.id === id);
+    if (index === -1) return null;
+    const existing = this.inMemoryUsers[index];
+    const email = patch.email === undefined ? existing.email : normalizeEmail(patch.email);
+    if (this.inMemoryUsers.some((candidate) => candidate.id !== id && candidate.email === email)) {
+      throw new Error("user email already exists");
+    }
+    this.inMemoryUsers[index] = {
+      ...existing,
+      ...patch,
+      id: existing.id,
+      email,
+      createdAt: existing.createdAt,
+      updatedAt: Date.now(),
+    };
+    // A direct quota edit from the dashboard is still a balance movement: keep
+    // it in the same audit trail as the dedicated grant route.
+    const nextAllowance = patch.quota?.creditUsd;
+    if (typeof nextAllowance === "number") {
+      const delta = roundUsd(nextAllowance - (existing.quota.creditUsd ?? 0));
+      if (delta !== 0) {
+        appendCreditEntry(this.inMemoryUsers[index], {
+          kind: "allowance",
+          amountUsd: delta,
+          note: "quota edit",
+        });
+      }
+    }
+    this.dirty = true;
+    this.revision += 1;
+    await this.flushIfDirty();
+    return structuredClone(this.inMemoryUsers[index]);
+  }
+
+  async deleteUser(id: string): Promise<boolean> {
+    const before = this.inMemoryUsers.length;
+    this.inMemoryUsers = this.inMemoryUsers.filter((user) => user.id !== id);
+    if (this.inMemoryUsers.length === before) return false;
+    this.dirty = true;
+    this.revision += 1;
+    await this.flushIfDirty();
+    return true;
+  }
+
+  /**
+   * Accumulate usage for quota enforcement. Called for every completed client
+   * request, so it only mutates memory; the regular flush timer persists it.
+   */
+  recordUserUsage(
+    userId: string,
+    delta: { requests?: number; tokens?: number; costUsd?: number },
+  ): void {
+    const user = this.inMemoryUsers.find((candidate) => candidate.id === userId);
+    if (!user) return;
+    rollUsagePeriod(user);
+    rollUserWindows(user);
+    const cost = roundUsd(Math.max(0, delta.costUsd ?? 0));
+    if (cost > 0) {
+      const allowance =
+        typeof user.quota.creditUsd === "number" ? user.quota.creditUsd : undefined;
+      const hasWallet = typeof user.walletUsd === "number" && Number.isFinite(user.walletUsd);
+      // Freeze the covered counter on first spend so a later allowance change
+      // never retroactively bills machine history.
+      const granted = grantedCostOf(user.usage, allowance);
+      if (allowance !== undefined) {
+        // The period allowance is consumed first, the prepaid wallet covers
+        // the rest. An exhausted allowance keeps its cap so a rollover is the
+        // only thing that reopens it.
+        const covered = Math.min(cost, Math.max(0, allowance - granted));
+        user.usage.grantedCostUsd = roundUsd(granted + covered);
+        const uncovered = roundUsd(cost - covered);
+        if (uncovered > 0 && hasWallet) {
+          user.walletUsd = roundUsd((user.walletUsd ?? 0) - uncovered);
+        }
+      } else if (hasWallet) {
+        // Wallet-only billing: the balance is the sole credit source.
+        user.usage.grantedCostUsd = granted;
+        user.walletUsd = roundUsd((user.walletUsd ?? 0) - cost);
+      } else {
+        // Unlimited credit: keep the counter in sync with the total spend.
+        user.usage.grantedCostUsd = roundUsd(granted + cost);
+      }
+    }
+    user.usage.requests += Math.max(0, delta.requests ?? 0);
+    user.usage.tokens += Math.max(0, delta.tokens ?? 0);
+    user.usage.costUsd = roundUsd(user.usage.costUsd + cost);
+    user.usage.updatedAt = Date.now();
+    if (user.plan?.mode === "subscription") {
+      user.windowUsage ??= {};
+      for (const window of user.plan.windows ?? []) {
+        const record = (user.windowUsage[window.id] ??= {
+          startedAt: Date.now(),
+          requests: 0,
+          tokens: 0,
+          costUsd: 0,
+        });
+        record.requests += Math.max(0, delta.requests ?? 0);
+        record.tokens += Math.max(0, delta.tokens ?? 0);
+        record.costUsd += Math.max(0, delta.costUsd ?? 0);
+        record.updatedAt = Date.now();
+      }
+    }
+    this.dirty = true;
+    this.revision += 1;
+    this.scheduleFlush();
+  }
+
+  /**
+   * Add credit to the period allowance. The prepaid wallet is untouched; the
+   * ledger records the change for audit.
+   */
+  async grantUserAllowance(
+    id: string,
+    amountUsd: number,
+    options: { actor?: string; note?: string } = {},
+  ): Promise<User | null> {
+    const user = this.inMemoryUsers.find((candidate) => candidate.id === id);
+    if (!user) return null;
+    const amount = roundUsd(amountUsd);
+    if (!Number.isFinite(amount) || amount <= 0) return null;
+    rollUsagePeriod(user);
+    user.quota = {
+      ...user.quota,
+      creditUsd: roundUsd((user.quota.creditUsd ?? 0) + amount),
+    };
+    appendCreditEntry(user, {
+      kind: "allowance",
+      amountUsd: amount,
+      ...(options.actor ? { actor: options.actor } : {}),
+      ...(options.note ? { note: options.note } : {}),
+    });
+    this.dirty = true;
+    this.revision += 1;
+    await this.flushIfDirty();
+    return structuredClone(user);
+  }
+
+  /**
+   * Move the prepaid balance in either direction. Positive amounts are
+   * top-ups, negative amounts are manual debits (refund, correction). The
+   * first movement freezes prior unlimited usage as already covered so a
+   * later purchase never bills history.
+   */
+  async adjustUserWallet(
+    id: string,
+    amountUsd: number,
+    options: {
+      kind?: CreditEntry["kind"];
+      actor?: string;
+      note?: string;
+      paymentId?: string;
+    } = {},
+  ): Promise<User | null> {
+    const user = this.inMemoryUsers.find((candidate) => candidate.id === id);
+    if (!user) return null;
+    const amount = roundUsd(amountUsd);
+    if (!Number.isFinite(amount) || amount === 0) return null;
+    rollUsagePeriod(user);
+    if (user.usage.grantedCostUsd === undefined) {
+      user.usage.grantedCostUsd = roundUsd(
+        grantedCostOf(user.usage, user.quota.creditUsd),
+      );
+    }
+    user.walletUsd = roundUsd((user.walletUsd ?? 0) + amount);
+    appendCreditEntry(user, {
+      kind: options.kind ?? (amount > 0 ? "topup" : "debit"),
+      amountUsd: amount,
+      ...(options.actor ? { actor: options.actor } : {}),
+      ...(options.note ? { note: options.note } : {}),
+      ...(options.paymentId ? { paymentId: options.paymentId } : {}),
+    });
+    this.dirty = true;
+    this.revision += 1;
+    await this.flushIfDirty();
+    return structuredClone(user);
+  }
+
+  /**
+   * Credit a wallet from a broker payment. The payment id makes the write
+   * idempotent: an event replayed after a lost cursor never doubles the
+   * balance, even once the bounded ledger has rotated.
+   */
+  async creditWalletFromPayment(
+    id: string,
+    input: {
+      paymentId: string;
+      creditUsd: number;
+      actor?: string;
+      note?: string;
+    },
+  ): Promise<{ user: User; applied: boolean } | null> {
+    const user = this.inMemoryUsers.find((candidate) => candidate.id === id);
+    if (!user) return null;
+    const amount = roundUsd(input.creditUsd);
+    if (!Number.isFinite(amount) || amount <= 0) return null;
+    if ((user.paymentAwards?.[input.paymentId]?.creditUsd ?? 0) > 0) {
+      return { user: structuredClone(user), applied: false };
+    }
+    rollUsagePeriod(user);
+    if (user.usage.grantedCostUsd === undefined) {
+      user.usage.grantedCostUsd = roundUsd(grantedCostOf(user.usage, user.quota.creditUsd));
+    }
+    user.walletUsd = roundUsd((user.walletUsd ?? 0) + amount);
+    user.paymentAwards = {
+      ...(user.paymentAwards ?? {}),
+      [input.paymentId]: { creditUsd: amount, refundedUsd: 0 },
+    };
+    prunePaymentAwards(user);
+    appendCreditEntry(user, {
+      kind: "topup",
+      amountUsd: amount,
+      ...(input.actor ? { actor: input.actor } : {}),
+      ...(input.note ? { note: input.note } : {}),
+      paymentId: input.paymentId,
+    });
+    this.dirty = true;
+    this.revision += 1;
+    await this.flushIfDirty();
+    return { user: structuredClone(user), applied: true };
+  }
+
+  /**
+   * Return the credited part of a payment after a refund or dispute. The
+   * refund is proportional to the credited amount, so a bonus or a partial
+   * refund never invents money. Debiting can push the wallet negative.
+   */
+  async refundWalletFromPayment(
+    id: string,
+    input: {
+      paymentId: string;
+      amountCents: number;
+      refundedCents: number;
+      disputed?: boolean;
+      actor?: string;
+      note?: string;
+    },
+  ): Promise<{ user: User; applied: boolean; amountUsd: number } | null> {
+    const user = this.inMemoryUsers.find((candidate) => candidate.id === id);
+    if (!user) return null;
+    const award = user.paymentAwards?.[input.paymentId];
+    if (!award) return { user: structuredClone(user), applied: false, amountUsd: 0 };
+    const total = Math.max(0, Math.floor(input.amountCents));
+    const refunded = input.disputed
+      ? total
+      : Math.min(total, Math.max(0, Math.floor(input.refundedCents)));
+    if (total <= 0 || refunded <= 0) {
+      return { user: structuredClone(user), applied: false, amountUsd: 0 };
+    }
+    const target = roundUsd((award.creditUsd * refunded) / total);
+    const delta = roundUsd(target - award.refundedUsd);
+    if (delta <= 0) {
+      return { user: structuredClone(user), applied: false, amountUsd: 0 };
+    }
+    rollUsagePeriod(user);
+    if (user.usage.grantedCostUsd === undefined) {
+      user.usage.grantedCostUsd = roundUsd(grantedCostOf(user.usage, user.quota.creditUsd));
+    }
+    user.walletUsd = roundUsd((user.walletUsd ?? 0) - delta);
+    user.paymentAwards = {
+      ...(user.paymentAwards ?? {}),
+      [input.paymentId]: { ...award, refundedUsd: target },
+    };
+    prunePaymentAwards(user);
+    appendCreditEntry(user, {
+      kind: "refund",
+      amountUsd: -delta,
+      ...(input.actor ? { actor: input.actor } : {}),
+      ...(input.note ? { note: input.note } : {}),
+      paymentId: input.paymentId,
+    });
+    this.dirty = true;
+    this.revision += 1;
+    await this.flushIfDirty();
+    return { user: structuredClone(user), applied: true, amountUsd: delta };
+  }
+
+  async resetUserUsage(id: string): Promise<User | null> {
+    return this.patchUser(id, {
+      usage: {
+        periodStart: undefined,
+        requests: 0,
+        tokens: 0,
+        costUsd: 0,
+        grantedCostUsd: 0,
+        updatedAt: Date.now(),
+      },
+      windowUsage: {},
+    });
   }
 
   getCachedProxyApiKeys(): StoredProxyApiKey[] {

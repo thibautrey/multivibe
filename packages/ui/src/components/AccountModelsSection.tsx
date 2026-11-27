@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { ExposedModel } from "../types";
 import { copyTextToClipboard } from "../lib/clipboard";
+import { useT } from "../i18n";
 import "./AccountModelsSection.css";
 
 /** Number of listed models above which a local filter is worth its rows. */
@@ -16,6 +17,7 @@ export function AccountModelsSection({ accountLabel, models, onRefresh }: {
   models: ExposedModel[];
   onRefresh?: () => Promise<void>;
 }) {
+  const t = useT();
   const [query, setQuery] = useState("");
   const [refreshing, setRefreshing] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -52,9 +54,9 @@ export function AccountModelsSection({ accountLabel, models, onRefresh }: {
   return (
     <details className="account-models">
       <summary>
-        <span>Models exposed</span>
+        <span>{t("Models exposed")}</span>
         <span className="badge">{entries.length}</span>
-        {refreshing && <span className="muted" role="status">Refreshing…</span>}
+        {refreshing && <span className="muted" role="status">{t("Refreshing…")}</span>}
       </summary>
       <div className="account-models-body">
         {entries.length > 0 ? (
@@ -65,17 +67,17 @@ export function AccountModelsSection({ accountLabel, models, onRefresh }: {
                   type="search"
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
-                  placeholder="Filter models"
-                  aria-label={`Filter ${accountLabel} models`}
+                  placeholder={t("Filter models")}
+                  aria-label={t("Filter {account} models", { account: accountLabel })}
                 />
               )}
               <span className="account-models-toolbar-actions">
                 <button type="button" className="btn secondary" onClick={() => void copy()} disabled={!list.length}>
-                  {copied ? "Copied" : "Copy IDs"}
+                  {copied ? t("Copied") : t("Copy IDs")}
                 </button>
                 {onRefresh && (
                   <button type="button" className="btn secondary" onClick={() => void refresh()} disabled={refreshing}>
-                    {refreshing ? "Refreshing…" : "Refresh"}
+                    {refreshing ? t("Refreshing…") : t("Refresh")}
                   </button>
                 )}
               </span>
@@ -90,15 +92,15 @@ export function AccountModelsSection({ accountLabel, models, onRefresh }: {
                 ))}
               </ul>
             ) : (
-              <p className="muted">No model matches “{query.trim()}”.</p>
+              <p className="muted">{t("No model matches “{query}”.", { query: query.trim() })}</p>
             )}
           </>
         ) : (
           <div className="account-models-empty">
-            <p className="muted">No model discovered for this provider yet. Refresh to ask the upstream for its list.</p>
+            <p className="muted">{t("No model discovered for this provider yet. Refresh to ask the upstream for its list.")}</p>
             {onRefresh && (
               <button type="button" className="btn secondary" onClick={() => void refresh()} disabled={refreshing}>
-                {refreshing ? "Refreshing…" : "Refresh"}
+                {refreshing ? t("Refreshing…") : t("Refresh")}
               </button>
             )}
           </div>

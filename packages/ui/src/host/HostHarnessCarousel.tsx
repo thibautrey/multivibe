@@ -1,4 +1,5 @@
 import { useDashboardApi, useDashboardRuntime } from "../adapter";
+import { t, useT } from "../i18n";
 import { useCallback, useEffect, useState } from "react";
 
 import type { HostHarness } from "../types";
@@ -21,17 +22,19 @@ function errorMessage(error: unknown): string {
 
 function detectionLabel(harness: HostHarness): string {
   const command = harness.detectedBy.find((entry) => entry.startsWith("command:"));
-  if (command) return `Command ${command.slice("command:".length)} found`;
+  if (command) return t("Command {command} found", { command: command.slice("command:".length) });
   const location = harness.detectedBy.find((entry) => entry.startsWith("path:"));
-  return location ? `Installation found in ${location.slice("path:".length)}` : "Installation found";
+  return location
+    ? t("Installation found in {path}", { path: location.slice("path:".length) })
+    : t("Installation found");
 }
 
 function connectedMessage(harness: HostHarness): string {
-  if (!harness.codexConnection) return `${harness.name} is connected to MultiVibe.`;
+  if (!harness.codexConnection) return t("{name} is connected to MultiVibe.", { name: harness.name });
   if (harness.codexConnection.authentication !== "ready") {
-    return "Codex is configured. Sign in to ChatGPT to finish connecting, then reopen Codex when your current tasks are finished.";
+    return t("Codex is configured. Sign in to ChatGPT to finish connecting, then reopen Codex when your current tasks are finished.");
   }
-  return "Codex is configured with your ChatGPT sign-in preserved. Reopen Codex when your current tasks are finished to apply the connection.";
+  return t("Codex is configured with your ChatGPT sign-in preserved. Reopen Codex when your current tasks are finished to apply the connection.");
 }
 
 const HARNESS_LOGO_DOMAINS: Record<string, string> = {
@@ -129,6 +132,7 @@ function HarnessLogo({ harness }: { harness: HostHarness }) {
 }
 
 export function HostHarnessCards({ onApiKeysChanged, variant = "default" }: Props) {
+  const t = useT();
   const api = useDashboardApi();
   const { capabilities } = useDashboardRuntime();
   const [harnesses, setHarnesses] = useState<HostHarness[]>([]);
@@ -186,7 +190,7 @@ export function HostHarnessCards({ onApiKeysChanged, variant = "default" }: Prop
     try {
       const result = await api(`host-harnesses/${encodeURIComponent(harness.id)}/install`, { method: "DELETE" });
       updateHarness(result.harness as HostHarness);
-      setMessage(`${harness.name} was restored to its previous configuration.`);
+      setMessage(t("{name} was restored to its previous configuration.", { name: harness.name }));
       await onApiKeysChanged?.();
     } catch (reason) {
       setError(errorMessage(reason));
@@ -218,7 +222,7 @@ export function HostHarnessCards({ onApiKeysChanged, variant = "default" }: Prop
     try {
       const result = await api(`host-harnesses/${encodeURIComponent(harness.id)}/project-tracking`, { method: "POST" });
       updateHarness(result.harness as HostHarness);
-      setMessage("Project tracking installed. In Codex on this computer, open /hooks and trust the MultiVibe SessionStart hook, then start or resume a session.");
+      setMessage(t("Project tracking installed. In Codex on this computer, open /hooks and trust the MultiVibe SessionStart hook, then start or resume a session."));
     } catch (reason) {
       setError(errorMessage(reason));
     } finally {
@@ -238,21 +242,21 @@ export function HostHarnessCards({ onApiKeysChanged, variant = "default" }: Prop
   return (
     <section
       className={`host-harness-browser host-harness-${variant}`}
-      aria-label={variant === "default" ? "Coding agents" : variant === "onboarding" ? "Detected coding tools" : undefined}
+      aria-label={variant === "default" ? t("Coding agents") : variant === "onboarding" ? t("Detected coding tools") : undefined}
     >
-      {variant === "default" && (harnesses.length > 0 || !loaded) && <header className="harness-section-heading"><h2>Coding tools</h2><span className="muted">Use your tools with MultiVibe</span></header>}
+      {variant === "default" && (harnesses.length > 0 || !loaded) && <header className="harness-section-heading"><h2>{t("Coding tools")}</h2><span className="muted">{t("Use your tools with MultiVibe")}</span></header>}
       {loaded && harnesses.length === 0 && variant === "onboarding" && (
         <div className="compact-empty-state">
-          <strong>No coding tools found</strong>
-          <span>You can continue and connect one later.</span>
+          <strong>{t("No coding tools found")}</strong>
+          <span>{t("You can continue and connect one later.")}</span>
         </div>
       )}
-      {!loaded && variant === "onboarding" && <p className="muted">Looking for coding tools…</p>}
-      {harnesses.length > 0 && <div className="host-harness-rail" role="region" tabIndex={0} aria-label="Detected coding tools" aria-live="polite">
+      {!loaded && variant === "onboarding" && <p className="muted">{t("Looking for coding tools…")}</p>}
+      {harnesses.length > 0 && <div className="host-harness-rail" role="region" tabIndex={0} aria-label={t("Detected coding tools")} aria-live="polite">
         {harnesses.map((harness) => {
           const connected = harness.configured || harness.managed;
           const needsSignIn = Boolean(harness.codexConnection && harness.codexConnection.authentication !== "ready");
-          const statusLabel = harness.drifted ? "Needs repair" : needsSignIn ? "ChatGPT sign-in required" : connected ? "Connected" : harness.canInstall ? "Not connected" : "Manual setup";
+          const statusLabel = harness.drifted ? t("Needs repair") : needsSignIn ? t("ChatGPT sign-in required") : connected ? t("Connected") : harness.canInstall ? t("Not connected") : t("Manual setup");
           const expanded = expandedHarnesses.has(harness.id);
           const detailsId = `host-harness-details-${variant}-${harness.id}`;
           return <article className={`host-harness-card harness-compact${expanded ? " is-expanded" : ""}`} key={harness.id}>
@@ -262,9 +266,9 @@ export function HostHarnessCards({ onApiKeysChanged, variant = "default" }: Prop
                 <div><h3>{harness.name}</h3><span className={`harness-status ${harness.drifted || needsSignIn ? "needs-repair" : connected ? "connected" : ""}`}>{statusLabel}</span></div>
               </div>
               <div className="harness-summary-actions">
-                {!connected && harness.canInstall && <button className="btn" type="button" disabled={busyId === harness.id} onClick={() => void connect(harness)}>{busyId === harness.id ? "Connecting…" : "Connect"}</button>}
-                {harness.managed && harness.drifted && harness.repairable && <button className="btn secondary" type="button" disabled={busyId === harness.id} onClick={() => void repair(harness)}>{busyId === harness.id ? "Repairing…" : "Repair connection"}</button>}
-                <button className="btn ghost harness-options" type="button" aria-label={`${expanded ? "Close" : "Open"} ${harness.name} options`} aria-controls={detailsId} aria-expanded={expanded} onClick={() => toggleDetails(harness.id)}>{expanded ? "Close" : "Options"}<span aria-hidden="true">{expanded ? " −" : " +"}</span></button>
+                {!connected && harness.canInstall && <button className="btn" type="button" disabled={busyId === harness.id} onClick={() => void connect(harness)}>{busyId === harness.id ? t("Connecting…") : t("Connect")}</button>}
+                {harness.managed && harness.drifted && harness.repairable && <button className="btn secondary" type="button" disabled={busyId === harness.id} onClick={() => void repair(harness)}>{busyId === harness.id ? t("Repairing…") : t("Repair connection")}</button>}
+                <button className="btn ghost harness-options" type="button" aria-label={expanded ? t("Close {name} options", { name: harness.name }) : t("Open {name} options", { name: harness.name })} aria-controls={detailsId} aria-expanded={expanded} onClick={() => toggleDetails(harness.id)}>{expanded ? t("Close") : t("Options")}<span aria-hidden="true">{expanded ? " −" : " +"}</span></button>
               </div>
             </div>
             {expanded && <div className="harness-options-panel" id={detailsId}>
@@ -272,16 +276,16 @@ export function HostHarnessCards({ onApiKeysChanged, variant = "default" }: Prop
               {harness.configPath && <code className="host-harness-path">{harness.configPath}</code>}
               {!harness.canInstall && !connected && harness.unavailableReason && <p>{harness.unavailableReason}</p>}
               {harness.configurationIssue && <p>{harness.configurationIssue}</p>}
-              {harness.codexConnection && <p>ChatGPT handles native Voice; MultiVibe routes the model requests. Reopen Codex when your current tasks are finished to apply changes.</p>}
-              {needsSignIn && <p>{harness.codexConnection?.authentication === "expired" ? "Your local ChatGPT sign-in has expired. " : "A ChatGPT sign-in is required. "}If the desktop sign-in button is hidden, run <code>codex login --device-auth</code> on this computer.</p>}
-              {harness.drifted && !harness.repairable && <p>Automatic repair isn’t available. Restore the configuration or disconnect this tool.</p>}
-              {connected && !harness.managed && <p>Connected outside MultiVibe.</p>}
-              {harness.projectTracking === "installed" && <p>Project tracking installed. In Codex, open /hooks and trust the MultiVibe SessionStart hook, then start or resume a session.</p>}
-              {harness.projectTracking === "unavailable" && <p>Project tracking is disabled for this instance.</p>}
+              {harness.codexConnection && <p>{t("ChatGPT handles native Voice; MultiVibe routes the model requests. Reopen Codex when your current tasks are finished to apply changes.")}</p>}
+              {needsSignIn && <p>{harness.codexConnection?.authentication === "expired" ? t("Your local ChatGPT sign-in has expired.") : t("A ChatGPT sign-in is required.")}{" "}{t("If the desktop sign-in button is hidden, run")} <code>codex login --device-auth</code>{" "}{t("on this computer.")}</p>}
+              {harness.drifted && !harness.repairable && <p>{t("Automatic repair isn’t available. Restore the configuration or disconnect this tool.")}</p>}
+              {connected && !harness.managed && <p>{t("Connected outside MultiVibe.")}</p>}
+              {harness.projectTracking === "installed" && <p>{t("Project tracking installed. In Codex, open /hooks and trust the MultiVibe SessionStart hook, then start or resume a session.")}</p>}
+              {harness.projectTracking === "unavailable" && <p>{t("Project tracking is disabled for this instance.")}</p>}
               <div className="harness-option-actions">
-                {needsSignIn && <button className="btn secondary" type="button" onClick={() => void load().catch(reason => setError(errorMessage(reason)))}>Check sign-in</button>}
-                {harness.projectTracking === "not-installed" && <button className="btn secondary" type="button" disabled={busyId === harness.id} onClick={() => void enableProjectTracking(harness)}>{busyId === harness.id ? "Configuring…" : "Enable project tracking"}</button>}
-                {harness.managed && <button className="btn secondary" type="button" disabled={busyId === harness.id || !harness.canUninstall} onClick={() => void disconnect(harness)}>{busyId === harness.id ? "Restoring…" : "Disconnect & restore settings"}</button>}
+                {needsSignIn && <button className="btn secondary" type="button" onClick={() => void load().catch(reason => setError(errorMessage(reason)))}>{t("Check sign-in")}</button>}
+                {harness.projectTracking === "not-installed" && <button className="btn secondary" type="button" disabled={busyId === harness.id} onClick={() => void enableProjectTracking(harness)}>{busyId === harness.id ? t("Configuring…") : t("Enable project tracking")}</button>}
+                {harness.managed && <button className="btn secondary" type="button" disabled={busyId === harness.id || !harness.canUninstall} onClick={() => void disconnect(harness)}>{busyId === harness.id ? t("Restoring…") : t("Disconnect & restore settings")}</button>}
               </div>
             </div>}
           </article>;

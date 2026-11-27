@@ -24,6 +24,8 @@ import type {
   ActivityView,
   ApplicationPolicy,
   ApplicationWebhook,
+  DashboardSession,
+  DashboardUser,
   ExposedModel,
   ModelAlias,
   ModuleView,
@@ -47,6 +49,9 @@ import { OverviewTab } from "./components/tabs/OverviewTab";
 import { TracingTab } from "./components/tabs/TracingTab";
 import { AliasesTab } from "./components/tabs/AliasesTab";
 import { ApiKeysTab } from "./components/tabs/ApiKeysTab";
+import { UsersTab } from "./components/tabs/UsersTab";
+import { BillingTab } from "./components/tabs/BillingTab";
+import { PaymentsPanel } from "./components/tabs/PaymentsPanel";
 import { PluginsTab } from "./components/tabs/PluginsTab";
 import { UpdatesTab } from "./components/tabs/UpdatesTab";
 import { ReleaseAnnouncementCard, ReleaseNotesModal } from "./components/ReleaseAnnouncement";
@@ -58,6 +63,8 @@ import {
 } from "./components/ui/ThemeSwitcher";
 import { dismissGitHubPromotion, GITHUB_NEW_ISSUE_URL, GITHUB_REPOSITORY_URL, readGitHubPromotionState } from "./github-promotion";
 import { completeHostOnboarding, hasCompletedHostOnboarding, shouldShowHostOnboarding } from "./host/onboarding";
+import { activeLocale, useT } from "./i18n";
+import { LanguageSwitcher } from "./components/ui/LanguageSwitcher";
 import {
   dismissReleaseAnnouncement,
   fetchGitHubReleaseNotes,
@@ -66,6 +73,9 @@ import {
   type GitHubReleaseNotes,
 } from "./release-announcement";
 
+/** Pages a non-admin dashboard user may reach. Everything else is admin-only. */
+const MEMBER_TAB_IDS: ReadonlyArray<string> = ["overview", "models", "accounts", "tracing", "api-keys", "billing", "docs"];
+
 const TAB_ITEMS: Array<{ id: Tab; label: string; description: string; group: "Operate" | "Build" | "Advanced" }> = [
   { id: "overview", label: "Overview", description: "System status and next steps", group: "Operate" },
   { id: "models", label: "Models", description: "Explore providers, local models, and MultiVibe Cloud", group: "Operate" },
@@ -73,10 +83,13 @@ const TAB_ITEMS: Array<{ id: Tab; label: string; description: string; group: "Op
   { id: "invoices", label: "Invoices", description: "Subscriptions and API purchases", group: "Operate" },
   { id: "aliases", label: "Routing", description: "Rules and fallbacks", group: "Operate" },
   { id: "tracing", label: "Activity", description: "Requests, performance and cost", group: "Operate" },
+  { id: "billing", label: "Credit", description: "Prepaid balance, usage and limits", group: "Operate" },
   { id: "api-keys", label: "API access", description: "Application keys and webhooks", group: "Build" },
   { id: "docs", label: "Playground & docs", description: "Quick start and full reference", group: "Build" },
   { id: "plugins", label: "Extensions", description: "Optional lifecycle modules", group: "Advanced" },
   { id: "updates", label: "Host updates", description: "Verified releases and update policy", group: "Advanced" },
+  { id: "users", label: "Users", description: "Accounts, quotas and credit", group: "Advanced" },
+  { id: "payments", label: "Payments", description: "Marketplace billing and Stripe payouts", group: "Advanced" },
 ];
 
 function tabFromSearch(search: string): Tab {
@@ -142,6 +155,12 @@ function TabIcon({ tab }: { tab: string }) {
   if (tab === "updates") {
     return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M5 20h14"/></svg>;
   }
+  if (tab === "users") {
+    return <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.5-4 2.7-6 6.5-6s6 2 6.5 6"/><path d="M17 8h5M19.5 5.5v5"/></svg>;
+  }
+  if (tab === "billing" || tab === "payments") {
+    return <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="5" width="19" height="14" rx="2.5"/><path d="M2.5 10h19M6 15h4"/></svg>;
+  }
   return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h10l4 4v14H5z"/><path d="M15 3v5h5M8 12h8M8 16h8"/></svg>;
 }
 function GitHubIcon() {
@@ -152,6 +171,10 @@ function LockIcon() {
   return <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>;
 }
 
+function PasskeyIcon() {
+  return <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="9" r="4"/><path d="M12.5 12.5 20 20m-4-4 2-2m-4 0 2-2"/></svg>;
+}
+
 function activeModelBlockCount(account: Account) {
   return Object.values(account.state?.modelBlocks ?? {}).filter(
     (block) => block.until > Date.now(),
@@ -159,10 +182,11 @@ function activeModelBlockCount(account: Account) {
 }
 
 export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, activePage, onNavigate, apiKeyExtensions, userMenu, workspaceSelector, brandSubtitle = "Your AI workspace", chatUrl }: SharedDashboardProps) {
+  const t = useT();
   const api = useDashboardApi();
   const { capabilities, adapter, allowedPages } = useDashboardRuntime();
   const fetch = adapter.fetch;
-  const allTabs = [...TAB_ITEMS.filter(item => !pages.some(page => page.id === item.id)), ...pages];
+  const allTabs = [...TAB_ITEMS.filter(item => !pages.some(page => page.id === item.id)).map(item => ({ ...item, label: t(item.label), description: t(item.description) })), ...pages];
   const [sidebarScrolling, setSidebarScrolling] = useState(false);
   const sidebarScrollTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const revealSidebarScrollbar = () => {
@@ -225,7 +249,34 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   const [marketplaceModules, setMarketplaceModules] = useState<MarketplaceModule[]>([]);
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [loginToken, setLoginToken] = useState("");
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginMode, setLoginMode] = useState<"password" | "token">("password");
   const [loginBusy, setLoginBusy] = useState(false);
+  const [inviteToken, setInviteToken] = useState(() => new URLSearchParams(window.location.search).get("invite") ?? "");
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteName, setInviteName] = useState("");
+  const [invitePassword, setInvitePassword] = useState("");
+  const [inviteBusy, setInviteBusy] = useState(false);
+  const [passkeyBusy, setPasskeyBusy] = useState(false);
+  const [passkeyStatus, setPasskeyStatus] = useState("");
+  const [sessionRole, setSessionRole] = useState<"admin" | "member" | null>(null);
+  const [sessionUser, setSessionUser] = useState<DashboardUser | null>(null);
+  const sessionRoleRef = useRef<"admin" | "member" | null>(null);
+  const applySession = (session: DashboardSession | null) => {
+    const role = session?.role === "member" ? "member" : session?.role === "admin" ? "admin" : null;
+    sessionRoleRef.current = role;
+    setSessionRole(role);
+    setSessionUser(session?.user ?? null);
+  };
+  const refreshIdentity = async () => {
+    try {
+      applySession((await api("me")) as DashboardSession);
+    } catch {
+      // A legacy admin token session has no user record; treat it as an admin.
+      applySession({ role: "admin", via: "token" });
+    }
+  };
   const [themeMode, setThemeMode] = useState<ThemeMode>(initialThemeMode);
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
   const [githubPromotionOpen, setGitHubPromotionOpen] = useState(capabilities.githubPromotion && !demo && !githubPromotion.dismissed && Date.now() >= githubPromotion.showAt);
@@ -260,8 +311,15 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   const [invoicesError, setInvoicesError] = useState("");
   const [invoiceRefresh, setInvoiceRefresh] = useState(0);
   const cloudConnected = multivibeCloud.status === "connected";
-  const canManage = capabilities.host ? canManageWorkspace(teamWorkspace) : teamWorkspace.role === "owner" || teamWorkspace.role === "admin";
-  const canViewInvoices = canManage || (teamWorkspace.state === "team" && teamWorkspace.role === "billing");
+  const isMember = sessionRole === "member";
+  const passkeysSupported =
+    !demo &&
+    capabilities.localAuthentication &&
+    typeof window !== "undefined" &&
+    window.isSecureContext &&
+    "PublicKeyCredential" in window;
+  const canManage = !isMember && (capabilities.host ? canManageWorkspace(teamWorkspace) : teamWorkspace.role === "owner" || teamWorkspace.role === "admin");
+  const canViewInvoices = !isMember && (canManage || (teamWorkspace.state === "team" && teamWorkspace.role === "billing"));
   const invoiceAccountSignature = JSON.stringify(accounts.map(account => [account.id, account.provider, account.sdkProvider, account.email, account.multivibeCloud]));
   useEffect(() => {
     if (!baseLoaded || !authenticated || pageOverrides.invoices || pages.some(page => page.id === "invoices")) { setInvoicesLoading(false); return; }
@@ -276,7 +334,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
     api("invoices", { signal: controller.signal }).then(data => {
       if (active) setInvoiceData(data as InvoiceOverview);
     }).catch(() => {
-      if (active) setInvoicesError("Invoices could not be loaded. Try refreshing.");
+      if (active) setInvoicesError(t("Invoices could not be loaded. Try refreshing."));
     }).finally(() => {
       window.clearTimeout(timeout);
       if (active) setInvoicesLoading(false);
@@ -284,11 +342,13 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
     return () => { active = false; window.clearTimeout(timeout); controller.abort(); };
   }, [baseLoaded, authenticated, canViewInvoices, invoiceAccountSignature, multivibeCloud.status, invoiceRefresh]);
   const availableTabItems = allTabs.filter(item =>
+    (!isMember || MEMBER_TAB_IDS.includes(item.id)) &&
+    (item.id !== "users" || (capabilities.localAuthentication && canManage)) &&
     (item.id !== "updates" || (capabilities.hostUpdates && hostApplication)) &&
     (item.id !== "plugins" || capabilities.plugins) &&
     (allowedPages ? allowedPages.includes(item.id) :
       (item.id !== "invoices" || (canViewInvoices && (Boolean(pageOverrides.invoices) || pages.some(page => page.id === "invoices") || invoiceData.providers.length > 0))) &&
-      (canManage || (item.id === "invoices" && canViewInvoices) || ["overview", "models", "updates"].includes(item.id))));
+      (canManage || (item.id === "invoices" && canViewInvoices) || (isMember ? MEMBER_TAB_IDS.includes(item.id) : ["overview", "models", "updates"].includes(item.id)))));
   const visibleTabItems = availableTabItems.filter(item => !("hiddenFromNavigation" in item && item.hiddenFromNavigation));
   const tab = requestedTab === "invoices" && canViewInvoices && (invoicesLoading || invoicesError) ? "invoices" : availableTabItems.some(item => item.id === requestedTab) ? requestedTab : "overview";
   const activeTabItem = availableTabItems.find((item) => item.id === tab) ?? visibleTabItems[0];
@@ -479,7 +539,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
       ...b,
       inferenceTokensPerSecond:
         (b.inferenceRequests ?? 0) > 0 ? b.inferenceTokensPerSecond : null,
-      label: new Date(b.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      label: new Date(b.at).toLocaleTimeString(activeLocale(), { hour: "2-digit", minute: "2-digit" }),
     })),
     [traceStats.timeseries],
   );
@@ -517,24 +577,32 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
 
   const loadBase = async (options: { forceModels?: boolean } = {}) => {
     const modelsUrl = options.forceModels ? "/v1/models?refresh=true" : "/v1/models";
+    const member = sessionRoleRef.current === "member";
     // Team is an optional Cloud capability. Never hold the local workspace launch
     // behind its network request, and keep personal access when it is unavailable.
-    const workspace = api("team/workspace").then((teamRes) => {
-      if (!capabilities.host && (!teamRes || !['personal', 'team'].includes(teamRes.state))) throw new Error('Workspace permissions are unavailable.');
-      setTeamWorkspace(teamRes as TeamWorkspace);
-    });
+    // Members cannot read team administration at all, so skip the request.
+    const workspace = member
+      ? Promise.resolve(setTeamWorkspace({ state: "personal", role: null }))
+      : api("team/workspace").then((teamRes) => {
+          if (!capabilities.host && (!teamRes || !['personal', 'team'].includes(teamRes.state))) throw new Error(t("Workspace permissions are unavailable."));
+          setTeamWorkspace(teamRes as TeamWorkspace);
+        });
     if (capabilities.host) void workspace.catch(() => setTeamWorkspace({ state: "personal", role: null }));
     else await workspace;
     const [acc, cloudRes, cfg, mdl, aliasRes, settingsRes, apiKeysRes, policiesRes, modulesRes] = await Promise.all([
       api("accounts"),
-      api("cloud").catch(() => ({ status: "unavailable", topupUrl: "https://app.multivibe.cloud/billing" })),
-      api("config"),
+      member
+        ? Promise.resolve({ status: "unavailable", topupUrl: "https://app.multivibe.cloud/billing" })
+        : api("cloud").catch(() => ({ status: "unavailable", topupUrl: "https://app.multivibe.cloud/billing" })),
+      api("config").catch(() => ({})),
       fetch(modelsUrl).then((r) => r.json()),
-      api("model-aliases"),
-      api("settings"),
+      member ? Promise.resolve({ modelAliases: [] }) : api("model-aliases").catch(() => ({ modelAliases: [] })),
+      api("settings").catch(() => ({ settings: {} })),
       api("proxy-api-keys"),
-      api("application-policies"),
-      capabilities.plugins ? api("modules") : Promise.resolve({modules: [], marketplace: []}),
+      member
+        ? Promise.resolve({ applicationPolicies: [] })
+        : api("application-policies").catch(() => ({ applicationPolicies: [] })),
+      capabilities.plugins && !member ? api("modules") : Promise.resolve({ modules: [], marketplace: [] }),
     ]);
     setAccounts((acc.accounts ?? []) as Account[]);
     setMultivibeCloud(cloudRes as MultivibeCloudProvider);
@@ -782,33 +850,161 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
     setLoginBusy(true);
     try {
       setError("");
-      await api("session", {
-        method: "POST",
-        body: JSON.stringify({ token: loginToken }),
-      });
-      setLoginToken("");
+      if (loginMode === "password") {
+        const session = await api("auth/login", {
+          method: "POST",
+          body: JSON.stringify({ email: loginEmail, password: loginPassword }),
+        });
+        applySession(session as DashboardSession);
+        setLoginPassword("");
+      } else {
+        await api("session", {
+          method: "POST",
+          body: JSON.stringify({ token: loginToken }),
+        });
+        setLoginToken("");
+        applySession({ role: "admin", via: "token" });
+      }
       setAuthenticated(true);
       await Promise.all([loadBase(), loadTraceStats(traceRangeRef.current)]);
     } catch (err: any) {
-      setError(err instanceof ApiError && err.status === 401 ? "Invalid admin token." : err?.message ?? String(err));
+      const message =
+        err instanceof ApiError && err.status === 401
+          ? loginMode === "password"
+            ? t("Invalid email or password.")
+            : t("Invalid admin token.")
+          : err instanceof ApiError && err.status === 403
+            ? t("This account is suspended.")
+            : err?.message ?? String(err);
+      setError(message);
       setAuthenticated(false);
     } finally {
       setLoginBusy(false);
     }
   };
 
+  const signInWithPasskey = async () => {
+    setLoginBusy(true);
+    try {
+      setError("");
+      const { startAuthentication } = await import("@simplewebauthn/browser");
+      const start = await api("auth/passkey/options", {
+        method: "POST",
+        body: JSON.stringify(loginEmail.trim() ? { email: loginEmail.trim() } : {}),
+      });
+      const response = await startAuthentication({ optionsJSON: start.options });
+      const session = await api("auth/passkey/login", {
+        method: "POST",
+        body: JSON.stringify({ flowId: start.flowId, response }),
+      });
+      applySession(session as DashboardSession);
+      setAuthenticated(true);
+      await Promise.all([loadBase(), loadTraceStats(traceRangeRef.current)]);
+    } catch (err: any) {
+      const message =
+        err instanceof ApiError && err.status === 403
+          ? t("This account is suspended.")
+          : err instanceof ApiError && err.status === 401
+            ? t("That passkey is not recognised.")
+            : err?.name === "NotAllowedError"
+              ? t("Passkey sign-in was cancelled.")
+              : err?.message ?? t("Passkey sign-in failed.");
+      setError(message);
+      setAuthenticated(false);
+    } finally {
+      setLoginBusy(false);
+    }
+  };
+
+  const addPasskey = async () => {
+    setPasskeyBusy(true);
+    setPasskeyStatus("");
+    try {
+      const { startRegistration } = await import("@simplewebauthn/browser");
+      const start = await api("auth/passkey/register/options", { method: "POST" });
+      const response = await startRegistration({ optionsJSON: start.options });
+      const result = await api("auth/passkey/register", {
+        method: "POST",
+        body: JSON.stringify({ flowId: start.flowId, response }),
+      });
+      if (result?.user) setSessionUser(result.user as DashboardUser);
+      setPasskeyStatus(t("Passkey added."));
+    } catch (err: any) {
+      setPasskeyStatus(
+        err?.name === "NotAllowedError"
+          ? t("Passkey registration was cancelled.")
+          : t("Passkey registration failed."),
+      );
+    } finally {
+      setPasskeyBusy(false);
+    }
+  };
+
   const logout = async () => {
     invalidateLocalRuntimeDiscovery();
     try {
-      await api("session", { method: "DELETE" });
+      await api("auth/logout", { method: "POST" });
     } catch {
       // Treat logout as local even if the session is already gone.
     }
+    applySession(null);
     setAuthenticated(false);
     setAccounts([]);
     setTraces([]);
     setAliases([]);
     setError("");
+  };
+
+  useEffect(() => {
+    if (!inviteToken) return;
+    void (async () => {
+      try {
+        const info = await api(`auth/invite?token=${encodeURIComponent(inviteToken)}`);
+        setInviteEmail(String(info?.email ?? ""));
+        setInviteName(String(info?.name ?? ""));
+      } catch (err: any) {
+        setError(
+          err instanceof ApiError && (err.status === 404 || err.status === 410)
+            ? t("This invite link is invalid or expired.")
+            : err?.message ?? String(err),
+        );
+      }
+    })();
+  }, [inviteToken]);
+
+  const acceptInvite = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setInviteBusy(true);
+    try {
+      setError("");
+      const session = await api("auth/invite/accept", {
+        method: "POST",
+        body: JSON.stringify({
+          token: inviteToken,
+          password: invitePassword,
+          ...(inviteName.trim() ? { name: inviteName.trim() } : {}),
+        }),
+      });
+      applySession(session as DashboardSession);
+      setInviteToken("");
+      setInvitePassword("");
+      const url = new URL(window.location.href);
+      url.searchParams.delete("invite");
+      window.history.replaceState({}, "", url.toString());
+      setLocationSearch(url.search);
+      setAuthenticated(true);
+      await Promise.all([loadBase(), loadTraceStats(traceRangeRef.current)]);
+    } catch (err: any) {
+      setError(
+        err instanceof ApiError && (err.status === 404 || err.status === 410)
+          ? t("This invite link is invalid or expired.")
+          : err instanceof ApiError && err.status === 400
+            ? t("Use at least 8 characters for the password.")
+            : err?.message ?? String(err),
+      );
+    } finally {
+      setInviteBusy(false);
+    }
   };
 
   useEffect(() => {
@@ -853,6 +1049,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
         window.history.replaceState({}, "", u.toString());
         setLocationSearch(u.search);
         sessionStorage.removeItem("multivibe-oauth-pending");
+        await refreshIdentity();
         await Promise.all([loadBase(), loadTraceStats(traceRangeRef.current)]);
         setAuthenticated(true);
         setTab("accounts");
@@ -877,6 +1074,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
           setAuthenticated(false);
           return;
         }
+        await refreshIdentity();
         setAuthenticated(true);
         await Promise.all([loadBase(), loadTraceStats(traceRangeRef.current)]);
       } catch (e: any) {
@@ -952,7 +1150,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   };
 
   const del = async (id: string) => {
-    if (confirm("Delete account?")) {
+    if (confirm(t("Delete account?"))) {
       await api(`accounts/${id}`, { method: "DELETE" });
       await loadBase();
     }
@@ -976,13 +1174,13 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
       const credit = availability?.credit;
       const amount = findAvailableCount(credit);
       if (amount === undefined) {
-        throw new Error("OpenAI did not report an available reset-credit count.");
+        throw new Error(t("OpenAI did not report an available reset-credit count."));
       }
       if (amount < 1) {
-        throw new Error("No rate-limit reset credits are available for this account.");
+        throw new Error(t("No rate-limit reset credits are available for this account."));
       }
-      const description = `${amount} reset credit${amount === 1 ? "" : "s"} available`;
-      if (!confirm(`${description}. Consume one now?`)) return;
+      const description = amount === 1 ? t("1 reset credit available") : t("{count} reset credits available", { count: amount });
+      if (!confirm(t("{description}. Consume one now?", { description }))) return;
       await api(`accounts/${id}/rate-limit-reset-credit/consume`, {
         method: "POST",
       });
@@ -1041,7 +1239,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
       body: JSON.stringify({ callbackOrigin: window.location.origin }),
     });
     const authorizeUrl = String(result?.authorizeUrl ?? "");
-    if (!authorizeUrl) throw new Error("MultiVibe Cloud authorization is unavailable.");
+    if (!authorizeUrl) throw new Error(t("MultiVibe Cloud authorization is unavailable."));
     window.location.assign(authorizeUrl);
   };
 
@@ -1092,7 +1290,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   };
 
   const deleteAlias = async (id: string) => {
-    if (confirm("Delete model alias?")) {
+    if (confirm(t("Delete model alias?"))) {
       await api(`model-aliases/${id}`, { method: "DELETE" });
       await loadBase();
     }
@@ -1116,7 +1314,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
     });
     const created = result.proxyApiKey as CreatedProxyApiKey;
     try { await loadBase(); } catch {
-      return { ...created, warning: [created.warning, "The key was created, but the workspace could not refresh. Save this secret before reloading."].filter(Boolean).join(" ") };
+      return { ...created, warning: [created.warning, t("The key was created, but the workspace could not refresh. Save this secret before reloading.")].filter(Boolean).join(" ") };
     }
     return created;
   };
@@ -1209,7 +1407,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
       });
       if (!res.ok) {
         const txt = await res.text();
-        if (res.status === 401) throw new ApiError(401, txt || "unauthorized");
+        if (res.status === 401) throw new ApiError(401, txt || t("unauthorized"));
         throw new Error(txt || `HTTP ${res.status}`);
       }
       const blob = await res.blob();
@@ -1233,54 +1431,176 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
   if (authenticated === null || (!capabilities.host && authenticated && !baseLoaded)) {
     return (
       <div className="auth-page">
+        <LanguageSwitcher className="auth-language" />
         <div className="auth-shell panel">
           <div className="auth-wordmark" aria-hidden="true" />
           <div>
             <h1 className="sr-only">MultiVibe</h1>
-            <span className="eyebrow">Multi-provider routing</span>
-            <p className="muted">Checking your session...</p>
+            <span className="eyebrow">{t("Multi-provider routing")}</span>
+            <p className="muted">{t("Checking your session...")}</p>
           </div>
-          {error ? <p role="alert" className="error">{error}</p> : <div className="auth-loading" aria-label="Loading" />}
+          {error ? <p role="alert" className="error">{error}</p> : <div className="auth-loading" aria-label={t("Loading")} />}
         </div>
       </div>
     );
   }
 
-  if (!authenticated && !capabilities.localAuthentication) {
-    return <div className="auth-page"><div className="auth-shell panel" role="alert"><p>Your session is unavailable.</p><button className="btn" onClick={() => adapter.onAuthenticationRequired?.()}>Sign in</button></div></div>;
-  }
-
-  if (!authenticated) {
+  if (!authenticated && inviteToken) {
     return (
       <div className="auth-page">
-        <form className="auth-shell panel" onSubmit={login}>
+        <LanguageSwitcher className="auth-language" />
+        <form className="auth-shell panel" onSubmit={acceptInvite}>
           <div className="auth-wordmark" aria-hidden="true" />
           <div>
             <h1 className="sr-only">MultiVibe</h1>
-            <span className="eyebrow">Admin workspace</span>
-            <p className="muted">Sign in to manage routing, providers and request activity.</p>
+            <span className="eyebrow">{t("Accept your invite")}</span>
+            <p className="muted">
+              {inviteEmail
+                ? t("Choose a password for {email}.", { email: inviteEmail })
+                : t("Choose a password to activate your account.")}
+            </p>
           </div>
           <label className="control-field">
-            <span className="control-label">Admin token</span>
+            <span className="control-label">{t("Name")}</span>
+            <input
+              value={inviteName}
+              onChange={(e) => setInviteName(e.target.value)}
+              placeholder={t("Optional")}
+              autoComplete="name"
+            />
+          </label>
+          <label className="control-field">
+            <span className="control-label">{t("Password")}</span>
             <input
               autoFocus
               type="password"
-              value={loginToken}
-              onChange={(e) => setLoginToken(e.target.value)}
-              placeholder="Enter your token"
-              autoComplete="current-password"
+              required
+              minLength={8}
+              value={invitePassword}
+              onChange={(e) => setInvitePassword(e.target.value)}
+              placeholder={t("At least 8 characters")}
+              autoComplete="new-password"
             />
           </label>
           {error && <div className="error auth-error">{error}</div>}
-          <button className="btn" type="submit" disabled={loginBusy || !loginToken.trim()}>
-            {loginBusy ? "Unlocking..." : "Unlock dashboard"}
+          <button className="btn" type="submit" disabled={inviteBusy || invitePassword.length < 8}>
+            {inviteBusy ? t("Activating...") : t("Activate account")}
           </button>
         </form>
       </div>
     );
   }
 
+  if (!authenticated && !capabilities.localAuthentication) {
+    return <div className="auth-page"><LanguageSwitcher className="auth-language" /><div className="auth-shell panel" role="alert"><p>{t("Your session is unavailable.")}</p><button className="btn" onClick={() => adapter.onAuthenticationRequired?.()}>{t("Sign in")}</button></div></div>;
+  }
+
+  if (!authenticated) {
+    return (
+      <div className="auth-page">
+        <LanguageSwitcher className="auth-language" />
+        <form className="auth-shell panel" onSubmit={login}>
+          <div className="auth-wordmark" aria-hidden="true" />
+          <div>
+            <h1 className="sr-only">MultiVibe</h1>
+            <span className="eyebrow">{t("Your workspace")}</span>
+            <p className="muted">{t("Sign in to manage your providers, keys and request activity.")}</p>
+          </div>
+          <div className="inline" style={{ gap: 8 }} role="tablist" aria-label={t("Sign-in method")}>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={loginMode === "password"}
+              className={loginMode === "password" ? "btn" : "btn btn-secondary"}
+              onClick={() => { setLoginMode("password"); setError(""); }}
+            >
+              {t("Email & password")}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={loginMode === "token"}
+              className={loginMode === "token" ? "btn" : "btn btn-secondary"}
+              onClick={() => { setLoginMode("token"); setError(""); }}
+            >
+              {t("Admin token")}
+            </button>
+          </div>
+          {loginMode === "password" ? (
+            <>
+              <label className="control-field">
+                <span className="control-label">{t("Email")}</span>
+                <input
+                  autoFocus
+                  type="email"
+                  required
+                  value={loginEmail}
+                  onChange={(e) => setLoginEmail(e.target.value)}
+                  placeholder={t("you@example.com")}
+                  autoComplete="username"
+                />
+              </label>
+              <label className="control-field">
+                <span className="control-label">{t("Password")}</span>
+                <input
+                  type="password"
+                  required
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  placeholder={t("Your password")}
+                  autoComplete="current-password"
+                />
+              </label>
+            </>
+          ) : (
+            <label className="control-field">
+              <span className="control-label">{t("Admin token")}</span>
+              <input
+                autoFocus
+                type="password"
+                value={loginToken}
+                onChange={(e) => setLoginToken(e.target.value)}
+                placeholder={t("Enter your token")}
+                autoComplete="current-password"
+              />
+            </label>
+          )}
+          {error && <div className="error auth-error">{error}</div>}
+          <button
+            className="btn"
+            type="submit"
+            disabled={loginBusy || (loginMode === "password" ? !loginEmail.trim() || !loginPassword : !loginToken.trim())}
+          >
+            {loginBusy ? t("Signing in...") : t("Sign in")}
+          </button>
+          {loginMode === "password" && passkeysSupported && (
+            <button
+              className="btn btn-secondary"
+              type="button"
+              disabled={loginBusy}
+              onClick={() => void signInWithPasskey()}
+            >
+              <PasskeyIcon />
+              <span>{loginBusy ? t("Waiting for passkey...") : t("Sign in with a passkey")}</span>
+            </button>
+          )}
+        </form>
+      </div>
+    );
+  }
+
   const pageContext = { accounts, models, refresh: loadBase };
+  const passkeyAction = sessionUser && passkeysSupported ? (
+    <button
+      className="sidebar-footer-action"
+      type="button"
+      disabled={passkeyBusy}
+      onClick={() => void addPasskey()}
+    >
+      <PasskeyIcon />
+      <span>{passkeyBusy ? t("Adding passkey…") : t("Add passkey")}</span>
+    </button>
+  ) : null;
   const customPage = pages.find(page => page.id === tab);
   // Resolve page overrides/addons through own-entry lookups: `tab` can originate
   // from the host `activePage` prop or the URL, so an unvalidated dynamic dispatch
@@ -1294,7 +1614,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
           <div className="sidebar-brand">
             <img className="brand-mark" src="/assets/brand/multivibe-app-icon.svg" alt="" />
             <div className="brand-copy">
-              <strong>MultiVibe</strong><small className="brand-subtitle">{brandSubtitle}</small>
+              <strong>MultiVibe</strong><small className="brand-subtitle">{t(brandSubtitle)}</small>
             </div>
           </div>
 
@@ -1306,7 +1626,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
             aria-haspopup="dialog"
             aria-expanded={mobileNavigationOpen}
             aria-controls="mobile-navigation-dialog"
-            aria-label={`Open navigation. Current section: ${activeTabItem.label}`}
+            aria-label={t("Open navigation. Current section: {section}", { section: activeTabItem.label })}
             onClick={() => setMobileNavigationOpen(true)}
           >
             <span className="mobile-navigation-current-icon"><TabIcon tab={tab} /></span>
@@ -1315,7 +1635,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
               <strong>{activeTabItem.label}</strong>
             </span>
             <span className="mobile-navigation-trigger-label">
-              Menu
+              {t("Menu")}
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
             </span>
           </button>
@@ -1326,11 +1646,11 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
             onPointerEnter={revealSidebarScrollbar}
             onFocusCapture={revealSidebarScrollbar}
           >
-            <nav className="sidebar-nav" aria-label="Primary navigation">
-              {(chatUrl || cloudConnected) && <a className="btn workspace-chat-link" href={chatUrl ?? "https://chat.multivibe.cloud"}>Open chat →</a>}
+            <nav className="sidebar-nav" aria-label={t("Primary navigation")}>
+              {(chatUrl || cloudConnected) && <a className="btn workspace-chat-link" href={chatUrl ?? "https://chat.multivibe.cloud"}>{t("Open chat")} →</a>}
               {visibleTabItems.map((item, index) => (
                 <React.Fragment key={item.id}>
-                {(index === 0 || visibleTabItems[index - 1].group !== item.group) && <span className="sidebar-nav-label">{canManage ? item.group : "Workspace"}</span>}
+                {(index === 0 || visibleTabItems[index - 1].group !== item.group) && <span className="sidebar-nav-label">{canManage ? t(item.group) : t("Workspace")}</span>}
                 <button
                   type="button"
                   className={tab === item.id ? "nav-tab active" : "nav-tab"}
@@ -1360,18 +1680,21 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
               <div className="sidebar-status">
                 <span className="status-dot" />
                 <span>
-                  <strong>{demo ? "Demo instance" : sanitized ? "Sanitized view" : "System online"}</strong>
-                  <small>{canManage ? `${accounts.length} accounts · ` : ""}{models.length} models</small>
+                  <strong>{demo ? t("Demo instance") : sanitized ? t("Sanitized view") : t("System online")}</strong>
+                  <small>{canManage ? `${accounts.length} ${accounts.length === 1 ? t("account") : t("accounts")} · ` : ""}{models.length} {models.length === 1 ? t("model") : t("models")}</small>
                 </span>
               </div>
               <ThemeSwitcher value={themeMode} onChange={setThemeMode} />
+              <LanguageSwitcher />
               {userMenu}
+              {passkeyAction}
+              {passkeyStatus && <small className="muted" role="status">{passkeyStatus}</small>}
               {capabilities.localAuthentication && <button className="sidebar-footer-action sidebar-lock-button" type="button" onClick={() => void logout()}>
-                <LockIcon /><span>Lock dashboard</span>
+                <LockIcon /><span>{t("Lock dashboard")}</span>
               </button>}
               {capabilities.githubPromotion && githubPromotionDismissed && (
                 <a className="sidebar-footer-action github-repository-link" href={GITHUB_REPOSITORY_URL} target="_blank" rel="noreferrer">
-                  <GitHubIcon /><span>View on GitHub</span>
+                  <GitHubIcon /><span>{t("View on GitHub")}</span>
                 </a>
               )}
             </div>
@@ -1404,23 +1727,23 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
                 <img className="brand-mark" src="/assets/brand/multivibe-app-icon.svg" alt="" />
                 <div>
                   <small>MultiVibe</small>
-                  <strong id="mobile-navigation-title">Navigate workspace</strong>
+                  <strong id="mobile-navigation-title">{t("Navigate workspace")}</strong>
                 </div>
               </div>
               <button
                 type="button"
                 className="mobile-navigation-close"
-                aria-label="Close navigation"
+                aria-label={t("Close navigation")}
                 onClick={() => setMobileNavigationOpen(false)}
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
               </button>
             </header>
 
-            <nav className="mobile-navigation-list" aria-label="Mobile primary navigation">
+            <nav className="mobile-navigation-list" aria-label={t("Mobile primary navigation")}>
               {visibleTabItems.map((item, index) => (
                 <React.Fragment key={item.id}>
-                {(index === 0 || visibleTabItems[index - 1].group !== item.group) && <span className="mobile-navigation-group">{canManage ? item.group : "Workspace"}</span>}
+                {(index === 0 || visibleTabItems[index - 1].group !== item.group) && <span className="mobile-navigation-group">{canManage ? t(item.group) : t("Workspace")}</span>}
                 <button
                   type="button"
                   className={tab === item.id ? "mobile-navigation-item active" : "mobile-navigation-item"}
@@ -1435,7 +1758,7 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
                     <strong>{item.label}</strong>
                     {canManage && <small>{item.description}</small>}
                   </span>
-                  {tab === item.id && <span className="mobile-navigation-active-label">Current</span>}
+                  {tab === item.id && <span className="mobile-navigation-active-label">{t("Current")}</span>}
                 </button>
                 </React.Fragment>
               ))}
@@ -1453,18 +1776,21 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
               <div className="mobile-navigation-status">
                 <span className="status-dot" />
                 <span>
-                  <strong>{demo ? "Demo instance" : sanitized ? "Sanitized view" : "System online"}</strong>
-                  <small>{canManage ? `${accounts.length} accounts · ` : ""}{models.length} models</small>
+                  <strong>{demo ? t("Demo instance") : sanitized ? t("Sanitized view") : t("System online")}</strong>
+                  <small>{canManage ? `${accounts.length} ${accounts.length === 1 ? t("account") : t("accounts")} · ` : ""}{models.length} {models.length === 1 ? t("model") : t("models")}</small>
                 </span>
               </div>
               <ThemeSwitcher value={themeMode} onChange={setThemeMode} />
+              <LanguageSwitcher />
               {userMenu}
+              {passkeyAction}
+              {passkeyStatus && <small className="muted" role="status">{passkeyStatus}</small>}
               {capabilities.localAuthentication && <button className="sidebar-footer-action sidebar-lock-button" type="button" onClick={() => void logout()}>
-                <LockIcon /><span>Lock dashboard</span>
+                <LockIcon /><span>{t("Lock dashboard")}</span>
               </button>}
               {capabilities.githubPromotion && githubPromotionDismissed && (
                 <a className="sidebar-footer-action github-repository-link" href={GITHUB_REPOSITORY_URL} target="_blank" rel="noreferrer">
-                  <GitHubIcon /><span>View on GitHub</span>
+                  <GitHubIcon /><span>{t("View on GitHub")}</span>
                 </a>
               )}
             </footer>
@@ -1491,18 +1817,18 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
             if (event.target === event.currentTarget) closeGitHubPromotion();
           }}>
             <section className="modal panel github-promotion-modal" role="dialog" aria-modal="true" aria-labelledby="github-promotion-title">
-              <button className="modal-close-button github-promotion-close" type="button" onClick={closeGitHubPromotion} aria-label="Close">
+              <button className="modal-close-button github-promotion-close" type="button" onClick={closeGitHubPromotion} aria-label={t("Close")}>
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
               </button>
               <div className="github-promotion-icon" aria-hidden="true">★</div>
-              <span className="eyebrow">Enjoying MultiVibe?</span>
-              <h2 id="github-promotion-title">Help the project grow</h2>
-              <p>If MultiVibe is useful to you, a GitHub star helps more people discover it. Feedback and bug reports are just as valuable.</p>
+              <span className="eyebrow">{t("Enjoying MultiVibe?")}</span>
+              <h2 id="github-promotion-title">{t("Help the project grow")}</h2>
+              <p>{t("If MultiVibe is useful to you, a GitHub star helps more people discover it. Feedback and bug reports are just as valuable.")}</p>
               <div className="github-promotion-actions">
-                <a className="btn" href={GITHUB_REPOSITORY_URL} target="_blank" rel="noreferrer" onClick={closeGitHubPromotion}>Star on GitHub</a>
-                <a className="btn secondary" href={GITHUB_NEW_ISSUE_URL} target="_blank" rel="noreferrer">Submit an issue</a>
+                <a className="btn" href={GITHUB_REPOSITORY_URL} target="_blank" rel="noreferrer" onClick={closeGitHubPromotion}>{t("Star on GitHub")}</a>
+                <a className="btn secondary" href={GITHUB_NEW_ISSUE_URL} target="_blank" rel="noreferrer">{t("Submit an issue")}</a>
               </div>
-              <button className="github-promotion-later" type="button" onClick={closeGitHubPromotion}>Maybe later</button>
+              <button className="github-promotion-later" type="button" onClick={closeGitHubPromotion}>{t("Maybe later")}</button>
             </section>
           </div></ModalPortal>
         )}
@@ -1523,9 +1849,9 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
         )}
 
         <div className="workspace">
-          {(chatUrl || cloudConnected) && <a className="btn core-mobile-chat" href={chatUrl ?? "https://chat.multivibe.cloud"}>Open chat →</a>}
+          {(chatUrl || cloudConnected) && <a className="btn core-mobile-chat" href={chatUrl ?? "https://chat.multivibe.cloud"}>{t("Open chat")} →</a>}
 
-          {demo && <div className="demo-notice" role="note"><strong>Demo instance</strong><span>Fictional data · Read-only · No providers connected</span></div>}
+          {demo && <div className="demo-notice" role="note"><strong>{t("Demo instance")}</strong><span>{t("Fictional data · Read-only · No providers connected")}</span></div>}
 
           {error && <div className="panel error workspace-error">{error}</div>}
 
@@ -1536,14 +1862,14 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
         {tab === "overview" && capabilities.teamHome && teamWorkspace.state === "team" && (
           <section className="panel team-workspace-home">
             <span className="eyebrow">{workspaceLabel(teamWorkspace)}</span>
-            <h1>{canManage ? "Your team, in one place" : "Ready when you are"}</h1>
-            <p>{canManage ? "Manage shared resources in Cloud, or configure this instance using the navigation." : "Start a conversation or explore the models available to this machine. Your team manages shared providers and configuration."}</p>
+            <h1>{canManage ? t("Your team, in one place") : t("Ready when you are")}</h1>
+            <p>{canManage ? t("Manage shared resources in Cloud, or configure this instance using the navigation.") : t("Start a conversation or explore the models available to this machine. Your team manages shared providers and configuration.")}</p>
             <div className="team-workspace-actions">
-              {cloudConnected && <a className="btn" href="https://chat.multivibe.cloud">Open chat →</a>}
-              <button className="btn secondary" onClick={() => setTab("models")}>Browse models</button>
-              <a className="btn secondary" href="https://app.multivibe.cloud/team">{canManage ? "Manage team" : "View my team"}</a>
-              {teamWorkspace.role === "billing" && <a className="btn secondary" href="https://app.multivibe.cloud/billing">Team billing</a>}
-              {teamWorkspace.role === null && <button className="btn secondary" onClick={() => void loadBase().catch(() => setError("Could not refresh workspace access."))}>Retry connection</button>}
+              {cloudConnected && <a className="btn" href="https://chat.multivibe.cloud">{t("Open chat")} →</a>}
+              <button className="btn secondary" onClick={() => setTab("models")}>{t("Browse models")}</button>
+              <a className="btn secondary" href="https://app.multivibe.cloud/team">{canManage ? t("Manage team") : t("View my team")}</a>
+              {teamWorkspace.role === "billing" && <a className="btn secondary" href="https://app.multivibe.cloud/billing">{t("Team billing")}</a>}
+              {teamWorkspace.role === null && <button className="btn secondary" onClick={() => void loadBase().catch(() => setError(t("Could not refresh workspace access.")))}>{t("Retry connection")}</button>}
             </div>
           </section>
         )}
@@ -1648,6 +1974,15 @@ export default function App({ pages = [], pageOverrides = {}, pageAddons = {}, a
             onHarnessesChanged={loadBase}
           />
         )}
+
+        {tab === "billing" && (
+          <BillingTab api={api} />
+        )}
+
+        {tab === "users" && canManage && (
+          <UsersTab api={api} />
+        )}
+        {tab === "payments" && canManage && <PaymentsPanel api={api} />}
 
         {tab === "tracing" && (
           <TracingTab

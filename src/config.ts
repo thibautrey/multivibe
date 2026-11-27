@@ -343,3 +343,21 @@ export const MODEL_NOT_FOUND_BLOCK_DURATION_MS = Math.max(
   60_000,
   Number(process.env.MODEL_NOT_FOUND_BLOCK_DURATION_MS ?? 60 * 60_000),
 );
+
+// --- Marketplace billing ----------------------------------------------------
+/** Broker base URL; empty means the marketplace integration is off. */
+export const MARKETPLACE_URL = (process.env.MULTIVIBE_MARKETPLACE_URL ?? "").replace(/\/+$/, "");
+/** Instance credentials (instance id + secret), mode 0600, never in accounts.json. */
+export const MARKETPLACE_SECRET_PATH =
+  process.env.MULTIVIBE_MARKETPLACE_SECRET_PATH ??
+  path.resolve(path.dirname(STORE_PATH), "payments-credentials.json");
+/** Outbox polling interval while billing is enabled. */
+export const MARKETPLACE_POLL_INTERVAL_MS = Math.max(
+  15_000,
+  Number(process.env.MULTIVIBE_MARKETPLACE_POLL_INTERVAL_MS ?? 60_000),
+);
+/** Per-request timeout for broker calls. */
+export const MARKETPLACE_REQUEST_TIMEOUT_MS = Math.max(
+  2_000,
+  Number(process.env.MULTIVIBE_MARKETPLACE_REQUEST_TIMEOUT_MS ?? 15_000),
+);

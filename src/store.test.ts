@@ -544,3 +544,164 @@ test("an application policy can be deleted, and stays deleted", async (t) => {
     ["keep"],
   );
 });
+
+test("usage spends the period allowance before the prepaid wallet", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-store-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const store = new AccountStore(path.join(directory, "accounts.json"));
+  await store.init();
+  const periodStart = "2026-11-01T00:00:00.000Z";
+  await store.addUser({
+    id: "usr_wallet",
+    email: "wallet@example.com",
+    role: "member",
+    status: "active",
+    quota: { period: "month", creditUsd: 2 },
+    usage: { periodStart, requests: 0, tokens: 0, costUsd: 0 },
+    walletUsd: 10,
+    createdAt: 1,
+    updatedAt: 1,
+  });
+
+  // Covered by the allowance: the wallet is untouched.
+  store.recordUserUsage("usr_wallet", { requests: 1, tokens: 100, costUsd: 1.25 });
+  let user = await store.findUser("usr_wallet");
+  assert.equal(user?.usage.grantedCostUsd, 1.25);
+  assert.equal(user?.walletUsd, 10);
+
+  // Crosses the allowance: the excess is debited from the wallet.
+  store.recordUserUsage("usr_wallet", { requests: 1, tokens: 100, costUsd: 1 });
+  user = await store.findUser("usr_wallet");
+  assert.equal(user?.usage.grantedCostUsd, 2);
+  assert.equal(user?.walletUsd, 9.75);
+  assert.equal(user?.usage.costUsd, 2.25);
+
+  // A rollover resets the allowance counters but never the wallet.
+  await store.patchUser("usr_wallet", {
+    usage: { periodStart: "2026-10-01T00:00:00.000Z", requests: 9, tokens: 900, costUsd: 9, grantedCostUsd: 2 },
+  });
+  store.recordUserUsage("usr_wallet", { requests: 1, tokens: 10, costUsd: 0.5 });
+  user = await store.findUser("usr_wallet");
+  assert.equal(user?.walletUsd, 9.75);
+  assert.equal(user?.usage.grantedCostUsd, 0.5);
+  assert.equal(user?.usage.costUsd, 0.5);
+});
+
+test("a wallet-only account consumes the wallet and stops at zero", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-store-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const store = new AccountStore(path.join(directory, "accounts.json"));
+  await store.init();
+  await store.addUser({
+    id: "usr_only",
+    email: "only@example.com",
+    role: "member",
+    status: "active",
+    quota: { period: "month" },
+    usage: { periodStart: "2026-11-01T00:00:00.000Z", requests: 0, tokens: 0, costUsd: 0 },
+    walletUsd: 1,
+    createdAt: 1,
+    updatedAt: 1,
+  });
+  store.recordUserUsage("usr_only", { requests: 1, tokens: 10, costUsd: 1.4 });
+  const user = await store.findUser("usr_only");
+  // The small overshoot is kept as a negative balance, then blocks.
+  assert.equal(user?.walletUsd, -0.4);
+  assert.equal(user?.usage.grantedCostUsd, 0);
+
+  const view = await store.findUser("usr_only");
+  assert.equal(view?.walletUsd, -0.4);
+});
+
+test("a broker payment credits the wallet once and survives a ledger rotation", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-store-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const store = new AccountStore(path.join(directory, "accounts.json"));
+  await store.init();
+  await store.addUser({
+    id: "usr_paid",
+    email: "paid@example.com",
+    role: "member",
+    status: "active",
+    quota: { period: "month" },
+    usage: { periodStart: "2026-11-01T00:00:00.000Z", requests: 0, tokens: 0, costUsd: 0 },
+    createdAt: 1,
+    updatedAt: 1,
+  });
+
+  const first = await store.creditWalletFromPayment("usr_paid", {
+    paymentId: "pay_1",
+    creditUsd: 10,
+  });
+  assert.equal(first?.applied, true);
+  assert.equal(first?.user.walletUsd, 10);
+
+  // A replayed webhook or a return page refresh uses the same payment id.
+  const replay = await store.creditWalletFromPayment("usr_paid", {
+    paymentId: "pay_1",
+    creditUsd: 10,
+  });
+  assert.equal(replay?.applied, false);
+
+  // Even after 500 newer ledger entries rotate the payment out of the ledger,
+  // the idempotency map still blocks a second credit.
+  for (let index = 0; index < 520; index += 1) {
+    await store.adjustUserWallet("usr_paid", 0.01, { kind: "adjust" });
+  }
+  const user = await store.findUser("usr_paid");
+  assert.equal(user?.creditLedger?.length, 500);
+  assert.equal(user?.creditLedger?.some((entry) => entry.paymentId === "pay_1"), false);
+  const late = await store.creditWalletFromPayment("usr_paid", {
+    paymentId: "pay_1",
+    creditUsd: 10,
+  });
+  assert.equal(late?.applied, false);
+  assert.equal((await store.findUser("usr_paid"))?.walletUsd, 15.2);
+});
+
+test("refunds are proportional, monotonic and can overdraw the wallet", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "multivibe-store-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const store = new AccountStore(path.join(directory, "accounts.json"));
+  await store.init();
+  await store.addUser({
+    id: "usr_refund",
+    email: "refund@example.com",
+    role: "member",
+    status: "active",
+    quota: { period: "month" },
+    usage: { periodStart: "2026-11-01T00:00:00.000Z", requests: 0, tokens: 0, costUsd: 0 },
+    createdAt: 1,
+    updatedAt: 1,
+  });
+  // A bonus makes credit (12) larger than the paid amount (10 EUR).
+  await store.creditWalletFromPayment("usr_refund", { paymentId: "pay_2", creditUsd: 12 });
+  await store.adjustUserWallet("usr_refund", -11, { kind: "debit" });
+  assert.equal((await store.findUser("usr_refund"))?.walletUsd, 1);
+
+  const partial = await store.refundWalletFromPayment("usr_refund", {
+    paymentId: "pay_2",
+    amountCents: 1000,
+    refundedCents: 250,
+  });
+  assert.equal(partial?.amountUsd, 3);
+  assert.equal((await store.findUser("usr_refund"))?.walletUsd, -2);
+
+  // Replaying the same partial refund changes nothing.
+  const replay = await store.refundWalletFromPayment("usr_refund", {
+    paymentId: "pay_2",
+    amountCents: 1000,
+    refundedCents: 250,
+  });
+  assert.equal(replay?.applied, false);
+
+  // A dispute returns the rest.
+  const dispute = await store.refundWalletFromPayment("usr_refund", {
+    paymentId: "pay_2",
+    amountCents: 1000,
+    refundedCents: 1000,
+    disputed: true,
+  });
+  assert.equal(dispute?.amountUsd, 9);
+  assert.equal((await store.findUser("usr_refund"))?.walletUsd, -11);
+});

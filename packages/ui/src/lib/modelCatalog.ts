@@ -1,5 +1,6 @@
 import type { Account, ExposedModel } from '../types';
 import type { CloudProvider, SetupProvider } from '../components/ProviderPicker';
+import { t } from '../i18n/core';
 
 export type CloudModel = { id: string; name: string; author?: string; aliases: string[]; availability: string; network: boolean; accessSource?: 'cloud'|'personal'|'team'; priceSummary?: string; availabilityLabel?: string; ready?: boolean };
 export type ModelRoute = { source: 'provider' | 'local' | 'cloud'; label: string; modelId: string; ready: boolean; accountId?: string; provider?: SetupProvider; sdkProvider?: string; accessSource?: 'cloud'|'personal'|'team'; priceSummary?: string; availabilityLabel?: string };
@@ -147,7 +148,7 @@ export function aggregateModels(models: ExposedModel[], accounts: Account[], clo
         modelId: model.id, ready: !account.localRuntime && (model.metadata?.ready ?? healthy(account, model.id)), accessSource: model.metadata?.accessSource ?? account.accessSource, priceSummary: model.metadata?.priceSummary, availabilityLabel: model.metadata?.availabilityLabel, accountId: account.id, provider: account.provider ?? 'openai', sdkProvider: account.sdkProvider },
         authorHints.find(hint => knownOwner(hint)));
     }
-    if (!matching.length) add(model.id, label, { source: 'provider', label: model.metadata?.is_alias ? 'Routing alias' : candidates.join(' · ') || 'Provider', modelId: model.id, ready: model.metadata?.ready ?? false, accessSource: model.metadata?.accessSource, priceSummary: model.metadata?.priceSummary, availabilityLabel: model.metadata?.availabilityLabel, provider: candidates[0] },
+    if (!matching.length) add(model.id, label, { source: 'provider', label: model.metadata?.is_alias ? t('Routing alias') : candidates.join(' · ') || t('Provider'), modelId: model.id, ready: model.metadata?.ready ?? false, accessSource: model.metadata?.accessSource, priceSummary: model.metadata?.priceSummary, availabilityLabel: model.metadata?.availabilityLabel, provider: candidates[0] },
       authorHints.find(hint => knownOwner(hint)));
   }
   for (const provider of providers) for (const model of provider.models) {
@@ -168,7 +169,7 @@ export function aggregateModels(models: ExposedModel[], accounts: Account[], clo
       }
     }
     if (entry?.routes.some(route => route.source === 'cloud')) continue;
-    add(model.id, model.name, { source: 'cloud', label: model.network ? 'MultiVibe Cloud network' : 'MultiVibe Cloud catalog', modelId: model.id, ready: model.ready ?? false, accessSource: model.accessSource, priceSummary: model.priceSummary, availabilityLabel: model.availabilityLabel }, model.author);
+    add(model.id, model.name, { source: 'cloud', label: model.network ? t('MultiVibe Cloud network') : t('MultiVibe Cloud catalog'), modelId: model.id, ready: model.ready ?? false, accessSource: model.accessSource, priceSummary: model.priceSummary, availabilityLabel: model.availabilityLabel }, model.author);
   }
   return [...entries.values()].sort((a, b) => Number(b.routes.some(route => route.ready)) - Number(a.routes.some(route => route.ready)) || a.name.localeCompare(b.name));
 }

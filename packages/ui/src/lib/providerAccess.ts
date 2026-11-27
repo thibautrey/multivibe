@@ -1,3 +1,4 @@
+import { t } from "../i18n/core";
 import { EXPANDED_PROVIDER_ACCESS } from "./expandedProviderMetadata";
 // Reviewed 2026-09-07. These describe the connected API/OAuth service,
 // not a provider's consumer chatbot. Trials do not count as free tiers.
@@ -40,11 +41,17 @@ export const PROVIDER_ACCESS: Record<string, ProviderAccess> = {
 };
 
 export function providerAccess(id: string, sdk = false): ProviderAccess | undefined {
+  const access = rawAccess(id, sdk);
+  // Notes are stored as English source strings and translated on read so the
+  // pricing tables stay locale-independent.
+  return access ? { ...access, note: t(access.note) } : undefined;
+}
+function rawAccess(id: string, sdk = false): ProviderAccess | undefined {
   return sdk ? SDK_PROVIDER_ACCESS[id] ?? PROVIDER_ACCESS[id] : PROVIDER_ACCESS[id];
 }
 export function matchesAccessFilter(id: string, filter: AccessFilter | null, sdk = false): boolean {
   if (!filter) return true;
-  const access = providerAccess(id, sdk);
+  const access = rawAccess(id, sdk);
   if (!access || access.reviewPricing) return false;
   return filter === "Paid" ? access.paid : filter === "Free" ? access.free : access.paid && access.free;
 }

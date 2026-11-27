@@ -1,4 +1,5 @@
 import ModalPortal from "../components/ModalPortal";
+import { useT } from "../i18n";
 import { useState } from "react";
 import { HostHarnessCards } from "./HostHarnessCarousel";
 
@@ -19,6 +20,7 @@ export function HostOnboarding({
   onHarnessesChanged,
   onOpenProviderSetup,
 }: Props) {
+  const t = useT();
   const [step, setStep] = useState(0);
 
   return (
@@ -31,18 +33,18 @@ export function HostOnboarding({
       >
         <header className="host-onboarding-header">
           <div>
-            <span className="eyebrow">Welcome to MultiVibe Host</span>
-            <div className="host-onboarding-steps" aria-label={`Step ${step + 1} of ${STEPS.length}`}>
+            <span className="eyebrow">{t("Welcome to MultiVibe Host")}</span>
+            <div className="host-onboarding-steps" aria-label={t("Step {current} of {total}", { current: step + 1, total: STEPS.length })}>
               {STEPS.map((label, index) => (
                 <span className={index === step ? "active" : index < step ? "complete" : ""} key={label}>
                   <i aria-hidden="true">{index + 1}</i>
-                  {label}
+                  {t(label)}
                 </span>
               ))}
             </div>
           </div>
           <button className="btn ghost host-onboarding-skip" type="button" onClick={onComplete}>
-            Skip setup
+            {t("Skip setup")}
           </button>
         </header>
 
@@ -50,8 +52,8 @@ export function HostOnboarding({
           {step === 0 && (
             <>
               <div className="host-onboarding-copy">
-                <h2 id="host-onboarding-title">Connect your coding tool</h2>
-                <p>Choose a detected harness. You can change this later.</p>
+                <h2 id="host-onboarding-title">{t("Connect your coding tool")}</h2>
+                <p>{t("Choose a detected harness. You can change this later.")}</p>
               </div>
               <HostHarnessCards variant="onboarding" onApiKeysChanged={onHarnessesChanged} />
             </>
@@ -61,17 +63,17 @@ export function HostOnboarding({
             <div className="host-onboarding-simple-step">
               <div className="host-onboarding-step-icon" aria-hidden="true">+</div>
               <div className="host-onboarding-copy">
-                <h2 id="host-onboarding-title">Add a provider</h2>
-                <p>Connect one account so MultiVibe has models to route.</p>
+                <h2 id="host-onboarding-title">{t("Add a provider")}</h2>
+                <p>{t("Connect one account so MultiVibe has models to route.")}</p>
               </div>
               {accountCount > 0 ? (
                 <div className="host-onboarding-ready" role="status">
                   <span aria-hidden="true">✓</span>
-                  Provider connected
+                  {t("Provider connected")}
                 </div>
               ) : (
                 <button className="btn" type="button" onClick={onOpenProviderSetup}>
-                  Configure a provider
+                  {t("Configure a provider")}
                 </button>
               )}
             </div>
@@ -81,12 +83,12 @@ export function HostOnboarding({
             <div className="host-onboarding-simple-step">
               <img className="host-onboarding-cloud-icon" src="/assets/brand/multivibe-app-icon.svg" alt="" />
               <div className="host-onboarding-copy">
-                <span className="badge">Optional</span>
-                <h2 id="host-onboarding-title">Connect MultiVibe Cloud</h2>
-                <p>Sign in to your cloud account, or do this later.</p>
+                <span className="badge">{t("Optional")}</span>
+                <h2 id="host-onboarding-title">{t("Connect MultiVibe Cloud")}</h2>
+                <p>{t("Sign in to your cloud account, or do this later.")}</p>
               </div>
               <a className="btn secondary" href={cloudUrl} target="_blank" rel="noreferrer">
-                Open MultiVibe Cloud
+                {t("Open MultiVibe Cloud")}
               </a>
             </div>
           )}
@@ -99,7 +101,7 @@ export function HostOnboarding({
             disabled={step === 0}
             onClick={() => setStep((current) => Math.max(0, current - 1))}
           >
-            Back
+            {t("Back")}
           </button>
           {step < STEPS.length - 1 ? (
             <button
@@ -108,11 +110,11 @@ export function HostOnboarding({
               disabled={step === 1 && accountCount === 0}
               onClick={() => setStep((current) => Math.min(STEPS.length - 1, current + 1))}
             >
-              Continue
+              {t("Continue")}
             </button>
           ) : (
             <button className="btn" type="button" onClick={onComplete}>
-              Finish
+              {t("Finish")}
             </button>
           )}
         </footer>

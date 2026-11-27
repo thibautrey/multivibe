@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { estimateCostUsd, estimateCostUsdWithoutCache, getModelPricing } from "./model-pricing.js";
+import { estimateCostUsd, estimateCostUsdWithoutCache, getModelPricing, setModelBillingOverrides } from "./model-pricing.js";
+import { setOffPeakSchedule } from "./off-peak.js";
 
 const expected: Record<string, [number, number, number, number?]> = {
   "gpt-5.6-sol": [5, 0.5, 30, 6.25],
@@ -57,6 +58,87 @@ test("charges GPT-5.6 cache writes at 1.25x without double-counting input", () =
     300_000,
   );
   assert.equal(cost, 4.475);
+});
+
+test("operator-set billed rates override upstream pricing, including cached input", () => {
+  setModelBillingOverrides({
+    "gpt-5.4": { inputPer1M: 3, outputPer1M: 18, cachedInputPer1M: 0.3 },
+  });
+  try {
+    assert.deepEqual(getModelPricing("gpt-5.4"), {
+      inputPer1M: 3,
+      outputPer1M: 18,
+      cachedInputPer1M: 0.3,
+    });
+    // Qualified and dated ids resolve to the same operator price.
+    assert.equal(getModelPricing("openai/gpt-5.4")?.outputPer1M, 18);
+    assert.equal(getModelPricing("gpt-5.4-2026-01-01")?.inputPer1M, 3);
+    // A sibling model keeps its own upstream rate.
+    assert.equal(getModelPricing("gpt-5.4-mini")?.inputPer1M, 0.75);
+    // Input 1M (200k cached) + output 1M.
+    assert.equal(estimateCostUsd("gpt-5.4", 1_000_000, 1_000_000, 200_000), 0.8 * 3 + 0.2 * 0.3 + 18);
+    // Clearing the override restores the catalog rate.
+    setModelBillingOverrides(undefined);
+    assert.equal(getModelPricing("gpt-5.4")?.inputPer1M, 2.5);
+  } finally {
+    setModelBillingOverrides(undefined);
+  }
+});
+
+test("off-peak rates replace standard rates only inside the schedule", () => {
+  setModelBillingOverrides({
+    "gpt-5.4": {
+      inputPer1M: 3,
+      outputPer1M: 18,
+      offPeak: { inputPer1M: 1, outputPer1M: 6, cachedInputPer1M: 0.1 },
+    },
+  });
+  setOffPeakSchedule({
+    enabled: true,
+    timezone: "UTC",
+    days: { mon: [{ start: "09:00", end: "10:00" }] },
+  });
+  try {
+    const inside = Date.parse("2026-11-30T09:30:00Z");
+    const outside = Date.parse("2026-11-30T10:30:00Z");
+    assert.deepEqual(getModelPricing("gpt-5.4", inside), {
+      inputPer1M: 1,
+      outputPer1M: 6,
+      cachedInputPer1M: 0.1,
+    });
+    assert.deepEqual(getModelPricing("gpt-5.4", outside), {
+      inputPer1M: 3,
+      outputPer1M: 18,
+    });
+    // Input 1M (200k cached) + output 1M.
+    assert.equal(
+      estimateCostUsd("gpt-5.4", 1_000_000, 1_000_000, 200_000, 0, inside),
+      0.8 * 1 + 0.2 * 0.1 + 6,
+    );
+    assert.equal(
+      estimateCostUsd("gpt-5.4", 1_000_000, 1_000_000, 200_000, 0, outside),
+      0.8 * 3 + 0.2 * 3 + 18,
+    );
+    setOffPeakSchedule({
+      enabled: false,
+      timezone: "UTC",
+      days: { mon: [{ start: "09:00", end: "10:00" }] },
+    });
+    assert.deepEqual(getModelPricing("gpt-5.4", inside), {
+      inputPer1M: 3,
+      outputPer1M: 18,
+    });
+    // A model without off-peak rates keeps its standard (catalog) rate.
+    setOffPeakSchedule({
+      enabled: true,
+      timezone: "UTC",
+      days: { mon: [{ start: "09:00", end: "10:00" }] },
+    });
+    assert.equal(getModelPricing("gpt-5.4-mini", inside)?.inputPer1M, 0.75);
+  } finally {
+    setOffPeakSchedule(undefined);
+    setModelBillingOverrides(undefined);
+  }
 });
 
 test("charges GPT-6 Astra long-context cache writes at 1.25x without double-counting input", () => {

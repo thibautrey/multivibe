@@ -1,11 +1,7 @@
+import { useT } from "../../i18n";
+
 export const THEME_MODES = ["auto", "light", "dark"] as const;
 export type ThemeMode = (typeof THEME_MODES)[number];
-
-const THEME_LABELS: Record<ThemeMode, string> = {
-  auto: "Auto theme",
-  light: "Light theme",
-  dark: "Dark theme",
-};
 
 export function initialThemeMode(): ThemeMode {
   const stored = localStorage.getItem("themeMode");
@@ -45,16 +41,22 @@ export function ThemeSwitcher({
   value: ThemeMode;
   onChange: (mode: ThemeMode) => void;
 }) {
+  const t = useT();
+  const labels: Record<ThemeMode, string> = {
+    auto: t("Auto theme"),
+    light: t("Light theme"),
+    dark: t("Dark theme"),
+  };
   return (
-    <div className="theme-switcher" role="group" aria-label="Theme">
+    <div className="theme-switcher" role="group" aria-label={t("Theme")}>
       {THEME_MODES.map((mode) => (
         <button
           key={mode}
           type="button"
           className={value === mode ? "theme-option active" : "theme-option"}
           onClick={() => onChange(mode)}
-          title={THEME_LABELS[mode]}
-          aria-label={THEME_LABELS[mode]}
+          title={labels[mode]}
+          aria-label={labels[mode]}
           aria-pressed={value === mode}
         >
           <ThemeIcon mode={mode} />

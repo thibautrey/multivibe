@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { setImmediate as yieldToQueries } from "node:timers/promises";
 import {
   normalizeTrace, toStatsHistoryEntry, isHiddenTraceRoute,
-  createEmptyBucket, addTraceToBucket, buildBucketTraceStats,
+  createEmptyBucket, addTraceToBucket, buildBucketTraceStats, buildTraceStats,
   createUsageAggregate, addTraceToAggregate, finalizeAggregate,
   type TraceEntry, type TraceBucketAggregate, type UsageAggregate, ttftInputTokenBucket,
 } from "./traces.js";
@@ -29,12 +29,12 @@ const MAX = Number.MAX_SAFE_INTEGER;
 const BATCH = 1000;
 const encode = (value: unknown) => JSON.stringify(value, (_key, item) => item instanceof Map ? { $map: [...item] } : item);
 const decode = (value: string) => JSON.parse(value, (_key, item) => item && item.$map ? new Map(item.$map) : item);
-type Filter = { sinceMs?: number; untilMs?: number; accountId?: string; route?: string; application?: string; projectId?: string; apiKeyId?: string };
+type Filter = { sinceMs?: number; untilMs?: number; accountId?: string; route?: string; application?: string; projectId?: string; apiKeyId?: string; userId?: string };
 type Rollup = { meta: TraceEntry; usage: UsageAggregate; project: MutableUsage; sessionAttempts: number };
 function bounds(args: Filter) { return [Number.isFinite(args.sinceMs) ? args.sinceMs! : MIN, Number.isFinite(args.untilMs) ? args.untilMs! : MAX]; }
 function visible(t: TraceEntry) { return !isHiddenTraceRoute(t.route) && t.traceKind !== "diagnostic"; }
 function attempt(t: TraceEntry) { return !t.traceKind || t.traceKind === "upstream-attempt"; }
-function matches(t: TraceEntry, f: Filter) { return (!f.accountId || t.accountId === f.accountId) && (!f.route || t.route === f.route) && (!f.application || t.application === f.application) && (!f.projectId || t.projectId === f.projectId) && (!f.apiKeyId || t.apiKeyId === f.apiKeyId); }
+function matches(t: TraceEntry, f: Filter) { return (!f.accountId || t.accountId === f.accountId) && (!f.route || t.route === f.route) && (!f.application || t.application === f.application) && (!f.projectId || t.projectId === f.projectId) && (!f.apiKeyId || t.apiKeyId === f.apiKeyId) && (!f.userId || t.userId === f.userId); }
 function mergeUsage(target: UsageAggregate, source: UsageAggregate) {
   for (const key of ["requests", "ok", "errors", "stream", "latencyMsTotal", "requestsWithUsage", "promptTokens", "completionTokens", "totalTokens"] as const) target[key] += source[key];
   for (const [key, value] of Object.entries(source.statusCounts)) target.statusCounts[key] = (target.statusCounts[key] ?? 0) + value;
@@ -101,6 +101,9 @@ export class TraceAnalyticsStore {
     const entryColumns = new Set((this.db.prepare("PRAGMA table_info(entries)").all() as any[]).map(row => String(row.name)));
     if (!entryColumns.has("api_key")) this.db.exec("ALTER TABLE entries ADD COLUMN api_key TEXT");
     this.db.exec("CREATE INDEX IF NOT EXISTS entries_api_key_at ON entries(api_key, at)");
+    // Dashboard users are an additive dimension too; older rows simply have no owner.
+    if (!entryColumns.has("user_id")) this.db.exec("ALTER TABLE entries ADD COLUMN user_id TEXT");
+    this.db.exec("CREATE INDEX IF NOT EXISTS entries_user_at ON entries(user_id, at)");
     this.status.indexed = Number((this.db.prepare("SELECT value FROM metadata WHERE key='count'").get() as any)?.value ?? 0);
     this.status.ready = !!this.db.prepare("SELECT 1 FROM metadata WHERE key='history_imported'").get();
     const keyBackfillRow = this.db.prepare("SELECT value FROM metadata WHERE key=?").get(KEY_BUCKET_BACKFILL) as { value: string } | undefined;
@@ -133,7 +136,8 @@ export class TraceAnalyticsStore {
     if (typeof t.costUsd === "number" && Number.isFinite(t.costUsd)) return t;
     if (t.usageStatus !== "measured" || t.lifecycleState === "started") return t;
     const cost = estimateCostUsd(t.resolvedModel ?? t.model, t.tokensInput ?? 0, t.tokensOutput ?? 0,
-      t.tokensInputCached ?? 0, t.tokensInputCacheWrite ?? 0);
+      t.tokensInputCached ?? 0, t.tokensInputCacheWrite ?? 0,
+      t.startedAt ?? t.completedAt ?? t.at);
     return cost === undefined ? t : { ...t, costUsd: cost, costStatus: "estimated", pricingVersion: MODEL_PRICING_VERSION };
   }
 
@@ -147,7 +151,7 @@ export class TraceAnalyticsStore {
       let rollup = rollups.get(key);
       if (!rollup) {
         rollup = { meta: { accountId: t.accountId, route: t.route, application: t.application, apiKeyId: t.apiKeyId,
-          apiKeyPreview: t.apiKeyPreview, projectId: t.projectId,
+          apiKeyPreview: t.apiKeyPreview, userId: t.userId, projectId: t.projectId,
           projectName: t.projectName, projectRemote: t.projectRemote, model: t.model } as TraceEntry,
           usage: createUsageAggregate(), project: emptyUsage(), sessionAttempts: 0 };
         rollups.set(key, rollup);
@@ -312,7 +316,7 @@ export class TraceAnalyticsStore {
     const keyBuckets = new Map<string, { at: number; key: string; value: TraceBucketAggregate }>();
     const getKeyBucket = this.db.prepare("SELECT payload FROM buckets_by_key WHERE at=? AND key=?");
     const rollups = new Map<string, { at: number; key: string; value: Rollup }>();
-    const insert = this.db.prepare("INSERT OR IGNORE INTO entries VALUES (?,?,?,?,?,?,?,?,?,?)");
+    const insert = this.db.prepare("INSERT OR IGNORE INTO entries VALUES (?,?,?,?,?,?,?,?,?,?,?)");
     const deleteRecent = this.db.prepare("DELETE FROM recent WHERE id=?");
     const insertRecent = this.db.prepare("INSERT INTO recent(id,payload) VALUES (?,?)");
     const getBucket = this.db.prepare("SELECT payload FROM buckets WHERE at=?");
@@ -339,7 +343,7 @@ export class TraceAnalyticsStore {
         }
         if (normalized.lifecycleState === "started" || !visible(normalized)) continue;
         const t = toStatsHistoryEntry(normalized);
-        if (!insert.run(t.id, t.at, t.completedAt ?? t.at, sessionKeyOf(t) ?? null, t.application ?? null, t.projectId ?? null, t.clientRequestId ?? t.id, t.traceKind ?? null, JSON.stringify(t), t.apiKeyId ?? null).changes) continue;
+        if (!insert.run(t.id, t.at, t.completedAt ?? t.at, sessionKeyOf(t) ?? null, t.application ?? null, t.projectId ?? null, t.clientRequestId ?? t.id, t.traceKind ?? null, JSON.stringify(t), t.apiKeyId ?? null, t.userId ?? null).changes) continue;
         inserted++;
         markRevision.run(t.id,this.status.indexed+inserted);
         const sessionKey = attempt(t) ? sessionKeyOf(t) : undefined;
@@ -365,7 +369,7 @@ export class TraceAnalyticsStore {
         let rollup = rollups.get(combined);
         if (!rollup) {
           const row = getRollup.get(hour, key) as any;
-          rollup = { at: hour, key, value: row ? JSON.parse(row.payload) : { meta: { accountId: t.accountId, route: t.route, application: t.application, apiKeyId: t.apiKeyId, apiKeyPreview: t.apiKeyPreview, projectId: t.projectId, projectName: t.projectName, projectRemote: t.projectRemote, model: t.model }, usage: createUsageAggregate(), project: emptyUsage(), sessionAttempts: 0 } };
+          rollup = { at: hour, key, value: row ? JSON.parse(row.payload) : { meta: { accountId: t.accountId, route: t.route, application: t.application, apiKeyId: t.apiKeyId, apiKeyPreview: t.apiKeyPreview, userId: t.userId, projectId: t.projectId, projectName: t.projectName, projectRemote: t.projectRemote, model: t.model }, usage: createUsageAggregate(), project: emptyUsage(), sessionAttempts: 0 } };
           rollups.set(combined, rollup);
         }
         if (sessionKeyOf(t)) rollup.value.sessionAttempts++;
@@ -466,6 +470,7 @@ export class TraceAnalyticsStore {
     if (args.application) { clauses.push("application = ?"); bindings.push(args.application); }
     if (args.projectId) { clauses.push("project_id = ?"); bindings.push(args.projectId); }
     if (args.apiKeyId) { clauses.push("api_key = ?"); bindings.push(args.apiKeyId); }
+    if (args.userId) { clauses.push("user_id = ?"); bindings.push(args.userId); }
     const sql = `SELECT payload FROM entries WHERE ${clauses.join(" AND ")} ${extra}`;
     for (const row of this.db.prepare(sql).iterate(...bindings, ...params) as Iterable<{ payload: string }>) {
       const t = JSON.parse(row.payload); if (matches(t, args)) yield t;
@@ -487,6 +492,12 @@ export class TraceAnalyticsStore {
   }
 
   stats(args: Filter) {
+    // A user view is always exact: hourly rollups are global, and rebuilding
+    // per-user rollups would duplicate the per-key machinery for little gain.
+    if (args.userId) {
+      const traces = [...this.range(args)].filter(t => visible(t) && t.lifecycleState !== "started");
+      return { totalStored: this.status.indexed, matched: traces.length, stats: buildTraceStats(traces) };
+    }
     const { firstFull, fullEnd, edge } = this.edgeAndHours(args);
     const edges = new Map<number, TraceBucketAggregate>();
     for (const t of edge) { const hour=Math.floor(t.at/HOUR)*HOUR; const bucket=edges.get(hour)??createEmptyBucket(hour);addTraceToBucket(bucket,t);edges.set(hour,bucket); }
@@ -556,12 +567,20 @@ export class TraceAnalyticsStore {
       k.firstAt = Math.min(k.firstAt ?? MAX, r.usage.firstAt ?? MAX); k.lastAt = Math.max(k.lastAt ?? MIN, r.usage.lastAt ?? MIN);
       apiKeys.set(keyId, k);
     };
-    for (const row of this.db.prepare("SELECT payload FROM usage_buckets WHERE at>=? AND at<? ORDER BY at,key").iterate(firstFull, fullEnd) as Iterable<any>) merge(JSON.parse(row.payload));
-    for (const t of edge) if (attempt(t)) { const usage = createUsageAggregate(); addTraceToAggregate(usage, t); const project = emptyUsage(); addTrace(project, t); merge({ meta: t, usage, project, sessionAttempts: sessionKeyOf(t) ? 1 : 0 }); }
+    if (args.userId) {
+      // User-scoped views bypass global rollups and aggregate the owner's
+      // traces directly, so a filter can never leak another user's bucket.
+      for (const t of this.range(args)) if (visible(t) && attempt(t)) { const usage = createUsageAggregate(); addTraceToAggregate(usage, t); const project = emptyUsage(); addTrace(project, t); merge({ meta: t, usage, project, sessionAttempts: sessionKeyOf(t) ? 1 : 0 }); }
+    } else {
+      for (const row of this.db.prepare("SELECT payload FROM usage_buckets WHERE at>=? AND at<? ORDER BY at,key").iterate(firstFull, fullEnd) as Iterable<any>) merge(JSON.parse(row.payload));
+      for (const t of edge) if (attempt(t)) { const usage = createUsageAggregate(); addTraceToAggregate(usage, t); const project = emptyUsage(); addTrace(project, t); merge({ meta: t, usage, project, sessionAttempts: sessionKeyOf(t) ? 1 : 0 }); }
+    }
     const by = (i: number, label: string) => [...dimensions[i]].map(([key, agg]) => ({ [label]: key, ...finalizeAggregate(agg) })).sort((a, b) => b.requests - a.requests);
     const byProject = [...projects].map(([projectId, p]) => ({ projectId, projectName: p.meta.projectName, projectRemote: p.meta.projectRemote, firstAt: p.firstAt, lastAt: p.lastAt, ...finalizeUsage(p.usage), models: [...p.models].map(([model, value]) => ({ model, ...finalizeUsage(value) })).sort((a,b) => b.costUsd-a.costUsd || b.requests-a.requests) })).sort((a,b) => b.costUsd-a.costUsd || b.requests-a.requests);
     const [since, until] = bounds(args);
-    const tracesEvaluated = (this.db.prepare("SELECT count(*) AS n FROM entries WHERE at>=? AND at<=?").get(since, until) as any).n;
+    const tracesEvaluated = (args.userId
+      ? this.db.prepare("SELECT count(*) AS n FROM entries WHERE at>=? AND at<=? AND user_id=?").get(since, until, args.userId)
+      : this.db.prepare("SELECT count(*) AS n FROM entries WHERE at>=? AND at<=?").get(since, until) as any).n;
     const byApiKey = [...apiKeys]
       .map(([apiKeyId, k]) => {
         const meta = apiKeyId === "unattributed" ? {} : (keyMeta.get(apiKeyId) ?? {});
@@ -629,16 +648,16 @@ export class TraceAnalyticsStore {
     // Recompute only sessions touched since the last durable report for this window.
     // A rolling live window reuses its scope until its lower bound changes.
     const [since, until] = bounds(args);
-    const scope = JSON.stringify([since, args.application ?? "", args.projectId ?? "", args.apiKeyId ?? ""]);
+    const scope = JSON.stringify([since, args.application ?? "", args.projectId ?? "", args.apiKeyId ?? "", args.userId ?? ""]);
     const previous = this.db.prepare("SELECT revision,until_ms FROM session_scopes WHERE scope=?").get(scope) as any;
     const rebuild = !previous || until < previous.until_ms;
     this.db.exec("CREATE TEMP TABLE IF NOT EXISTS changed_sessions (key TEXT PRIMARY KEY); DELETE FROM changed_sessions;");
     if (rebuild) {
       this.db.prepare("DELETE FROM session_reports WHERE scope=?").run(scope);
-      this.db.prepare("INSERT OR IGNORE INTO changed_sessions SELECT DISTINCT session_key FROM entries WHERE at>=? AND at<=? AND session_key IS NOT NULL").run(since, until);
+      this.db.prepare("INSERT OR IGNORE INTO changed_sessions SELECT DISTINCT session_key FROM entries WHERE at>=? AND at<=? AND session_key IS NOT NULL" + (args.userId ? " AND user_id=?" : "")).run(since, until, ...(args.userId ? [args.userId] : []));
     } else {
       this.db.prepare("INSERT OR IGNORE INTO changed_sessions SELECT key FROM session_dirty WHERE revision>?").run(previous.revision);
-      this.db.prepare("INSERT OR IGNORE INTO changed_sessions SELECT DISTINCT session_key FROM entries WHERE at>? AND at<=? AND session_key IS NOT NULL").run(Math.max(since-1, previous.until_ms), until);
+      this.db.prepare("INSERT OR IGNORE INTO changed_sessions SELECT DISTINCT session_key FROM entries WHERE at>? AND at<=? AND session_key IS NOT NULL" + (args.userId ? " AND user_id=?" : "")).run(Math.max(since-1, previous.until_ms), until, ...(args.userId ? [args.userId] : []));
     }
     let lastKey = "";
     for (;;) {
@@ -661,12 +680,17 @@ export class TraceAnalyticsStore {
     }
     // Coverage uses the same incremental hourly rollups; no COUNT/JSON scan of lifetime history.
     let totalAttempts=0,attempts=0;
-    const window=this.edgeAndHours(args);
-    for(const row of this.db.prepare("SELECT payload FROM usage_buckets WHERE at>=? AND at<?").iterate(window.firstFull,window.fullEnd) as Iterable<any>) {
-      const r:Rollup=JSON.parse(row.payload);if(!matches(r.meta,args))continue;
-      totalAttempts+=r.usage.requests;attempts+=r.sessionAttempts;
+    if (args.userId) {
+      // Exact owner coverage without touching global hourly rollups.
+      for (const t of this.range(args)) { if(!attempt(t))continue;totalAttempts++;if(sessionKeyOf(t))attempts++; }
+    } else {
+      const window=this.edgeAndHours(args);
+      for(const row of this.db.prepare("SELECT payload FROM usage_buckets WHERE at>=? AND at<?").iterate(window.firstFull,window.fullEnd) as Iterable<any>) {
+        const r:Rollup=JSON.parse(row.payload);if(!matches(r.meta,args))continue;
+        totalAttempts+=r.usage.requests;attempts+=r.sessionAttempts;
+      }
+      for(const t of window.edge) {if(!attempt(t))continue;totalAttempts++;if(sessionKeyOf(t))attempts++;}
     }
-    for(const t of window.edge) {if(!attempt(t))continue;totalAttempts++;if(sessionKeyOf(t))attempts++;}
     const field = (name: string) => `json_extract(payload,'$.${name}')`;
     const sum = (name: string) => (this.db.prepare(`SELECT COALESCE(sum(${field(name)}),0) AS n FROM session_reports WHERE scope=?`).get(scope) as any).n as number;
     const median = (name: string) => {
@@ -687,12 +711,14 @@ export class TraceAnalyticsStore {
     const [since,until]=bounds(args);
     const limit=Math.max(1,Math.min(500,Math.floor(args.limit??200)));
     const offset=Math.max(0,Math.floor(args.offset??0));
-    // A key filter must constrain the turn count and the page, not only each turn body.
+    // A key or user filter must constrain the turn count and the page, not only each turn body.
     const keyClause = args.apiKeyId ? " AND api_key=?" : "";
     const keyParams = args.apiKeyId ? [args.apiKeyId] : [];
-    const clause=`session_key=? AND at>=? AND at<=? AND (kind IS NULL OR kind='upstream-attempt')${keyClause}`;
-    const total=(this.db.prepare(`SELECT count(DISTINCT turn_id) AS n FROM entries WHERE ${clause}`).get(args.sessionKey,since,until,...keyParams) as any).n;
-    const keys=this.db.prepare(`SELECT turn_id FROM entries WHERE ${clause} GROUP BY turn_id ORDER BY min(at),turn_id LIMIT ? OFFSET ?`).all(args.sessionKey,since,until,...keyParams,limit,offset) as {turn_id:string}[];
+    const userClause = args.userId ? " AND user_id=?" : "";
+    const userParams = args.userId ? [args.userId] : [];
+    const clause=`session_key=? AND at>=? AND at<=? AND (kind IS NULL OR kind='upstream-attempt')${keyClause}${userClause}`;
+    const total=(this.db.prepare(`SELECT count(DISTINCT turn_id) AS n FROM entries WHERE ${clause}`).get(args.sessionKey,since,until,...keyParams,...userParams) as any).n;
+    const keys=this.db.prepare(`SELECT turn_id FROM entries WHERE ${clause} GROUP BY turn_id ORDER BY min(at),turn_id LIMIT ? OFFSET ?`).all(args.sessionKey,since,until,...keyParams,...userParams,limit,offset) as {turn_id:string}[];
     const turns=[];
     for(const {turn_id} of keys) turns.push(...sessionTurnsFor(this.range(args,"AND session_key=? AND turn_id=? ORDER BY at,id",[args.sessionKey,turn_id]),args.sessionKey));
     return {turns,total,limit,offset};

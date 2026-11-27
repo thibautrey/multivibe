@@ -8,6 +8,7 @@ import { COPILOT_BASE_URL, requestCopilotDeviceCode, pollCopilotDeviceCode, acco
 import { withVirtualModels } from "../../module-virtual-models.js";
 import { ARTIFICIAL_ANALYSIS_API_KEY, MULTIVIBE_CONTROL_PLANE } from "../../config.js";
 import { createAuthRateLimiter } from "../../auth-rate-limit.js";
+import { getAuth, ownsResource, scopedUserId } from "../../auth-context.js";
 import { trimTrailingSlashes } from "../../string-utils.js";
 import { sdkProviderCatalog } from "../../ai-sdk/catalog.js";
 import { sdkAccountModels } from "../../ai-sdk/catalog.js";
@@ -471,6 +472,55 @@ export function createAdminRouter(options: AdminRoutesOptions) {
   } = traceManager;
 
   const router = express.Router();
+
+  /**
+   * Members may only reach their own dashboard surfaces. Everything else
+   * (providers pool, routing, modules, host management, billing, other users)
+   * is admin-only, and it is refused here rather than merely hidden in the UI.
+   */
+  const memberAllowed = (req: express.Request): boolean => {
+    const path = req.path.replace(/^\/+/, "");
+    const isRead = req.method === "GET" || req.method === "HEAD";
+    if (isRead) {
+      if (path === "config" || path === "provider-catalog") return true;
+      if (path === "models/recommendations" || path === "modules/models") return true;
+      if (path === "settings") return true;
+      if (path === "accounts" || path.startsWith("accounts/")) return true;
+      if (path === "proxy-api-keys") return true;
+      if (path === "traces" || path.startsWith("traces/")) return true;
+      if (path.startsWith("stats/")) return true;
+      return false;
+    }
+    if (path === "accounts" || path.startsWith("accounts/")) return true;
+    if (path === "proxy-api-keys" || /^proxy-api-keys\/[^/]+$/.test(path)) return true;
+    if (path === "usage/refresh" || path === "usage/refresh-stale") return true;
+    if (
+      path === "oauth/start" ||
+      path === "oauth/complete" ||
+      path === "oauth/device/poll" ||
+      path.startsWith("oauth/status/")
+    )
+      return true;
+    return false;
+  };
+
+  router.use((req, res, next) => {
+    const auth = getAuth(req);
+    if (!auth || auth.role === "admin") return next();
+    if (!memberAllowed(req)) return res.status(403).json({ error: "forbidden" });
+    next();
+  });
+
+  /** True when the caller may touch this account (admin, or its owner). */
+  const accountVisible = (req: express.Request, account: { ownerId?: string }) =>
+    ownsResource(req, account.ownerId);
+
+  const findOwnedAccount = async (req: express.Request, id: string) => {
+    const account = (await store.listAccounts()).find((candidate) => candidate.id === id);
+    if (!account) return { account: undefined, allowed: false };
+    return { account, allowed: accountVisible(req, account) };
+  };
+
   router.use("/audio", audioRoutes({ moduleManager, store }));
   router.use("/headroom", headroomRoutes({
     provisioner: options.headroomProvisioner,
@@ -1027,9 +1077,14 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     return openaiBaseUrl;
   };
 
-  const refreshAccountsUsage = async (force: boolean): Promise<Account[]> => {
+  const refreshAccountsUsage = async (
+    force: boolean,
+    onlyOwnerId?: string,
+  ): Promise<Account[]> => {
     const refreshed = await Promise.all(
-      (await store.listAccounts()).map(async (account) => {
+      (await store.listAccounts())
+        .filter((account) => !onlyOwnerId || account.ownerId === onlyOwnerId)
+        .map(async (account) => {
         const tokenRefreshNeeded = isTokenRefreshNeeded(account);
         const usageRefreshNeeded =
           tracksSubscriptionQuota(account) &&
@@ -1070,11 +1125,16 @@ export function createAdminRouter(options: AdminRoutesOptions) {
           maybeConsumeScheduledWeeklyReset(account.id, store, openaiBaseUrl),
         ),
     );
-    return store.getCachedAccounts();
+    const current = store.getCachedAccounts();
+    return onlyOwnerId
+      ? current.filter((account) => account.ownerId === onlyOwnerId)
+      : current;
   };
 
   let staleUsageRefresh: Promise<Account[]> | undefined;
-  const refreshStaleAccountsUsage = (): Promise<Account[]> => {
+  const refreshStaleAccountsUsage = (onlyOwnerId?: string): Promise<Account[]> => {
+    // A member-scoped refresh must never reuse the admin-wide in-flight result.
+    if (onlyOwnerId) return refreshAccountsUsage(false, onlyOwnerId);
     if (staleUsageRefresh) return staleUsageRefresh;
     const refresh = refreshAccountsUsage(false);
     staleUsageRefresh = refresh;
@@ -1084,8 +1144,14 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     return refresh;
   };
 
-  router.get("/proxy-api-keys", async (_req, res) => {
-    const managed = await store.listProxyApiKeys();
+  router.get("/proxy-api-keys", async (req, res) => {
+    const scope = scopedUserId(req);
+    // Members see only their own credentials; environment keys belong to the
+    // shared pool and are admin-only.
+    const managed = (await store.listProxyApiKeys()).filter(
+      (entry) => !scope || entry.ownerId === scope,
+    );
+    const visibleConfigured = scope ? [] : configuredProxyApiKeys;
     // Trace analytics already indexes traffic by the stable API-key identity.
     // Reuse its last activity timestamp instead of writing an extra field on
     // every request; an unavailable index simply leaves the column empty.
@@ -1114,7 +1180,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     }
     res.json({
       proxyApiKeys: [
-        ...configuredProxyApiKeys.map((entry) => ({
+        ...visibleConfigured.map((entry) => ({
           // Stable identity shared with trace attribution so usage can join.
           id: `configured:${entry.application}`,
           application: entry.application,
@@ -1129,6 +1195,9 @@ export function createAdminRouter(options: AdminRoutesOptions) {
           createdAt: entry.createdAt,
           lastUsedAt: lastUsedAt.get(entry.id),
           source: "dashboard" as const,
+          // Lets the edge keep a member's own keys visible while its snapshot
+          // catches up with a key the control plane has just written.
+          ...(entry.ownerId ? { ownerId: entry.ownerId } : {}),
           ...(entry.cloudflareAccess
             ? { cloudflareAccess: publicCloudflareAccess(entry.cloudflareAccess) }
             : {}),
@@ -1182,6 +1251,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       application,
       key: `mv_${randomBytes(32).toString("base64url")}`,
       createdAt: Date.now(),
+      ownerId: scopedUserId(req),
     };
     let clientSecret: string | undefined;
     if (provisionCloudflareAccess) {
@@ -1236,6 +1306,9 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       typeof store.findProxyApiKey === "function"
         ? await store.findProxyApiKey(id)
         : store.getCachedProxyApiKeys().find((candidate) => candidate.id === id);
+    if (!entry || !ownsResource(req, entry.ownerId)) {
+      return res.status(404).json({ error: "not found" });
+    }
     let warning: string | undefined;
     if (entry?.cloudflareAccess) {
       const provisioner = options.cloudflareAccess;
@@ -1472,11 +1545,15 @@ export function createAdminRouter(options: AdminRoutesOptions) {
   };
 
   router.get("/accounts/:id/models", async (req, res) => {
+    const found = await findOwnedAccount(req, req.params.id);
+    if (!found.account || !found.allowed) return res.status(404).json({ error: "not found" });
     try { await providerAccountModels(req, res, false); }
     catch { res.status(500).json({ error: "Could not load provider models" }); }
   });
 
   router.post("/accounts/:id/models/refresh", async (req, res) => {
+    const found = await findOwnedAccount(req, req.params.id);
+    if (!found.account || !found.allowed) return res.status(404).json({ error: "not found" });
     try { await providerAccountModels(req, res, true); }
     catch { res.status(500).json({ error: "Could not refresh provider models" }); }
   });
@@ -1493,9 +1570,15 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     return res.json(await invoiceOverview(await store.listAccounts(), options.multivibeCloud));
   });
 
-  router.get("/accounts", async (_req, res) =>
-    res.json({ accounts: (await store.listAccounts()).map(redact) }),
-  );
+  router.get("/accounts", async (req, res) => {
+    const scope = scopedUserId(req);
+    const accounts = await store.listAccounts();
+    res.json({
+      accounts: accounts
+        .filter((account) => !scope || account.ownerId === scope)
+        .map(redact),
+    });
+  });
 
   router.get("/team/workspace", async (_req, res) => {
     res.setHeader("cache-control", "no-store");
@@ -1896,9 +1979,14 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     );
     const projectId =
       typeof req.query.projectId === "string" ? req.query.projectId.trim() : "";
+    const userIdFilter =
+      scopedUserId(req) ??
+      (typeof req.query.userId === "string" ? req.query.userId.trim() : "");
     const traces = filterVisibleTraces(await readTraceListWindow());
     const filtered = filterTracesByWindow(traces, sinceMs, untilMs).filter(
-      (trace) => !projectId || trace.projectId === projectId,
+      (trace) =>
+        (!projectId || trace.projectId === projectId) &&
+        (!userIdFilter || trace.userId === userIdFilter),
     );
     const sorted = [...filtered].sort((a, b) => b.at - a.at);
     const total = sorted.length;
@@ -1918,7 +2006,12 @@ export function createAdminRouter(options: AdminRoutesOptions) {
         hasNext: page < totalPages,
       },
       stats,
-      filters: { sinceMs, untilMs, projectId: projectId || undefined },
+      filters: {
+        sinceMs,
+        untilMs,
+        projectId: projectId || undefined,
+        userId: userIdFilter || undefined,
+      },
     });
   });
 
@@ -1926,11 +2019,16 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     const { sinceMs, untilMs } = parseTraceWindowBounds(
       req.query as Record<string, unknown>,
     );
+    const userIdFilter =
+      scopedUserId(req) ??
+      (typeof req.query.userId === "string" ? req.query.userId.trim() : "");
     const traces = filterTracesByWindow(
       filterVisibleTraces(await readTraceWindow()),
       sinceMs,
       untilMs,
-    ).sort((a, b) => a.at - b.at);
+    )
+      .filter((trace) => !userIdFilter || trace.userId === userIdFilter)
+      .sort((a, b) => a.at - b.at);
 
     const exportedAt = Date.now();
     const files: Array<{ name: string; data: Buffer }> = [
@@ -1941,7 +2039,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
             {
               exportedAt,
               count: traces.length,
-              filters: { sinceMs, untilMs },
+              filters: { sinceMs, untilMs, userId: userIdFilter || undefined },
             },
             null,
             2,
@@ -1974,6 +2072,9 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     if (!trace || isHiddenTraceRoute(trace.route)) {
       return res.status(404).json({ error: "not found" });
     }
+    if (!ownsResource(req, trace.userId)) {
+      return res.status(404).json({ error: "not found" });
+    }
     res.json({ trace });
   });
 
@@ -2001,13 +2102,21 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       typeof req.query.apiKeyId === "string" ? req.query.apiKeyId.trim() : "";
     const sinceMs = parseQueryNumber(req.query.sinceMs);
     const untilMs = parseQueryNumber(req.query.untilMs);
+    const ownScope = scopedUserId(req);
+    const userIdFilter =
+      ownScope ??
+      (typeof req.query.userId === "string" ? req.query.userId.trim() : "");
 
     if (traceManager.queryAnalytics) {
-      const report = await traceManager.queryAnalytics("usage", { sinceMs, untilMs, accountId: accountIdFilter, route: routeFilter, application: applicationFilter, projectId: projectIdFilter, apiKeyId: apiKeyFilter });
+      const report = await traceManager.queryAnalytics("usage", { sinceMs, untilMs, accountId: accountIdFilter, route: routeFilter, application: applicationFilter, projectId: projectIdFilter, apiKeyId: apiKeyFilter, userId: userIdFilter || undefined });
       const accounts = await store.listAccounts();
-      const meta = new Map(accounts.map(a => [a.id, { id: a.id, provider: a.provider ?? "openai", email: a.email, enabled: a.enabled }]));
+      const meta = new Map(
+        accounts
+          .filter((account) => !ownScope || account.ownerId === ownScope)
+          .map(a => [a.id, { id: a.id, provider: a.provider ?? "openai", email: a.email, enabled: a.enabled }]),
+      );
       report.byAccount = report.byAccount.map((entry: any) => ({ ...entry, account: meta.get(entry.accountId) ?? { id: entry.accountId } }));
-      return res.json({ ok: true, filters: { sinceMs, untilMs, accountId: accountIdFilter || undefined, route: routeFilter || undefined, application: applicationFilter || undefined, projectId: projectIdFilter || undefined, apiKeyId: apiKeyFilter || undefined }, ...report, analytics: traceManager.getPersistenceStatus().analytics });
+      return res.json({ ok: true, filters: { sinceMs, untilMs, accountId: accountIdFilter || undefined, route: routeFilter || undefined, application: applicationFilter || undefined, projectId: projectIdFilter || undefined, apiKeyId: apiKeyFilter || undefined, userId: userIdFilter || undefined }, ...report, analytics: traceManager.getPersistenceStatus().analytics });
     }
 
     const traces = filterVisibleTraces(await readStatsHistoryRange(sinceMs, untilMs));
@@ -2017,6 +2126,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       if (applicationFilter && t.application !== applicationFilter) return false;
       if (projectIdFilter && t.projectId !== projectIdFilter) return false;
       if (apiKeyFilter && t.apiKeyId !== apiKeyFilter) return false;
+      if (userIdFilter && t.userId !== userIdFilter) return false;
       return true;
     });
     const usageTraces = filtered.filter(
@@ -2063,8 +2173,11 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     }
 
     const accounts = await store.listAccounts();
+    const membershipScope = scopedUserId(req);
     const accountMeta = new Map(
-      accounts.map((a) => [
+      accounts
+        .filter((account) => !membershipScope || account.ownerId === membershipScope)
+        .map((a) => [
         a.id,
         {
           id: a.id,
@@ -2132,6 +2245,10 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       typeof req.query.apiKeyId === "string" ? req.query.apiKeyId.trim() : "";
     const sinceMs = parseQueryNumber(req.query.sinceMs);
     const untilMs = parseQueryNumber(req.query.untilMs);
+    const ownScope = scopedUserId(req);
+    const userIdFilter =
+      ownScope ??
+      (typeof req.query.userId === "string" ? req.query.userId.trim() : "");
     const limit = Math.max(
       1,
       Math.min(500, Math.floor(parseQueryNumber(req.query.limit) ?? 100)),
@@ -2142,8 +2259,8 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     );
 
     if (traceManager.queryAnalytics) {
-      const report = await traceManager.queryAnalytics("sessions", { sinceMs, untilMs, application: applicationFilter, projectId: projectIdFilter, apiKeyId: apiKeyFilter, limit, offset });
-      return res.json({ ok: true, filters: { sinceMs, untilMs, application: applicationFilter || undefined, projectId: projectIdFilter || undefined, apiKeyId: apiKeyFilter || undefined }, ...report,
+      const report = await traceManager.queryAnalytics("sessions", { sinceMs, untilMs, application: applicationFilter, projectId: projectIdFilter, apiKeyId: apiKeyFilter, userId: userIdFilter || undefined, limit, offset });
+      return res.json({ ok: true, filters: { sinceMs, untilMs, application: applicationFilter || undefined, projectId: projectIdFilter || undefined, apiKeyId: apiKeyFilter || undefined, userId: userIdFilter || undefined }, ...report,
         coverage: { totalAttempts: report.summary.totalAttempts, identifiedAttempts: report.summary.attempts, ratio: report.summary.coverage }, analytics: traceManager.getPersistenceStatus().analytics });
     }
 
@@ -2154,6 +2271,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       if (applicationFilter && t.application !== applicationFilter) return false;
       if (projectIdFilter && t.projectId !== projectIdFilter) return false;
       if (apiKeyFilter && t.apiKeyId !== apiKeyFilter) return false;
+      if (userIdFilter && t.userId !== userIdFilter) return false;
       return true;
     });
     const { summary, sessions } = aggregateSessionUsage(filtered);
@@ -2187,17 +2305,21 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     const untilMs = parseQueryNumber(req.query.untilMs);
     const apiKeyFilter =
       typeof req.query.apiKeyId === "string" ? req.query.apiKeyId.trim() : "";
+    const ownScope = scopedUserId(req);
+    const userIdFilter =
+      ownScope ??
+      (typeof req.query.userId === "string" ? req.query.userId.trim() : "");
     if (traceManager.queryAnalytics) {
-      const report = await traceManager.queryAnalytics("turns", { sinceMs, untilMs, sessionKey, apiKeyId: apiKeyFilter || undefined, limit: parseQueryNumber(req.query.limit), offset: parseQueryNumber(req.query.offset) });
+      const report = await traceManager.queryAnalytics("turns", { sinceMs, untilMs, sessionKey, apiKeyId: apiKeyFilter || undefined, userId: userIdFilter || undefined, limit: parseQueryNumber(req.query.limit), offset: parseQueryNumber(req.query.offset) });
       if (!report.total) return res.status(404).json({ error: "not found" });
-      return res.json({ ok: true, filters: { sinceMs, untilMs, apiKeyId: apiKeyFilter || undefined }, sessionKey, ...report, analytics: traceManager.getPersistenceStatus().analytics });
+      return res.json({ ok: true, filters: { sinceMs, untilMs, apiKeyId: apiKeyFilter || undefined, userId: userIdFilter || undefined }, sessionKey, ...report, analytics: traceManager.getPersistenceStatus().analytics });
     }
     const traces = filterVisibleTraces(
       await readStatsHistoryRange(sinceMs, untilMs),
-    );
+    ).filter((trace) => !userIdFilter || trace.userId === userIdFilter);
     const turns = sessionTurnsFor(traces, sessionKey);
     if (!turns.length) return res.status(404).json({ error: "not found" });
-    res.json({ ok: true, filters: { sinceMs, untilMs }, sessionKey, turns });
+    res.json({ ok: true, filters: { sinceMs, untilMs, userId: userIdFilter || undefined }, sessionKey, turns });
   });
 
   router.get("/stats/traces", async (req, res) => {
@@ -2209,15 +2331,20 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       typeof req.query.application === "string" ? req.query.application.trim() : "";
     const projectIdFilter =
       typeof req.query.projectId === "string" ? req.query.projectId.trim() : "";
+    const ownScope = scopedUserId(req);
+    const userIdFilter =
+      ownScope ??
+      (typeof req.query.userId === "string" ? req.query.userId.trim() : "");
     const filters = {
       application: applicationFilter || undefined,
       projectId: projectIdFilter || undefined,
       apiKeyId: apiKeyFilter || undefined,
+      userId: userIdFilter || undefined,
     };
     const [{ totalStored, matched, stats }, moduleAnalytics] = await Promise.all([
       getTraceStats(sinceMs, untilMs, filters),
       traceManager.queryModuleAnalytics(
-        moduleManager?.analyticsDescriptors() ?? [],
+        ownScope ? [] : moduleManager?.analyticsDescriptors() ?? [],
         { sinceMs, untilMs, ...filters },
       ),
     ]);
@@ -2227,7 +2354,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
 
     res.json({
       ok: true,
-      filters: { sinceMs, untilMs, application: applicationFilter || undefined, projectId: projectIdFilter || undefined, apiKeyId: apiKeyFilter || undefined },
+      filters: { sinceMs, untilMs, application: applicationFilter || undefined, projectId: projectIdFilter || undefined, apiKeyId: apiKeyFilter || undefined, userId: userIdFilter || undefined },
       totalStored,
       matched,
       stats,
@@ -2276,6 +2403,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     }
     const account: Account = {
       id: body.id ?? randomUUID(),
+      ownerId: scopedUserId(req),
       provider,
       sdkProvider: provider === "ai-sdk" ? body.sdkProvider : undefined,
       sdkModels: provider === "ai-sdk" ? body.sdkModels : undefined,
@@ -2342,8 +2470,9 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       }
     }
     const existing = (await store.listAccounts()).find((a) => a.id === req.params.id);
-    if (!existing) return res.status(404).json({ error: "not found" });
+    if (!existing || !accountVisible(req, existing)) return res.status(404).json({ error: "not found" });
     if (existing.multivibeTeam?.readOnly) return res.status(409).json({ error: "Synchronized Team providers are read-only; duplicate the provider for local changes" });
+    if (getAuth(req)?.role !== "admin") delete body.ownerId;
     const next = { ...existing, ...body };
     if (next.provider === "github-copilot") {
       if (existing.provider !== "github-copilot") return res.status(400).json({ error: "Connect GitHub Copilot using device sign-in" });
@@ -2364,6 +2493,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
 
   router.delete("/accounts/:id", async (req, res) => {
     const existing=(await store.listAccounts()).find(account=>account.id===req.params.id);
+    if(existing && !accountVisible(req, existing)) return res.status(404).json({ error: "not found" });
     if(existing?.multivibeTeam?.readOnly)return res.status(409).json({error:"Synchronized Team providers must be removed from Multivibe Cloud"});
     const ok = await store.deleteAccount(req.params.id);
     if (!ok) return res.status(404).json({ error: "not found" });
@@ -2374,7 +2504,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     const account = (await store.listAccounts()).find(
       (a) => a.id === req.params.id,
     );
-    if (!account) return res.status(404).json({ error: "not found" });
+    if (!account || !accountVisible(req, account)) return res.status(404).json({ error: "not found" });
     const targetModel = typeof req.query.model === "string" && req.query.model.trim()
       ? req.query.model.trim().toLowerCase()
       : undefined;
@@ -2393,7 +2523,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     let account = (await store.listAccounts()).find(
       (a) => a.id === req.params.id,
     );
-    if (!account) return res.status(404).json({ error: "not found" });
+    if (!account || !accountVisible(req, account)) return res.status(404).json({ error: "not found" });
     account = await ensureValidToken(account, oauthConfig);
     await refreshUsageIfNeeded(account, usageBaseUrlForAccount(account), true);
     await store.addOrUpdate(account);
@@ -2405,7 +2535,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     let account = (await store.listAccounts()).find(
       (candidate) => candidate.id === req.params.id,
     );
-    if (!account) return res.status(404).json({ error: "not found" });
+    if (!account || !accountVisible(req, account)) return res.status(404).json({ error: "not found" });
     if (normalizeProvider(account) !== "openai") {
       return res.status(400).json({ error: "only OpenAI accounts support reset credits" });
     }
@@ -2423,7 +2553,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     let account = (await store.listAccounts()).find(
       (candidate) => candidate.id === req.params.id,
     );
-    if (!account) return res.status(404).json({ error: "not found" });
+    if (!account || !accountVisible(req, account)) return res.status(404).json({ error: "not found" });
     if (normalizeProvider(account) !== "openai") {
       return res.status(400).json({ error: "only OpenAI accounts support reset credits" });
     }
@@ -2443,7 +2573,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     let account = (await store.listAccounts()).find(
       (candidate) => candidate.id === req.params.id,
     );
-    if (!account) return res.status(404).json({ error: "not found" });
+    if (!account || !accountVisible(req, account)) return res.status(404).json({ error: "not found" });
     if (normalizeProvider(account) !== "openai") {
       return res.status(400).json({ error: "only OpenAI accounts support reset credits" });
     }
@@ -2462,7 +2592,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     const account = (await store.listAccounts()).find(
       (candidate) => candidate.id === req.params.id,
     );
-    if (!account) return res.status(404).json({ error: "not found" });
+    if (!account || !accountVisible(req, account)) return res.status(404).json({ error: "not found" });
     const { scheduledWeeklyReset: _cancelled, ...remainingState } =
       account.state ?? {};
     account.state = remainingState;
@@ -2470,8 +2600,8 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     res.json({ ok: true, account: redact(account) });
   });
 
-  router.post("/usage/refresh", async (_req, res) => {
-    const accounts = await refreshAccountsUsage(true);
+  router.post("/usage/refresh", async (req, res) => {
+    const accounts = await refreshAccountsUsage(true, scopedUserId(req));
     res.json({
       ok: true,
       accounts: accounts.map(redact),
@@ -2481,8 +2611,8 @@ export function createAdminRouter(options: AdminRoutesOptions) {
   // The dashboard uses this endpoint for lightweight polling. Fresh usage
   // snapshots are left untouched; snapshots whose cache TTL or quota reset
   // has elapsed are refreshed before the current account state is returned.
-  router.post("/usage/refresh-stale", async (_req, res) => {
-    const accounts = await refreshStaleAccountsUsage();
+  router.post("/usage/refresh-stale", async (req, res) => {
+    const accounts = await refreshStaleAccountsUsage(scopedUserId(req));
     res.json({
       ok: true,
       accounts: accounts.map(redact),
@@ -2520,6 +2650,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
         ? mergeTokenIntoAccount(duplicate, tokenData)
         : created;
     }
+    if (flow.ownerId) account.ownerId = flow.ownerId;
     account = await refreshUsageIfNeeded(account, openaiBaseUrl, true);
     await store.addOrUpdate(account);
     await oauthStore.update(flow.id, {
@@ -2562,7 +2693,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     }
     if (targetAccountId) {
       const account = (await store.listAccounts()).find((a) => a.id === targetAccountId);
-      if (!account) return res.status(404).json({ error: "account not found" });
+      if (!account || !accountVisible(req, account)) return res.status(404).json({ error: "account not found" });
       if (normalizeProvider(account) !== provider) {
         return res.status(400).json({
           error: `oauth reauth target must be a ${provider} account`,
@@ -2570,6 +2701,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
       }
     }
     const flow = createOAuthState(email, targetAccountId, method, provider);
+    flow.ownerId = scopedUserId(req);
     if (method === "device") {
       try {
         if (provider === "xai") {
@@ -2663,7 +2795,9 @@ export function createAdminRouter(options: AdminRoutesOptions) {
 
   router.get("/oauth/status/:flowId", async (req, res) => {
     const flow = await oauthStore.get(req.params.flowId);
-    if (!flow) return res.status(404).json({ error: "not found" });
+    if (!flow || !ownsResource(req, flow.ownerId)) {
+      return res.status(404).json({ error: "not found" });
+    }
     res.json({
       ok: true,
       flow: {
@@ -2683,7 +2817,9 @@ export function createAdminRouter(options: AdminRoutesOptions) {
         .json({ error: "flowId and input are required" });
 
     const flow = await oauthStore.get(flowId);
-    if (!flow) return res.status(404).json({ error: "flow not found" });
+    if (!flow || !ownsResource(req, flow.ownerId)) {
+      return res.status(404).json({ error: "flow not found" });
+    }
     if (flow.provider === "github-copilot" || flow.provider === "xai" || flow.provider === "opencode") {
       return res.status(400).json({
         error: `${flow.provider === "github-copilot" ? "GitHub Copilot" : flow.provider === "xai" ? "Grok Build" : "OpenCode"} OAuth uses the device-code completion endpoint`,
@@ -2717,7 +2853,9 @@ export function createAdminRouter(options: AdminRoutesOptions) {
     if (!flowId) return res.status(400).json({ error: "flowId is required" });
 
     const flow = await oauthStore.get(flowId);
-    if (!flow) return res.status(404).json({ error: "flow not found" });
+    if (!flow || !ownsResource(req, flow.ownerId)) {
+      return res.status(404).json({ error: "flow not found" });
+    }
     if (flow.method !== "device") {
       return res.status(400).json({ error: "flow is not a device authorization flow" });
     }
@@ -2752,6 +2890,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
           throw new Error("Target GitHub Copilot account not found for reauth");
         }
         const account = await accountFromCopilotOAuth(flow, result.githubToken, existing);
+        if (flow.ownerId) account.ownerId = flow.ownerId;
         await refreshUsageIfNeeded(account, account.baseUrl ?? COPILOT_BASE_URL, true);
         await store.addOrUpdate(account);
         await oauthStore.update(flow.id, { status: "success", completedAt: Date.now(), accountId: account.id });
@@ -2794,6 +2933,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
             account = await accountFromOpenCodeOAuth(flow, result.token, duplicate);
           }
         }
+        if (flow.ownerId) account.ownerId = flow.ownerId;
         account = await refreshUsageIfNeeded(
           account,
           account.baseUrl ?? OPENCODE_BASE_URL,
@@ -2838,6 +2978,7 @@ export function createAdminRouter(options: AdminRoutesOptions) {
           throw new Error("target xAI account not found for reauth");
         }
         const account = accountFromXaiOAuth(flow, result.token, existing);
+        if (flow.ownerId) account.ownerId = flow.ownerId;
         await refreshUsageIfNeeded(
           account,
           account.baseUrl ?? XAI_BASE_URL,

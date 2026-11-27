@@ -29,6 +29,7 @@ import { ProviderModelPicker, type ProviderModelOption, type ProviderModelsLive 
 import { Metric } from "../Metric";
 import { WidgetGrid } from "../WidgetGrid";
 import { createPortal } from "react-dom";
+import { t as translate, useT } from "../../i18n";
 
 const CODEX_QUOTA_RESET_FORECAST_URL = "https://www.willcodexquotareset.com/";
 
@@ -202,38 +203,39 @@ const dialogFocusableSelector = [
 
 function usageAgeLabel(fetchedAt: number) {
   const ageMs = Math.max(0, Date.now() - fetchedAt);
-  if (ageMs < 60_000) return "just now";
+  if (ageMs < 60_000) return translate("just now");
   const ageMinutes = Math.floor(ageMs / 60_000);
-  if (ageMinutes < 60) return `${ageMinutes}m ago`;
+  if (ageMinutes < 60) return translate("{count}m ago", { count: ageMinutes });
   const ageHours = Math.floor(ageMinutes / 60);
-  return `${ageHours}h ago`;
+  return translate("{count}h ago", { count: ageHours });
 }
 
 function usageStatusLabel(account: Account, usageCacheTtlMs: number) {
-  if (!account.usage) return "Usage not checked";
-  if (account.usage.quotaStatus === "unsupported") return "Usage not exposed";
-  if (account.usage.quotaStatus === "error") return "Usage refresh failed";
+  if (!account.usage) return translate("Usage not checked");
+  if (account.usage.quotaStatus === "unsupported") return translate("Usage not exposed");
+  if (account.usage.quotaStatus === "error") return translate("Usage refresh failed");
   if (
     typeof account.usage.fetchedAt === "number" &&
     Date.now() - account.usage.fetchedAt >= usageCacheTtlMs
   ) {
-    return "Refresh pending";
+    return translate("Refresh pending");
   }
   const primary = account.usage.primary?.usedPercent;
   const secondary = account.usage.secondary?.usedPercent;
-  if (primary === 0 && secondary === 0) return "No usage reported";
-  return "Usage checked";
+  if (primary === 0 && secondary === 0) return translate("No usage reported");
+  return translate("Usage checked");
 }
 
 function usageSummaryLabel(account: Account, usageCacheTtlMs: number) {
   const status = usageStatusLabel(account, usageCacheTtlMs);
   const fetchedAt = account.usage?.fetchedAt;
   return typeof fetchedAt === "number" && Number.isFinite(fetchedAt)
-    ? `${status} · ${usageAgeLabel(fetchedAt)}`
+    ? translate("{status} · {age}", { status, age: usageAgeLabel(fetchedAt) })
     : status;
 }
 
 export function AccountsTab(props: Props) {
+  const t = useT();
   const api = useDashboardApi();
   const { capabilities } = useDashboardRuntime();
   const {
@@ -316,7 +318,7 @@ export function AccountsTab(props: Props) {
     try {
       await onConnectCloud();
     } catch (error: any) {
-      setCloudError(error?.message ?? "Could not connect to MultiVibe Cloud.");
+      setCloudError(error?.message ?? t("Could not connect to MultiVibe Cloud."));
     } finally {
       setCloudBusy(false);
     }
@@ -327,7 +329,7 @@ export function AccountsTab(props: Props) {
     try {
       await onDisconnectCloud();
     } catch (error: any) {
-      setCloudError(error?.message ?? "Could not disconnect from MultiVibe Cloud.");
+      setCloudError(error?.message ?? t("Could not disconnect from MultiVibe Cloud."));
     } finally {
       setCloudBusy(false);
     }
@@ -345,7 +347,7 @@ export function AccountsTab(props: Props) {
     let active = true;
     void api("provider-catalog").then((catalog) => {
       if (active) setSdkProviders(catalog.providers);
-    }).catch(() => { if (active) setSdkCatalogError("Provider list could not be loaded. Reload to try again."); });
+    }).catch(() => { if (active) setSdkCatalogError(translate("Provider list could not be loaded. Reload to try again.")); });
     return () => { active = false; };
   }, []);
   const [manualEmail, setManualEmail] = useState("");
@@ -583,7 +585,7 @@ export function AccountsTab(props: Props) {
             current ? {
               ...current, isSubmitting: false,
               ...((err instanceof ApiError && [400, 404, 410, 500].includes(err.status))
-                ? { pollingError: "Sign-in could not be completed. Close this dialog and start a new sign-in." } : {}),
+                ? { pollingError: translate("Sign-in could not be completed. Close this dialog and start a new sign-in.") } : {}),
             } : current,
           );
         }
@@ -652,7 +654,7 @@ export function AccountsTab(props: Props) {
     } catch {
       setEditModelOptions([]);
       setEditModelsLive(null);
-      setEditModelsError("Modèles indisponibles. Saisis les IDs manuellement ou réessaie.");
+      setEditModelsError(translate("Models unavailable. Enter the IDs manually or try again."));
     } finally {
       setEditModelsLoading(false);
     }
@@ -732,7 +734,7 @@ export function AccountsTab(props: Props) {
     pendingPriority?: number;
     pendingEnabled?: boolean;
   }) => {
-    if (options.method === "browser" && !capabilities.providerBrowserOAuth) throw new Error("Browser sign-in is unavailable in this workspace.");
+    if (options.method === "browser" && !capabilities.providerBrowserOAuth) throw new Error(t("Browser sign-in is unavailable in this workspace."));
     const result = await startOAuth(
       options.email,
       options.accountId,
@@ -740,7 +742,7 @@ export function AccountsTab(props: Props) {
       options.provider,
     );
     const flowId = result?.flowId as string | undefined;
-    if (!flowId) throw new Error("Missing OAuth flow details from start response");
+    if (!flowId) throw new Error(t("Missing OAuth flow details from start response"));
 
     const authorizeUrl = String(result?.authorizeUrl ?? "");
     const expectedRedirectUri =
@@ -749,10 +751,10 @@ export function AccountsTab(props: Props) {
     const userCode = String(result?.userCode ?? "");
 
     if (options.method === "browser" && !authorizeUrl) {
-      throw new Error("Missing browser OAuth authorize URL from start response");
+      throw new Error(t("Missing browser OAuth authorize URL from start response"));
     }
     if (options.method === "device" && (!verificationUrl || !userCode)) {
-      throw new Error("Missing device code details from start response");
+      throw new Error(t("Missing device code details from start response"));
     }
 
     setOauthDialog({
@@ -988,7 +990,7 @@ export function AccountsTab(props: Props) {
     if ((account.provider ?? "openai") !== "openai") return;
     if (!account.email?.trim()) {
       window.alert(
-        "This OpenAI account has no email, so reauth cannot be started.",
+        t("This OpenAI account has no email, so reauth cannot be started."),
       );
       return;
     }
@@ -1011,7 +1013,7 @@ export function AccountsTab(props: Props) {
     if ((account.provider ?? "openai") !== "openai") return;
     if (!account.email?.trim()) {
       window.alert(
-        "This OpenAI account has no email, so reauth cannot be started.",
+        t("This OpenAI account has no email, so reauth cannot be started."),
       );
       return;
     }
@@ -1094,7 +1096,7 @@ export function AccountsTab(props: Props) {
         const rawForecast = result?.forecast;
         const score = Number(rawForecast?.score);
         if (!Number.isFinite(score) || score < 0 || score > 100) {
-          throw new Error("Invalid quota reset forecast");
+          throw new Error(translate("Invalid quota reset forecast"));
         }
         setQuotaResetForecast({
           score,
@@ -1166,7 +1168,7 @@ export function AccountsTab(props: Props) {
                 ? `${Math.round(value)}%`
                 : "?"}
           </strong>
-          <small>{unsupported ? "Not exposed" : `${stale ? "Stale · " : ""}${fmt(resetAt)}`}</small>
+          <small>{unsupported ? t("Not exposed") : stale ? t("Stale · {value}", { value: fmt(resetAt) }) : fmt(resetAt)}</small>
         </div>
         <div className="mini-progress">
           <span style={{ width: `${safeValue}%` }} />
@@ -1179,39 +1181,39 @@ export function AccountsTab(props: Props) {
     <>
       {hasAnyProvider && (
         <>
-      <WidgetGrid storageKey="providers" label="Provider metrics">
+      <WidgetGrid storageKey="providers" label={t("Provider metrics")}>
         <Metric widgetId="providers"
-          title="Providers"
+          title={t("Providers")}
           value={`${accounts.length}`}
-          detail={"Total configured providers"}
+          detail={t("Total configured providers")}
         />
         <Metric widgetId="enabled"
-          title="Enabled"
+          title={t("Enabled")}
           value={`${enabledCount}`}
-          detail="Available for routing"
+          detail={t("Available for routing")}
           tone="success"
         />
         <Metric widgetId="blocked" required
-          title="Blocked"
+          title={t("Blocked")}
           value={`${blockedCount}`}
-          detail="Need manual review or quota reset"
+          detail={t("Need manual review or quota reset")}
           tone={blockedCount > 0 ? "warning" : "default"}
         />
         <Metric widgetId="top-model"
-          title="Top model"
+          title={t("Top model")}
           value={traceStats.models[0]?.model ?? "-"}
-          detail="Highest volume in the selected range"
+          detail={t("Highest volume in the selected range")}
         />
         {openAiCount > 0 && (
           <Metric widgetId="quota-reset-forecast"
-            title="Will Codex reset?"
+            title={t("Will Codex reset?")}
             value={quotaResetForecastStatus === "ready" && quotaResetForecast
               ? `${Math.round(quotaResetForecast.score)}%` : "—"}
             loading={quotaResetForecastStatus === "loading"}
             detail={quotaResetForecastStatus === "error"
-              ? "Forecast unavailable"
-              : `Chance of a reset · Unofficial forecast for the next ${quotaResetForecast?.horizonHours ?? 48} hours.`}
-            action={{ href: CODEX_QUOTA_RESET_FORECAST_URL, label: "View forecast" }}
+              ? t("Forecast unavailable")
+              : t("Chance of a reset · Unofficial forecast for the next {hours} hours.", { hours: quotaResetForecast?.horizonHours ?? 48 })}
+            action={{ href: CODEX_QUOTA_RESET_FORECAST_URL, label: t("View forecast") }}
           />
         )}
       </WidgetGrid>
@@ -1220,9 +1222,9 @@ export function AccountsTab(props: Props) {
 
       <section className={hasAnyProvider ? "panel providers-list-panel" : "panel providers-empty-state"}>
         <div className="section-split-header">
-          <h2>{accounts.length ? "Connected providers" : "Providers"}</h2>
+          <h2>{accounts.length ? t("Connected providers") : t("Providers")}</h2>
           <div className="inline wrap">
-            <details className="provider-list-summary"><summary>{accounts.length} connections</summary><div className="inline wrap">
+            <details className="provider-list-summary"><summary>{t("{count} connections", { count: accounts.length })}</summary><div className="inline wrap">
             {openAiCount > 0 && (
               <span className="badge">{openAiCount} OpenAI</span>
             )}
@@ -1246,21 +1248,21 @@ export function AccountsTab(props: Props) {
 
             {quotaTrackedAccounts.length > 0 && (
               <span className="badge">
-                {usageCheckedCount}/{quotaTrackedAccounts.length} usage checked
+                {t("{checked}/{total} usage checked", { checked: usageCheckedCount, total: quotaTrackedAccounts.length })}
               </span>
             )}
             {usageUnsupportedCount > 0 && (
               <span className="badge">
-                {usageUnsupportedCount} usage not exposed
+                {t("{count} usage not exposed", { count: usageUnsupportedCount })}
               </span>
             )}
             {usageRefreshPendingCount > 0 && (
               <span className="badge badge-warn">
-                {usageRefreshPendingCount} refresh pending
+                {t("{count} refresh pending", { count: usageRefreshPendingCount })}
               </span>
             )}
             </div></details>
-            {hasAnyProvider && <button className="btn" onClick={() => setShowAddAccount(true)}>Add provider</button>}
+            {hasAnyProvider && <button className="btn" onClick={() => setShowAddAccount(true)}>{t("Add provider")}</button>}
           </div>
         </div>
         {capabilities.cloudConnection && !accounts.some((account) => account.multivibeCloud) && (
@@ -1269,13 +1271,13 @@ export function AccountsTab(props: Props) {
               <img className="local-worker-provider-icon" src="/assets/brand/multivibe-app-icon.svg" alt="" />
               <div>
                 <h3 id="multivibe-cloud-provider-title">MultiVibe Cloud</h3>
-                {multivibeCloud.status === "unavailable" && <p className="muted">Connection temporarily unavailable. Host will retry automatically.</p>}
+                {multivibeCloud.status === "unavailable" && <p className="muted">{t("Connection temporarily unavailable. Host will retry automatically.")}</p>}
                 {cloudError && <p className="account-inline-error" role="alert">{cloudError}</p>}
               </div>
             </div>
             <div className="local-worker-provider-actions">
               <button className="btn" onClick={() => void connectCloud()} disabled={cloudBusy || multivibeCloud.status === "unavailable"}>
-                {cloudBusy ? "Connecting…" : "Connect"}
+                {cloudBusy ? t("Connecting…") : t("Connect")}
               </button>
             </div>
           </article>
@@ -1284,9 +1286,9 @@ export function AccountsTab(props: Props) {
         {!accounts.length ? (
           <div className="empty-state-content">
             <span className="empty-state-icon" aria-hidden="true">+</span>
-            <h3>Connect your first provider</h3>
-            <p className="muted">Add a hosted account or a local OpenAI-compatible endpoint. MultiVibe will discover its models and make them ready for routing.</p>
-            <button className="btn" onClick={() => setShowAddAccount(true)}>Add a provider</button>
+            <h3>{t("Connect your first provider")}</h3>
+            <p className="muted">{t("Add a hosted account or a local OpenAI-compatible endpoint. MultiVibe will discover its models and make them ready for routing.")}</p>
+            <button className="btn" onClick={() => setShowAddAccount(true)}>{t("Add a provider")}</button>
           </div>
         ) : accounts.length > 0 ? (
         <div className="provider-list">
@@ -1308,16 +1310,16 @@ export function AccountsTab(props: Props) {
                   <div
                     className="account-reauth-banner"
                     role="status"
-                    aria-label="This account needs to be reconnected"
+                    aria-label={t("This account needs to be reconnected")}
                   >
-                    <span>This account needs to be reconnected</span>
+                    <span>{t("This account needs to be reconnected")}</span>
                     <button
                       type="button"
                       className="btn account-reauth-button"
                       disabled={oauthBusyId === a.id}
                       onClick={() => void reauthOAuthAccount(a)}
                     >
-                      {oauthBusyId === a.id ? "Opening..." : "Reauth this account"}
+                      {oauthBusyId === a.id ? t("Opening...") : t("Reauth this account")}
                     </button>
                   </div>
                 )}
@@ -1327,19 +1329,19 @@ export function AccountsTab(props: Props) {
                       <img
                         className="provider-icon"
                         src={runtimeIdentity.iconUrl}
-                        alt={`${runtimeIdentity.label} icon`}
+                        alt={t("{name} icon", { name: runtimeIdentity.label })}
                         loading="lazy"
                       />
                       {runtimeIdentity.label}
                     </span>
                     {(!isCloud || a.email) && <strong className="provider-card-account-name">
-                      {sanitized ? maskEmail(a.email) : (a.email ?? "No email set")}
+                      {sanitized ? maskEmail(a.email) : (a.email ?? t("No email set"))}
                     </strong>}
                     <span className={`provider-card-status badge ${a.enabled ? "badge-live" : "badge-warn"}`}>
-                      {a.enabled ? "Enabled" : "Disabled"}
+                      {a.enabled ? t("Enabled") : t("Disabled")}
                     </span>
                     <span className={`provider-card-location badge${a.location === "local" ? " badge-live" : ""}`}>
-                      {a.location ?? "cloud"}
+                      {a.location === "local" ? t("Local") : a.location === "cloud" ? t("Cloud") : (a.location ?? t("Cloud"))}
                     </span>
                     {!isCloud && tracksSubscriptionQuota(a) && (
                       <span className="provider-card-usage mono muted">
@@ -1350,7 +1352,7 @@ export function AccountsTab(props: Props) {
                   <div className="account-actions-cell">
                       <button
                         className="icon-menu-btn"
-                        aria-label={`Open actions for ${a.email ?? a.id}`}
+                        aria-label={t("Open actions for {account}", { account: a.email ?? a.id })}
                         aria-expanded={openMenu?.accountId === a.id}
                         onClick={(e) => {
                           e.stopPropagation();
@@ -1409,7 +1411,7 @@ export function AccountsTab(props: Props) {
                               disabled={a.actions?.edit === false}
                               onClick={() => openEditModal(a)}
                             >
-                              Modify parameters
+                              {t("Modify parameters")}
                             </button>
                             <button
                               className="account-action-item"
@@ -1419,7 +1421,7 @@ export function AccountsTab(props: Props) {
                                 if (a.actions?.edit !== false) void patch(a.id, { enabled: !a.enabled });
                               }}
                             >
-                              {a.enabled ? "Disable" : "Enable"}
+                              {a.enabled ? t("Disable") : t("Enable")}
                             </button>
                             <button
                               className="account-action-item"
@@ -1429,7 +1431,7 @@ export function AccountsTab(props: Props) {
                                 if (a.actions?.unblock !== false) void unblock(a.id);
                               }}
                             >
-                              Unblock
+                              {t("Unblock")}
                             </button>
                             {!isCloud && tracksSubscriptionQuota(a) && a.actions?.refreshUsage !== false && (
                               <button
@@ -1439,7 +1441,7 @@ export function AccountsTab(props: Props) {
                                   void refreshUsage(a.id);
                                 }}
                               >
-                                Refresh usage
+                                {t("Refresh usage")}
                               </button>
                             )}
                             {capabilities.host && ((isOpenAiAccount(a) && a.enabled) ||
@@ -1457,8 +1459,8 @@ export function AccountsTab(props: Props) {
                                 }}
                               >
                                 {settings.defaultPassthroughAccountId === a.id
-                                  ? "Clear default passthrough"
-                                  : "Set as default passthrough"}
+                                  ? t("Clear default passthrough")
+                                  : t("Set as default passthrough")}
                               </button>
                             )}
                             {isOpenAiAccount(a) && a.actions?.quotaReset !== false && (
@@ -1469,7 +1471,7 @@ export function AccountsTab(props: Props) {
                                   void consumeRateLimitResetCredit(a.id);
                                 }}
                               >
-                                Use rate-limit reset credit
+                                {t("Use rate-limit reset credit")}
                               </button>
                             )}
                             {isOpenAiAccount(a) && a.actions?.reauthenticate !== false ? (
@@ -1480,8 +1482,8 @@ export function AccountsTab(props: Props) {
                                   onClick={() => void reauthAccount(a)}
                                 >
                                   {oauthBusyId === a.id
-                                    ? "Opening..."
-                                    : "Reauth"}
+                                    ? t("Opening...")
+                                    : t("Reauth")}
                                 </button>
                                 <button
                                   className="account-action-item"
@@ -1490,7 +1492,7 @@ export function AccountsTab(props: Props) {
                                     void reauthAccountWithDeviceCode(a)
                                   }
                                 >
-                                  Device-code reauth
+                                  {t("Device-code reauth")}
                                 </button>
                               </>
                             ) : !isCloud && (
@@ -1500,7 +1502,7 @@ export function AccountsTab(props: Props) {
                                   disabled={a.actions?.edit === false}
                               onClick={() => openEditModal(a)}
                                 >
-                                  Change key
+                                  {t("Change key")}
                                 </button>}
                                 {a.provider === "opencode" && a.actions?.reauthenticate !== false && (
                                   <button
@@ -1509,8 +1511,8 @@ export function AccountsTab(props: Props) {
                                     onClick={() => void reauthOpenCodeAccount(a)}
                                   >
                                     {oauthBusyId === a.id
-                                      ? "Opening..."
-                                      : "OpenCode device reauth"}
+                                      ? t("Opening...")
+                                      : t("OpenCode device reauth")}
                                   </button>
                                 )}
                               </>
@@ -1524,7 +1526,7 @@ export function AccountsTab(props: Props) {
                               }}
                               disabled={a.actions?.delete === false || (isCloud && (cloudBusy || !capabilities.cloudConnection))}
                             >
-                              {isCloud ? "Disconnect" : "Delete"}
+                              {isCloud ? t("Disconnect") : t("Delete")}
                             </button>
                           </div>,
                           document.body,
@@ -1534,40 +1536,45 @@ export function AccountsTab(props: Props) {
                 {isCloud ? (
                   <div className="provider-card-content cloud-provider-content">
                     <div className="cloud-provider-balance">
-                      <span className="muted">Available balance</span>
+                      <span className="muted">{t("Available balance")}</span>
                       <strong>
                         {multivibeCloud.status === "connected" && multivibeCloud.balanceUsd !== undefined
-                          ? `${Number(multivibeCloud.balanceUsd).toLocaleString(undefined, { maximumFractionDigits: 2 })} credits`
-                          : "Balance unavailable"}
+                          ? t("{amount} credits", { amount: Number(multivibeCloud.balanceUsd).toLocaleString(undefined, { maximumFractionDigits: 2 }) })
+                          : t("Balance unavailable")}
                       </strong>
                       {multivibeCloud.subscription && <span className="muted">{multivibeCloud.subscription}</span>}
-                      {multivibeCloud.status === "unavailable" && <span className="muted">Reconnecting automatically…</span>}
-                      {multivibeCloud.status === "disconnected" && <span className="muted">Reconnect to refresh your Cloud session.</span>}
+                      {multivibeCloud.status === "unavailable" && <span className="muted">{t("Reconnecting automatically…")}</span>}
+                      {multivibeCloud.status === "disconnected" && <span className="muted">{t("Reconnect to refresh your Cloud session.")}</span>}
                       {cloudError && <p className="account-inline-error" role="alert">{cloudError}</p>}
                     </div>
                     <div className="local-worker-provider-actions">
                       <a className="btn" href={multivibeCloud.topupUrl} target="_blank" rel="noreferrer">
-                        Manage plan & add credits
+                        {t("Manage plan & add credits")}
                       </a>
                       {capabilities.cloudConnection && multivibeCloud.status === "disconnected" && (
-                        <button className="btn secondary" type="button" onClick={() => void connectCloud()} disabled={cloudBusy}>Reconnect</button>
+                        <button className="btn secondary" type="button" onClick={() => void connectCloud()} disabled={cloudBusy}>{t("Reconnect")}</button>
                       )}
                     </div>
                   </div>
                 ) : <div className="provider-card-content">
-                  {(a.baseUrl || a.upstreamMode || a.capacityProfile || isOpenAiAccount(a) || (a.provider === "opencode" && a.opencodeOrgName)) && <details className="provider-card-details provider-connection-details"><summary>{a.state?.scheduledWeeklyReset?.lastError ? "Settings · auto-reset failed" : a.state?.scheduledWeeklyReset ? "Settings · auto-reset scheduled" : "Connection settings"}</summary>
+                  {(a.baseUrl || a.upstreamMode || a.capacityProfile || isOpenAiAccount(a) || (a.provider === "opencode" && a.opencodeOrgName)) && <details className="provider-card-details provider-connection-details"><summary>{a.state?.scheduledWeeklyReset?.lastError ? t("Settings · auto-reset failed") : a.state?.scheduledWeeklyReset ? t("Settings · auto-reset scheduled") : t("Connection settings")}</summary>
                     {(a.baseUrl || a.upstreamMode || (a.provider === "opencode" && a.opencodeOrgName)) && (
                       <div className="provider-card-endpoint">
                         {a.baseUrl && <span className="mono muted">{a.baseUrl}</span>}
-                        {a.upstreamMode && <span className="mono muted">upstream: {a.upstreamMode}</span>}
+                        {a.upstreamMode && <span className="mono muted">{t("upstream: {mode}", { mode: a.upstreamMode })}</span>}
                         {a.provider === "opencode" && a.opencodeOrgName && (
-                          <span className="mono muted">organization: {a.opencodeOrgName}</span>
+                          <span className="mono muted">{t("organization: {name}", { name: a.opencodeOrgName })}</span>
                         )}
                       </div>
                     )}
                     {a.capacityProfile && (
                       <span className="mono muted">
-                        capacity: {a.capacityProfile.maxConcurrent ?? "?"} slots · {a.capacityProfile.prefillTokensPerSecond ?? "?"} prefill tok/s · {a.capacityProfile.decodeTokensPerSecond ?? "?"} decode tok/s · {a.capacityProfile.contextWindow ?? "?"} ctx
+                        {t("capacity: {slots} slots · {prefill} prefill tok/s · {decode} decode tok/s · {ctx} ctx", {
+                          slots: a.capacityProfile.maxConcurrent ?? "?",
+                          prefill: a.capacityProfile.prefillTokensPerSecond ?? "?",
+                          decode: a.capacityProfile.decodeTokensPerSecond ?? "?",
+                          ctx: a.capacityProfile.contextWindow ?? "?",
+                        })}
                       </span>
                     )}
                     {isOpenAiAccount(a) && a.actions?.quotaReset !== false && (
@@ -1579,21 +1586,21 @@ export function AccountsTab(props: Props) {
                             setResetCreditRefresh((current) => current + 1);
                           }}
                         >
-                          Reset quota now (available: {resetCredits[a.id] ?? "—"})
+                          {t("Reset quota now (available: {count})", { count: resetCredits[a.id] ?? "—" })}
                         </button>
                         {a.state?.scheduledWeeklyReset ? (
                           <>
-                            <span className="badge badge-live">Auto-reset scheduled at 0.5% remaining</span>
+                            <span className="badge badge-live">{t("Auto-reset scheduled at 0.5% remaining")}</span>
                             {a.state.scheduledWeeklyReset.lastError && (
                               <small className="reset-quota-error">
-                                Last attempt failed: {a.state.scheduledWeeklyReset.lastError}
+                                {t("Last attempt failed: {error}", { error: a.state.scheduledWeeklyReset.lastError })}
                               </small>
                             )}
                             <button
                               className="btn secondary reset-quota-btn"
                               onClick={() => void cancelScheduledRateLimitResetCredit(a.id)}
                             >
-                              Cancel auto-reset
+                              {t("Cancel auto-reset")}
                             </button>
                           </>
                         ) : (
@@ -1601,7 +1608,7 @@ export function AccountsTab(props: Props) {
                             className="btn secondary reset-quota-btn"
                             onClick={() => void scheduleRateLimitResetCredit(a.id)}
                           >
-                            Auto-reset at 0.5% remaining
+                            {t("Auto-reset at 0.5% remaining")}
                           </button>
                         )}
                       </div>
@@ -1609,53 +1616,53 @@ export function AccountsTab(props: Props) {
                   </details>}
                   {tracksSubscriptionQuota(a) && (
                     <>
-                      <div className="provider-quota-grid" aria-label="Quota usage">
+                      <div className="provider-quota-grid" aria-label={t("Quota usage")}>
                         {a.usage?.quotaStatus !== "unsupported" && shouldDisplayOptionalQuotaWindow(a, "primary") && (
                           <div className="provider-quota-item">
-                            <span className="provider-quota-label">5h quota</span>
+                            <span className="provider-quota-label">{t("5h quota")}</span>
                             {renderUsageCell(a.usage?.primary?.usedPercent, a.usage?.primary?.resetAt, a.usage?.quotaStatus === "unsupported", a.usage?.quotaStatus === "error")}
                           </div>
                         )}
                         {a.usage?.quotaStatus !== "unsupported" && shouldDisplayOptionalQuotaWindow(a, "secondary") && (
                           <div className="provider-quota-item">
-                            <span className="provider-quota-label">Weekly quota</span>
+                            <span className="provider-quota-label">{t("Weekly quota")}</span>
                             {renderUsageCell(a.usage?.secondary?.usedPercent, a.usage?.secondary?.resetAt, a.usage?.quotaStatus === "unsupported", a.usage?.quotaStatus === "error")}
                           </div>
                         )}
                         {a.usage?.quotaStatus !== "unsupported" && shouldDisplayOptionalQuotaWindow(a, "monthly") && (
                           <div className="provider-quota-item">
-                            <span className="provider-quota-label">{a.usage?.monthly?.label ?? "Monthly quota"}</span>
+                            <span className="provider-quota-label">{a.usage?.monthly?.label ?? t("Monthly quota")}</span>
                             {renderUsageCell(a.usage?.monthly?.usedPercent, a.usage?.monthly?.resetAt, a.usage?.quotaStatus === "unsupported", a.usage?.quotaStatus === "error")}
                           </div>
                         )}
                         {a.usage?.codexCredits && (
                           <div className="provider-quota-item">
-                            <span className="provider-quota-label">Codex credits</span>
+                            <span className="provider-quota-label">{t("Codex credits")}</span>
                             <span>
-                              {a.usage.codexCredits.unlimited === true ? "Unlimited"
+                              {a.usage.codexCredits.unlimited === true ? t("Unlimited")
                                 : typeof a.usage.codexCredits.remaining === "number"
-                                  ? `${a.usage.codexCredits.remaining.toLocaleString(undefined, { maximumFractionDigits: 2 })} credits`
-                                  : a.usage.codexCredits.hasCredits === false ? "No credits" : "Unavailable"}
-                              {a.usage.quotaStatus === "error" ? " (stale)" : ""}
+                                  ? t("{amount} credits", { amount: a.usage.codexCredits.remaining.toLocaleString(undefined, { maximumFractionDigits: 2 }) })
+                                  : a.usage.codexCredits.hasCredits === false ? t("No credits") : t("Unavailable")}
+                              {a.usage.quotaStatus === "error" ? ` ${t("(stale)")}` : ""}
                             </span>
                           </div>
                         )}
                         {a.usage?.balance && (
                           <div className="provider-quota-item">
-                            <span className="provider-quota-label">Available balance</span>
-                            <span>{Number(a.usage.balance.remaining).toLocaleString()} {a.usage.balance.unit}{a.usage.quotaStatus === "error" ? " (stale)" : ""}</span>
+                            <span className="provider-quota-label">{t("Available balance")}</span>
+                            <span>{Number(a.usage.balance.remaining).toLocaleString()} {a.usage.balance.unit}{a.usage.quotaStatus === "error" ? ` ${t("(stale)")}` : ""}</span>
                           </div>
                         )}
                         {a.usage?.credits && (
                           <div className="provider-quota-item">
-                            <span className="provider-quota-label">{a.usage.credits.label ?? "Subscription credits"}</span>
+                            <span className="provider-quota-label">{a.usage.credits.label ?? t("Subscription credits")}</span>
                             {renderUsageCell(a.usage.credits.usedPercent, a.usage.credits.resetAt, false, a.usage.quotaStatus === "error")}
                           </div>
                         )}
                         {a.usage?.spend && (
                           <div className="provider-quota-item">
-                            <span className="provider-quota-label">API key spend</span>
-                            <span>{Number(a.usage.spend.amount).toLocaleString(undefined, { maximumFractionDigits: 6 })} {a.usage.spend.unit}{a.usage.quotaStatus === "error" ? " (stale)" : ""}</span>
+                            <span className="provider-quota-label">{t("API key spend")}</span>
+                            <span>{Number(a.usage.spend.amount).toLocaleString(undefined, { maximumFractionDigits: 6 })} {a.usage.spend.unit}{a.usage.quotaStatus === "error" ? ` ${t("(stale)")}` : ""}</span>
                           </div>
                         )}
                         {a.usage?.allowances?.map((window: { label: string; usedPercent?: number; resetAt?: number }) => (
@@ -1666,7 +1673,7 @@ export function AccountsTab(props: Props) {
                         ))}
                         {a.usage?.tools && (
                           <div className="provider-quota-item">
-                            <span className="provider-quota-label">MCP tools quota</span>
+                            <span className="provider-quota-label">{t("MCP tools quota")}</span>
                             {renderUsageCell(a.usage.tools.usedPercent, a.usage.tools.resetAt, false, a.usage.quotaStatus === "error")}
                           </div>
                         )}
@@ -1688,7 +1695,7 @@ export function AccountsTab(props: Props) {
                   <div className="state-stack provider-card-blocks">
                     {modelBlocks.map(([model, block]) => (
                       <span className="badge badge-warn" key={model}>
-                        {`${model} blocked until ${fmt(block.until)}`}
+                        {t("{model} blocked until {time}", { model, time: fmt(block.until) })}
                       </span>
                     ))}
                   </div>
@@ -1696,7 +1703,7 @@ export function AccountsTab(props: Props) {
                 {a.state?.lastError && (
                   <div className="provider-card-footer">
                     <div className="provider-card-error">
-                      <span className="provider-card-label">Last error</span>
+                      <span className="provider-card-label">{t("Last error")}</span>
                       <span className="mono">{a.state.lastError.slice(0, 120)}</span>
                     </div>
                   </div>
@@ -1712,7 +1719,7 @@ export function AccountsTab(props: Props) {
 
       {showAddAccount && !oauthDialog && (
         <ModalPortal><div className="modal-backdrop" onClick={() => { if (!isSubmitting) closeModal(); }}>
-          <div ref={providerModalRef} className={`modal panel provider-setup-modal${providerStep === 0 ? " provider-setup-modal-picker" : ""}${onboardingProviderSetup ? " onboarding-provider-modal" : ""}`} role="dialog" aria-modal="true" aria-label={providerStep === 0 ? "Choose your provider" : undefined} aria-labelledby={providerStep > 0 ? "provider-setup-title" : undefined} tabIndex={-1} onClick={(e) => e.stopPropagation()} onKeyDown={(event) => {
+          <div ref={providerModalRef} className={`modal panel provider-setup-modal${providerStep === 0 ? " provider-setup-modal-picker" : ""}${onboardingProviderSetup ? " onboarding-provider-modal" : ""}`} role="dialog" aria-modal="true" aria-label={providerStep === 0 ? t("Choose your provider") : undefined} aria-labelledby={providerStep > 0 ? "provider-setup-title" : undefined} tabIndex={-1} onClick={(e) => e.stopPropagation()} onKeyDown={(event) => {
             if (event.key === "Escape" && !isSubmitting) { event.stopPropagation(); closeModal(); }
             if (event.key === "Tab") {
               const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), summary, [href]')).filter((item) => item.getClientRects().length > 0);
@@ -1722,42 +1729,42 @@ export function AccountsTab(props: Props) {
             }
           }}>
             <div className="provider-setup-topbar">
-              <span className="provider-setup-heading">{providerStep === 0 ? "Add a provider" : "Connect your provider"}</span>
+              <span className="provider-setup-heading">{providerStep === 0 ? t("Add a provider") : t("Connect your provider")}</span>
               <div className="inline wrap">
                 {onboardingProviderSetup && (
                   <button className="btn ghost" disabled={isSubmitting} onClick={() => {
                     closeModal();
                     onSkipOnboarding?.();
                   }}>
-                    Skip setup
+                    {t("Skip setup")}
                   </button>
                 )}
                 <button className="btn ghost" disabled={isSubmitting} onClick={closeModal}>
-                  {onboardingProviderSetup ? "Back" : "Close"}
+                  {onboardingProviderSetup ? t("Back") : t("Close")}
                 </button>
               </div>
             </div>
             {providerStep > 0 && <div className="provider-setup-heading">
               <ProviderMark provider={provider} sdkProvider={sdkProvider} />
-              <div><h2 id="provider-setup-title">{providerStep === 1 ? `Connect ${selectedProviderName}` : "Ready to connect?"}</h2>
-              <p className="muted">{providerStep === 1 ? "Enter your connection details to continue." : "Check your connection and customize routing if needed."}</p></div>
+              <div><h2 id="provider-setup-title">{providerStep === 1 ? t("Connect {provider}", { provider: String(selectedProviderName) }) : t("Ready to connect?")}</h2>
+              <p className="muted">{providerStep === 1 ? t("Enter your connection details to continue.") : t("Check your connection and customize routing if needed.")}</p></div>
             </div>}
             {providerStep === 0 && <ProviderPicker value={provider} sdkProvider={sdkProvider} cloudProviders={sdkProviders} error={sdkCatalogError} onChange={selectProvider} />}
             {providerStep === 1 && <div className="grid modal-grid provider-connection-fields provider-setup-fields">
 
               {provider === "openai" && <label>
-                Connection type
+                {t("Connection type")}
                 <select value={openAIConnectionMode} onChange={(event) => {
                   setOpenAIConnectionMode(event.target.value as OpenAIConnectionMode);
                   setManualAccessToken("");
                   setProviderError("");
                 }}>
-                  <option value="subscription">ChatGPT / Codex subscription</option>
-                  <option value="api-key">OpenAI API key</option>
+                  <option value="subscription">{t("ChatGPT / Codex subscription")}</option>
+                  <option value="api-key">{t("OpenAI API key")}</option>
                 </select>
               </label>}
               <label>
-                {provider === "openai" && openAIConnectionMode === "subscription" ? "Email" : "Email (optional)"}
+                {provider === "openai" && openAIConnectionMode === "subscription" ? t("Email") : t("Email (optional)")}
                 <input
                   value={manualEmail}
                   onChange={(e) => setManualEmail(e.target.value)}
@@ -1766,7 +1773,7 @@ export function AccountsTab(props: Props) {
               </label>
               {usesOAuthConnection && (
                 <label>
-                  {`${oauthProviderLabel(provider)} login method`}
+                  {t("{provider} login method", { provider: oauthProviderLabel(provider) })}
                   <select
                     value={manualOAuthMethod}
                     disabled={provider !== "openai" || !capabilities.providerBrowserOAuth}
@@ -1775,16 +1782,16 @@ export function AccountsTab(props: Props) {
                     }
                   >
                     {capabilities.providerBrowserOAuth && provider === "openai" && (
-                      <option value="browser">Browser callback</option>
+                      <option value="browser">{t("Browser callback")}</option>
                     )}
-                    <option value="device">Device code (recommended)</option>
+                    <option value="device">{t("Device code (recommended)")}</option>
                   </select>
                 </label>
               )}
               {provider === "openai" && openAIConnectionMode === "subscription" && manualOAuthMethod === "device" && <ChatGPTDeviceGuide />}
               {(provider === "openai-compatible") && (
                 <label>
-                  Base URL
+                  {t("Base URL")}
                   <input
                     value={manualBaseUrl}
                     onChange={(e) => setManualBaseUrl(e.target.value)}
@@ -1794,11 +1801,11 @@ export function AccountsTab(props: Props) {
               )}
               {provider === "ai-sdk" && <>
                 {selectedSdkProvider?.endpointPlaceholder && <label>
-                  Provider endpoint {selectedSdkProvider.endpointRequired ? "(required)" : "(optional)"}
+                  {selectedSdkProvider.endpointRequired ? t("Provider endpoint (required)") : t("Provider endpoint (optional)")}
                   <input type="url" value={manualBaseUrl} onChange={(event) => setManualBaseUrl(event.target.value)} placeholder={selectedSdkProvider.endpointPlaceholder} />
                 </label>}
                 <div>
-                  <p className="muted">{selectedSdkProvider?.requiresModelSelection ? "Deployment / model names (required)" : "Model IDs (optional)"}</p>
+                  <p className="muted">{selectedSdkProvider?.requiresModelSelection ? t("Deployment / model names (required)") : t("Model IDs (optional)")}</p>
                   <ProviderModelPicker
                     providerName={selectedSdkProvider?.name}
                     value={sdkModels}
@@ -1807,13 +1814,13 @@ export function AccountsTab(props: Props) {
                     requiresSelection={selectedSdkProvider?.requiresModelSelection}
                   />
                 </div>
-                <p className="muted">Access and pricing depend on your provider account. Subscription quotas are not supplied by the catalog.</p>
+                <p className="muted">{t("Access and pricing depend on your provider account. Subscription quotas are not supplied by the catalog.")}</p>
                 {providerAccess(sdkProvider, true) && <p className="muted">{providerAccess(sdkProvider, true)?.note}</p>}
               </>}
               {usesOpenAIAPIKey ? (
                 <>
                   <label>
-                    OpenAI API key
+                    {t("OpenAI API key")}
                     <input
                       type="password"
                       autoComplete="off"
@@ -1822,34 +1829,34 @@ export function AccountsTab(props: Props) {
                       placeholder="sk-…"
                     />
                   </label>
-                  <p className="provider-setup-note">Requests use <strong>https://api.openai.com/v1</strong>. API usage is billed separately from ChatGPT and Codex subscriptions.</p>
+                  <p className="provider-setup-note">{t("Requests use {url}. API usage is billed separately from ChatGPT and Codex subscriptions.", { url: "https://api.openai.com/v1" })}</p>
                 </>
               ) : (
                 <div className="muted">
                   {provider === "github-copilot"
-                    ? "Sign in on GitHub with a one-time device code. Models depend on your Copilot plan and organization policy. Premium request and chat quotas are refreshed when GitHub exposes them."
+                    ? t("Sign in on GitHub with a one-time device code. Models depend on your Copilot plan and organization policy. Premium request and chat quotas are refreshed when GitHub exposes them.")
                     : provider === "xai"
-                    ? "Grok Build uses xAI device OAuth and the SuperGrok / X Premium+ subscription quota."
-                    : "Approve a one-time code on OpenAI’s sign-in page. MultiVibe finishes connecting automatically."}
+                    ? t("Grok Build uses xAI device OAuth and the SuperGrok / X Premium+ subscription quota.")
+                    : t("Approve a one-time code on OpenAI’s sign-in page. MultiVibe finishes connecting automatically.")}
                 </div>
               )}
               {provider === "opencode" && (
                 <div className="muted">
-                  Enter an API key, or leave it empty to sign in with your OpenCode Console account on the next step. Go API keys support 5h, weekly and monthly quotas. Console device connections may not expose these quotas.
+                  {t("Enter an API key, or leave it empty to sign in with your OpenCode Console account on the next step. Go API keys support 5h, weekly and monthly quotas. Console device connections may not expose these quotas.")}
                 </div>
               )}
             </div>}
             {providerStep === 2 && <>
               <dl className="provider-setup-summary">
-                <div><dt>Provider</dt><dd>{provider === "ai-sdk" ? sdkProviders.find((item) => item.id === sdkProvider)?.name : SETUP_PROVIDERS.find((item) => item.id === provider)?.name}</dd></div>
-                <div><dt>Account</dt><dd>{manualEmail.trim() || "No email label"}</dd></div>
-                <div><dt>Connection</dt><dd>{usesOAuthConnection ? manualOAuthMethod === "device" ? "Device sign-in" : "Browser sign-in" : provider === "opencode" && !manualAccessToken.trim() ? "OpenCode device sign-in" : "API key provided"}</dd></div>
-                {(usesOpenAIAPIKey || provider === "openai-compatible" || provider === "ai-sdk" && selectedSdkProvider?.endpointPlaceholder) && <div><dt>Endpoint</dt><dd>{usesOpenAIAPIKey ? "https://api.openai.com/v1" : manualBaseUrl || selectedSdkProvider?.endpointPlaceholder}</dd></div>}
+                <div><dt>{t("Provider")}</dt><dd>{provider === "ai-sdk" ? sdkProviders.find((item) => item.id === sdkProvider)?.name : SETUP_PROVIDERS.find((item) => item.id === provider)?.name}</dd></div>
+                <div><dt>{t("Account")}</dt><dd>{manualEmail.trim() || t("No email label")}</dd></div>
+                <div><dt>{t("Connection")}</dt><dd>{usesOAuthConnection ? manualOAuthMethod === "device" ? t("Device sign-in") : t("Browser sign-in") : provider === "opencode" && !manualAccessToken.trim() ? t("OpenCode device sign-in") : t("API key provided")}</dd></div>
+                {(usesOpenAIAPIKey || provider === "openai-compatible" || provider === "ai-sdk" && selectedSdkProvider?.endpointPlaceholder) && <div><dt>{t("Endpoint")}</dt><dd>{usesOpenAIAPIKey ? "https://api.openai.com/v1" : manualBaseUrl || selectedSdkProvider?.endpointPlaceholder}</dd></div>}
               </dl>
-              {usesOAuthConnection && <p className="provider-setup-note">Next, approve the connection with your provider to finish setup.</p>}
-              {!onboardingProviderSetup && <details className="provider-setup-advanced"><summary>Advanced settings <span>{capabilities.providerCapacity ? "Routing, priority & capacity" : "Connection status"}</span></summary><div className="grid modal-grid">
+              {usesOAuthConnection && <p className="provider-setup-note">{t("Next, approve the connection with your provider to finish setup.")}</p>}
+              {!onboardingProviderSetup && <details className="provider-setup-advanced"><summary>{t("Advanced settings")} <span>{capabilities.providerCapacity ? t("Routing, priority & capacity") : t("Connection status")}</span></summary><div className="grid modal-grid">
               {!onboardingProviderSetup && capabilities.providerUpstreamSettings && <label>
-                Upstream mode (optional)
+                {t("Upstream mode (optional)")}
                 <select
                   value={manualUpstreamMode}
                   onChange={(e) =>
@@ -1858,26 +1865,26 @@ export function AccountsTab(props: Props) {
                     )
                   }
                 >
-                  <option value="">Automatic</option>
-                  <option value="responses">Force `/v1/responses`</option>
+                  <option value="">{t("Automatic")}</option>
+                  <option value="responses">{t("Force `/v1/responses`")}</option>
                   <option value="chat/completions">
-                    Force `/v1/chat/completions`
+                    {t("Force `/v1/chat/completions`")}
                   </option>
                 </select>
               </label>}
               {!onboardingProviderSetup && capabilities.providerCapacity && isManualTokenProvider(provider) && (
                 <>
-                  <label>Execution location<select value={manualLocation} onChange={(e) => setManualLocation(e.target.value as "" | "local" | "personal-cluster" | "cloud")}><option value="">Infer from URL/provider</option><option value="local">Local</option><option value="personal-cluster">Personal cluster</option><option value="cloud">Cloud</option></select></label>
-                  <label>Concurrent slots<input type="number" min="1" value={manualMaxConcurrent} onChange={(e) => setManualMaxConcurrent(e.target.value)} placeholder="1 local / 8 cloud" /></label>
-                  <label>Prefill tokens/s<input type="number" min="0" value={manualPrefill} onChange={(e) => setManualPrefill(e.target.value)} /></label>
-                  <label>Decode tokens/s<input type="number" min="0" value={manualDecode} onChange={(e) => setManualDecode(e.target.value)} /></label>
-                  <label>Context window<input type="number" min="1" value={manualContext} onChange={(e) => setManualContext(e.target.value)} placeholder="262144" /></label>
-                  <label>Health URL<input type="url" value={manualHealthUrl} onChange={(e) => setManualHealthUrl(e.target.value)} placeholder="http://worker.local:8000/health" /></label>
-                  <label>Metrics URL<input type="url" value={manualMetricsUrl} onChange={(e) => setManualMetricsUrl(e.target.value)} placeholder="Optional JSON metrics" /></label>
+                  <label>{t("Execution location")}<select value={manualLocation} onChange={(e) => setManualLocation(e.target.value as "" | "local" | "personal-cluster" | "cloud")}><option value="">{t("Infer from URL/provider")}</option><option value="local">{t("Local")}</option><option value="personal-cluster">{t("Personal cluster")}</option><option value="cloud">{t("Cloud")}</option></select></label>
+                  <label>{t("Concurrent slots")}<input type="number" min="1" value={manualMaxConcurrent} onChange={(e) => setManualMaxConcurrent(e.target.value)} placeholder={t("1 local / 8 cloud")} /></label>
+                  <label>{t("Prefill tokens/s")}<input type="number" min="0" value={manualPrefill} onChange={(e) => setManualPrefill(e.target.value)} /></label>
+                  <label>{t("Decode tokens/s")}<input type="number" min="0" value={manualDecode} onChange={(e) => setManualDecode(e.target.value)} /></label>
+                  <label>{t("Context window")}<input type="number" min="1" value={manualContext} onChange={(e) => setManualContext(e.target.value)} placeholder="262144" /></label>
+                  <label>{t("Health URL")}<input type="url" value={manualHealthUrl} onChange={(e) => setManualHealthUrl(e.target.value)} placeholder="http://worker.local:8000/health" /></label>
+                  <label>{t("Metrics URL")}<input type="url" value={manualMetricsUrl} onChange={(e) => setManualMetricsUrl(e.target.value)} placeholder={t("Optional JSON metrics")} /></label>
                 </>
               )}
               {!onboardingProviderSetup && capabilities.providerPriority && <label>
-                Priority
+                {t("Priority")}
                 <input
                   value={manualPriority}
                   onChange={(e) => setManualPriority(e.target.value)}
@@ -1890,15 +1897,15 @@ export function AccountsTab(props: Props) {
                   checked={manualEnabled}
                   onChange={(e) => setManualEnabled(e.target.checked)}
                 />
-                Enabled
+                {t("Enabled")}
               </label>}
               </div></details>}
             </>}
             {providerError && <p className="provider-setup-error" role="alert">{providerError}</p>}
             <div className="provider-setup-footer">
-              <button className="btn ghost" disabled={isSubmitting} onClick={() => { if (providerStep === 0) closeModal(); else { setProviderStep(providerStep - 1); setProviderError(""); } }}>{providerStep === 0 ? "Cancel" : "Back"}</button>
-              <span className="muted provider-setup-step-count">Step {providerStep + 1} of 3</span>
-              {providerStep < 2 && <button className="btn" disabled={providerStep === 1 && !providerConnectionReady} onClick={() => setProviderStep(providerStep + 1)}>Continue <span aria-hidden="true">→</span></button>}
+              <button className="btn ghost" disabled={isSubmitting} onClick={() => { if (providerStep === 0) closeModal(); else { setProviderStep(providerStep - 1); setProviderError(""); } }}>{providerStep === 0 ? t("Cancel") : t("Back")}</button>
+              <span className="muted provider-setup-step-count">{t("Step {step} of 3", { step: providerStep + 1 })}</span>
+              {providerStep < 2 && <button className="btn" disabled={providerStep === 1 && !providerConnectionReady} onClick={() => setProviderStep(providerStep + 1)}>{t("Continue")} <span aria-hidden="true">→</span></button>}
               {providerStep === 2 && <div className="inline wrap">
 
               {!(provider === "opencode" && !manualAccessToken.trim()) && <button
@@ -1910,13 +1917,13 @@ export function AccountsTab(props: Props) {
               >
                 {isSubmitting
                   ? usesOAuthConnection
-                    ? "Starting OAuth..."
-                    : "Creating..."
+                    ? t("Starting OAuth...")
+                    : t("Creating...")
                   : usesOAuthConnection
-                    ? provider === "github-copilot" ? "Sign in with GitHub" : provider === "xai"
-                      ? "Start Grok device login"
-                      : "Start OAuth"
-                    : "Create account"}
+                    ? provider === "github-copilot" ? t("Sign in with GitHub") : provider === "xai"
+                      ? t("Start Grok device login")
+                      : t("Start OAuth")
+                    : t("Create account")}
               </button>}
               {capabilities.host && provider === "xai" && (
                 <button
@@ -1932,7 +1939,7 @@ export function AccountsTab(props: Props) {
                       .finally(() => setIsSubmitting(false));
                   }}
                 >
-                  Import configured auth.json
+                  {t("Import configured auth.json")}
                 </button>
               )}
               {provider === "opencode" && (
@@ -1951,7 +1958,7 @@ export function AccountsTab(props: Props) {
                     }).catch((error) => setProviderError(error instanceof Error ? error.message : String(error))).finally(() => setIsSubmitting(false));
                   }}
                 >
-                  Connect OpenCode account
+                  {t("Connect OpenCode account")}
                 </button>
               )}
               </div>}
@@ -1964,14 +1971,14 @@ export function AccountsTab(props: Props) {
         <ModalPortal><div className="modal-backdrop" onClick={closeEditModal}>
           <div className="modal panel" onClick={(e) => e.stopPropagation()}>
             <div className="inline wrap row-between">
-              <h2>Update account</h2>
+              <h2>{t("Update account")}</h2>
               <button className="btn ghost" onClick={closeEditModal}>
-                Close
+                {t("Close")}
               </button>
             </div>
             <div className="grid modal-grid provider-connection-fields">
               <label>
-                Email (optional)
+                {t("Email (optional)")}
                 <input
                   value={editingAccount.email}
                   onChange={(e) =>
@@ -1984,7 +1991,7 @@ export function AccountsTab(props: Props) {
               </label>
               {capabilities.providerCredentialEditing && isOAuthProvider(editingAccount.provider) && (
                 <label>
-                  {`${oauthProviderLabel(editingAccount.provider)} reauth method`}
+                  {t("{provider} reauth method", { provider: oauthProviderLabel(editingAccount.provider) })}
                   <select
                     value={editOAuthMethod}
                     disabled={editingAccount.provider !== "openai" || !capabilities.providerBrowserOAuth}
@@ -1993,15 +2000,15 @@ export function AccountsTab(props: Props) {
                     }
                   >
                     {capabilities.providerBrowserOAuth && editingAccount.provider === "openai" && (
-                      <option value="browser">Browser callback</option>
+                      <option value="browser">{t("Browser callback")}</option>
                     )}
-                    <option value="device">Device code (recommended)</option>
+                    <option value="device">{t("Device code (recommended)")}</option>
                   </select>
                 </label>
               )}
               {capabilities.providerUpstreamSettings && (editingAccount.provider === "openai-compatible" || editingAccount.provider === "ai-sdk" && editingSdkProvider?.endpointPlaceholder) && (
                 <label>
-                  Base URL
+                  {t("Base URL")}
                   <input
                     value={editingAccount.baseUrl}
                     onChange={(e) =>
@@ -2016,7 +2023,7 @@ export function AccountsTab(props: Props) {
                 </label>
               )}
               {editingAccount.provider === "ai-sdk" && <div>
-                <p className="muted">{editingSdkProvider?.requiresModelSelection ? "Deployment / model names (required)" : "Model IDs (optional)"}</p>
+                <p className="muted">{editingSdkProvider?.requiresModelSelection ? t("Deployment / model names (required)") : t("Model IDs (optional)")}</p>
                 <ProviderModelPicker
                   providerName={editingSdkProvider?.name}
                   value={editingAccount.sdkModels}
@@ -2030,7 +2037,7 @@ export function AccountsTab(props: Props) {
                 />
               </div>}
               {capabilities.providerUpstreamSettings && <label>
-                Upstream mode (optional)
+                {t("Upstream mode (optional)")}
                 <select
                   value={editingAccount.upstreamMode}
                   onChange={(e) =>
@@ -2047,25 +2054,25 @@ export function AccountsTab(props: Props) {
                     )
                   }
                 >
-                  <option value="">Automatic</option>
-                  <option value="responses">Force `/v1/responses`</option>
+                  <option value="">{t("Automatic")}</option>
+                  <option value="responses">{t("Force `/v1/responses`")}</option>
                   <option value="chat/completions">
-                    Force `/v1/chat/completions`
+                    {t("Force `/v1/chat/completions`")}
                   </option>
                 </select>
               </label>}
-              {capabilities.providerCapacity && <><label>Execution location<select value={editingAccount.location} onChange={(e) => setEditingAccount((current) => current ? { ...current, location: e.target.value as "local" | "personal-cluster" | "cloud" } : current)}><option value="local">Local</option><option value="personal-cluster">Personal cluster</option><option value="cloud">Cloud</option></select></label>
-              <label>Concurrent slots<input type="number" min="1" value={editingAccount.maxConcurrent} onChange={(e) => setEditingAccount((current) => current ? { ...current, maxConcurrent: e.target.value } : current)} /></label>
-              <label>Prefill tokens/s<input type="number" min="0" value={editingAccount.prefillTokensPerSecond} onChange={(e) => setEditingAccount((current) => current ? { ...current, prefillTokensPerSecond: e.target.value } : current)} /></label>
-              <label>Decode tokens/s<input type="number" min="0" value={editingAccount.decodeTokensPerSecond} onChange={(e) => setEditingAccount((current) => current ? { ...current, decodeTokensPerSecond: e.target.value } : current)} /></label>
-              <label>Context window<input type="number" min="1" value={editingAccount.contextWindow} onChange={(e) => setEditingAccount((current) => current ? { ...current, contextWindow: e.target.value } : current)} /></label>
-              <label>Health URL<input type="url" value={editingAccount.healthUrl} onChange={(e) => setEditingAccount((current) => current ? { ...current, healthUrl: e.target.value } : current)} /></label>
-              <label>Metrics URL<input type="url" value={editingAccount.metricsUrl} onChange={(e) => setEditingAccount((current) => current ? { ...current, metricsUrl: e.target.value } : current)} /></label>
+              {capabilities.providerCapacity && <><label>{t("Execution location")}<select value={editingAccount.location} onChange={(e) => setEditingAccount((current) => current ? { ...current, location: e.target.value as "local" | "personal-cluster" | "cloud" } : current)}><option value="local">{t("Local")}</option><option value="personal-cluster">{t("Personal cluster")}</option><option value="cloud">{t("Cloud")}</option></select></label>
+              <label>{t("Concurrent slots")}<input type="number" min="1" value={editingAccount.maxConcurrent} onChange={(e) => setEditingAccount((current) => current ? { ...current, maxConcurrent: e.target.value } : current)} /></label>
+              <label>{t("Prefill tokens/s")}<input type="number" min="0" value={editingAccount.prefillTokensPerSecond} onChange={(e) => setEditingAccount((current) => current ? { ...current, prefillTokensPerSecond: e.target.value } : current)} /></label>
+              <label>{t("Decode tokens/s")}<input type="number" min="0" value={editingAccount.decodeTokensPerSecond} onChange={(e) => setEditingAccount((current) => current ? { ...current, decodeTokensPerSecond: e.target.value } : current)} /></label>
+              <label>{t("Context window")}<input type="number" min="1" value={editingAccount.contextWindow} onChange={(e) => setEditingAccount((current) => current ? { ...current, contextWindow: e.target.value } : current)} /></label>
+              <label>{t("Health URL")}<input type="url" value={editingAccount.healthUrl} onChange={(e) => setEditingAccount((current) => current ? { ...current, healthUrl: e.target.value } : current)} /></label>
+              <label>{t("Metrics URL")}<input type="url" value={editingAccount.metricsUrl} onChange={(e) => setEditingAccount((current) => current ? { ...current, metricsUrl: e.target.value } : current)} /></label>
               </>}
               {capabilities.providerCredentialEditing && (isManualTokenProvider(editingAccount.provider) ? (
                 <>
                   <label>
-                    API key
+                    {t("API key")}
                     <input
                       type="password" autoComplete="off"
                       value={editingAccount.accessToken}
@@ -2076,11 +2083,11 @@ export function AccountsTab(props: Props) {
                             : current,
                         )
                       }
-                      placeholder="Required"
+                      placeholder={t("Required")}
                     />
                   </label>
                   <label>
-                    Refresh token (optional)
+                    {t("Refresh token (optional)")}
                     <input
                       type="password" autoComplete="off"
                       value={editingAccount.refreshToken}
@@ -2091,21 +2098,21 @@ export function AccountsTab(props: Props) {
                             : current,
                         )
                       }
-                      placeholder="Optional"
+                      placeholder={t("Optional")}
                     />
                   </label>
                 </>
               ) : (
                 <div className="muted">
                   {editingAccount.provider === "github-copilot"
-                    ? "Sign in again on GitHub and approve the one-time device code."
+                    ? t("Sign in again on GitHub and approve the one-time device code.")
                     : editingAccount.provider === "xai"
-                    ? "Grok Build reauth uses xAI device OAuth. Save changes, then approve the one-time code."
-                    : "Save changes to start sign-in. Approve the one-time code, or paste the callback URL if you chose browser callback."}
+                    ? t("Grok Build reauth uses xAI device OAuth. Save changes, then approve the one-time code.")
+                    : t("Save changes to start sign-in. Approve the one-time code, or paste the callback URL if you chose browser callback.")}
                 </div>
               ))}
               {capabilities.providerPriority && <label>
-                Priority
+                {t("Priority")}
                 <input
                   value={editingAccount.priority}
                   onChange={(e) =>
@@ -2130,7 +2137,7 @@ export function AccountsTab(props: Props) {
                     )
                   }
                 />
-                Enabled
+                {t("Enabled")}
               </label>
             </div>
             <div className="inline wrap">
@@ -2150,16 +2157,16 @@ export function AccountsTab(props: Props) {
               >
                 {isSavingEdit
                   ? capabilities.providerCredentialEditing && isOAuthProvider(editingAccount.provider)
-                    ? "Starting OAuth..."
-                    : "Saving..."
+                    ? t("Starting OAuth...")
+                    : t("Saving...")
                   : capabilities.providerCredentialEditing && isOAuthProvider(editingAccount.provider)
                     ? editingAccount.provider === "xai"
-                      ? "Start Grok reauth"
-                      : "Start reauth"
-                    : "Save changes"}
+                      ? t("Start Grok reauth")
+                      : t("Start reauth")
+                    : t("Save changes")}
               </button>
               <button className="btn ghost" onClick={closeEditModal}>
-                Cancel
+                {t("Cancel")}
               </button>
             </div>
           </div>
@@ -2172,8 +2179,8 @@ export function AccountsTab(props: Props) {
             <div className="inline wrap row-between">
               <h2>
                 {oauthDialog.mode === "create"
-                  ? `Complete ${oauthProviderLabel(oauthDialog.provider)} OAuth`
-                  : `Complete ${oauthProviderLabel(oauthDialog.provider)} reauth`}
+                  ? t("Complete {provider} OAuth", { provider: oauthProviderLabel(oauthDialog.provider) })
+                  : t("Complete {provider} reauth", { provider: oauthProviderLabel(oauthDialog.provider) })}
               </h2>
               <div className="inline wrap">
                 {onboardingProviderSetup && (
@@ -2182,29 +2189,29 @@ export function AccountsTab(props: Props) {
                     closeModal();
                     onSkipOnboarding?.();
                   }}>
-                    Skip setup
+                    {t("Skip setup")}
                   </button>
                 )}
                 <button className="btn ghost" onClick={closeOauthDialog}>
-                  Close
+                  {t("Close")}
                 </button>
               </div>
             </div>
             {oauthDialog.pollingError && <p role="alert">{oauthDialog.pollingError}</p>}
             <div className="grid modal-grid">
               <label>
-                Email {oauthDialog.provider !== "openai" ? "(from provider after approval)" : ""}
+                {oauthDialog.provider !== "openai" ? t("Email (from provider after approval)") : t("Email")}
                 <input value={oauthDialog.email} disabled />
               </label>
               {oauthDialog.provider === "openai" && oauthDialog.method === "device" && <ChatGPTDeviceGuide />}
               {oauthDialog.method === "device" ? (
                 <>
                   <label>
-                    Verification URL
+                    {t("Verification URL")}
                     <input value={oauthDialog.verificationUrl ?? ""} disabled />
                   </label>
                   <label>
-                    Device code
+                    {t("Device code")}
                     <input
                       className="mono"
                       value={oauthDialog.userCode ?? ""}
@@ -2215,11 +2222,11 @@ export function AccountsTab(props: Props) {
               ) : (
                 <>
                   <label>
-                    Redirect URI
+                    {t("Redirect URI")}
                     <input value={oauthDialog.expectedRedirectUri} disabled />
                   </label>
                   <label>
-                    Callback URL
+                    {t("Callback URL")}
                     <textarea
                       value={oauthDialog.callbackInput}
                       onChange={(e) =>
@@ -2229,7 +2236,7 @@ export function AccountsTab(props: Props) {
                             : current,
                         )
                       }
-                      placeholder="Paste the full URL after the browser reaches the callback page"
+                      placeholder={t("Paste the full URL after the browser reaches the callback page")}
                       rows={5}
                     />
                   </label>
@@ -2238,14 +2245,14 @@ export function AccountsTab(props: Props) {
             </div>
             <div className="muted">
               {oauthDialog.method === "device"
-                ? `Open the verification URL, enter the one-time code, and approve the ${
-                    oauthDialog.provider === "github-copilot" ? "GitHub" : oauthDialog.provider === "xai"
+                ? t("Open the verification URL, enter the one-time code, and approve the {provider} login. This dialog will complete automatically after approval. Do not share this code.", {
+                    provider: oauthDialog.provider === "github-copilot" ? "GitHub" : oauthDialog.provider === "xai"
                       ? "xAI"
                       : oauthDialog.provider === "opencode"
                         ? "OpenCode"
-                        : "OpenAI"
-                  } login. This dialog will complete automatically after approval. Do not share this code.`
-                : "Complete the OpenAI login in the opened browser tab. When the browser reaches the callback page, copy the full URL and paste it here. Do not paste access or refresh tokens."}
+                        : "OpenAI",
+                  })
+                : t("Complete the OpenAI login in the opened browser tab. When the browser reaches the callback page, copy the full URL and paste it here. Do not paste access or refresh tokens.")}
             </div>
             <div className="inline wrap">
               <button
@@ -2261,8 +2268,8 @@ export function AccountsTab(props: Props) {
                 }
               >
                 {oauthDialog.method === "device"
-                  ? "Open verification page"
-                  : "Open login page"}
+                  ? t("Open verification page")
+                  : t("Open login page")}
               </button>
               {oauthDialog.method === "browser" ? (
                 <button
@@ -2274,18 +2281,18 @@ export function AccountsTab(props: Props) {
                   onClick={() => void submitOauthCallback()}
                 >
                   {oauthDialog.isSubmitting
-                    ? "Completing..."
-                    : "Complete OAuth"}
+                    ? t("Completing...")
+                    : t("Complete OAuth")}
                 </button>
               ) : (
                 <button className="btn" disabled>
                   {oauthDialog.isSubmitting
-                    ? "Checking..."
-                    : "Waiting for approval"}
+                    ? t("Checking...")
+                    : t("Waiting for approval")}
                 </button>
               )}
               <button className="btn ghost" onClick={closeOauthDialog}>
-                Cancel
+                {t("Cancel")}
               </button>
             </div>
           </div>
