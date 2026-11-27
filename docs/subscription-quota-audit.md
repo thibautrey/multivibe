@@ -40,6 +40,6 @@ Local `main`:
   removed. Current routing and rotation coverage lives in the native
   `multivibe-v1-edge` Rust test suite.
 - `npm run build:api` and `npm run build:web`: passed. Vite emitted its bundle-size advisory.
-- `CARGO_TARGET_DIR=/tmp/multivibe-quota-cargo-target /home/codex/.cargo/bin/cargo test -p multivibe-v1-edge account_selection --lib --locked`: 2 passed. Native routing now consumes subscription credits and avoids exhausted quotas when alternatives have headroom.
+- `CARGO_TARGET_DIR=/tmp/multivibe-quota-cargo-target cargo test -p multivibe-v1-edge account_selection --lib --locked`: 2 passed. Native routing now consumes subscription credits and avoids exhausted quotas when alternatives have headroom.
 
 Rust validation initially failed with `cargo: command not found`; installed the minimal Rust toolchain. The default target directory then failed with `Permission denied` opening `target/debug/.cargo-build-lock`; the successful run used the separate temporary target directory above. No lockfiles were changed.

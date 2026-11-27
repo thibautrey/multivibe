@@ -9,7 +9,7 @@ import (
 )
 
 func TestSchedulerPlistEscapesInstalledPaths(t *testing.T) {
-	data := schedulerPlist("/Applications/MultiVibe Host.app/Contents/Helpers/updater", "/Users/A&B/Library/Application Support/MultiVibe")
+	data := schedulerPlist("/Applications/MultiVibe Host.app/Contents/Helpers/updater", "/Users/provider&co/Library/Application Support/MultiVibe")
 	decoder := xml.NewDecoder(bytes.NewReader(data))
 	for {
 		_, err := decoder.Token()
@@ -20,7 +20,7 @@ func TestSchedulerPlistEscapesInstalledPaths(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, want := range []string{"A&amp;B", "<integer>60</integer>", "<string>auto</string>", "MULTIVIBE_HOST_DATA_DIR", "MULTIVIBE_CONTROL_PLANE_PORT", "1456"} {
+	for _, want := range []string{"provider&amp;co", "<integer>60</integer>", "<string>auto</string>", "MULTIVIBE_HOST_DATA_DIR", "MULTIVIBE_CONTROL_PLANE_PORT", "1456"} {
 		if !strings.Contains(string(data), want) {
 			t.Fatalf("missing %s", want)
 		}

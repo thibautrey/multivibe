@@ -28,7 +28,7 @@ that no such credential exists anywhere outside the inspected scope.
 
 ## Official mechanisms in the sibling Cloud repository
 
-Reviewed actual sources under `/home/codex/gitRepo/multivibe-cloud`:
+Reviewed actual sources in a local checkout of the sibling Cloud repository:
 
 1. `docs/customer-identity-test-corridor.md` documents operator invitations and
    email-possession verification, requiring an operator token, dedicated session

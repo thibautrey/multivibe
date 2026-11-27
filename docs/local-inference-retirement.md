@@ -56,6 +56,6 @@ release test expects `NOTICE` to mention only `LICENSE`, although the existing
 notice also names Chromium and provider-icon notices. These checks are outside
 the inference removal. The dashboard capability and export checks pass.
 
-The dedicated macOS build host at `192.168.1.114` was unreachable from this VM
-(`No route to host`). Native Swift compilation, signing/notarization and actual
+A dedicated macOS build host was unreachable from this VM (`No route to
+host`). Native Swift compilation, signing/notarization and actual
 post-build macOS application size remain unverified. No release was published.
